@@ -24,7 +24,10 @@ class TopologyApp {
             penaltyFactor: 3,
             filterRadius: 1.5,
             granuleDensity: 20,
-            minCrossSection: 0
+            minCrossSection: 0,
+            useAMR: true,
+            minGranuleSize: 0.5,
+            maxGranuleSize: 2
         };
         
         // Benchmark tracking
@@ -206,6 +209,25 @@ class TopologyApp {
         
         document.getElementById('minCrossSection').addEventListener('input', (e) => {
             this.config.minCrossSection = parseFloat(e.target.value);
+        });
+        
+        // AMR controls
+        document.getElementById('useAMR').addEventListener('change', (e) => {
+            this.config.useAMR = e.target.checked;
+            const amrControls = document.getElementById('amrControls');
+            const amrControls2 = document.getElementById('amrControls2');
+            if (amrControls && amrControls2) {
+                amrControls.style.display = e.target.checked ? '' : 'none';
+                amrControls2.style.display = e.target.checked ? '' : 'none';
+            }
+        });
+        
+        document.getElementById('minGranuleSize').addEventListener('input', (e) => {
+            this.config.minGranuleSize = parseFloat(e.target.value);
+        });
+        
+        document.getElementById('maxGranuleSize').addEventListener('input', (e) => {
+            this.config.maxGranuleSize = parseFloat(e.target.value);
         });
         
         document.getElementById('runOptimization').addEventListener('click', () => {
