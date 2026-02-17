@@ -806,9 +806,9 @@ class TopologyOptimizerWorker {
         const K = this.assembleK(nelx, nely, x, penal, KE);
         const Uf = this.solveCG(K, F, freedofs, fixeddofs);
 
-        freedofs.forEach((dof, i) => {
-            U[dof] = Uf[i];
-        });
+        for (let i = 0; i < freedofs.length; i++) {
+            U[freedofs[i]] = Uf[i];
+        }
 
         let c = 0;
         for (let i = 0; i < ndof; i++) {
@@ -820,7 +820,15 @@ class TopologyOptimizerWorker {
 
     assembleK(nelx, nely, x, penal, KE) {
         const ndof = 2 * (nelx + 1) * (nely + 1);
-        const K = Array(ndof).fill(0).map(() => Array(ndof).fill(0));
+        const nel = nelx * nely;
+        
+        // Build sparse matrix in COO format, then convert to CSR for fast mat-vec
+        // Each element contributes 8x8 = 64 entries
+        const maxEntries = nel * 64;
+        const cooRow = new Int32Array(maxEntries);
+        const cooCol = new Int32Array(maxEntries);
+        const cooVal = new Float64Array(maxEntries);
+        let nnz = 0;
 
         for (let ely = 0; ely < nely; ely++) {
             for (let elx = 0; elx < nelx; elx++) {
@@ -838,13 +846,71 @@ class TopologyOptimizerWorker {
 
                 for (let i = 0; i < 8; i++) {
                     for (let j = 0; j < 8; j++) {
-                        K[edof[i]][edof[j]] += E * KE[i][j];
+                        cooRow[nnz] = edof[i];
+                        cooCol[nnz] = edof[j];
+                        cooVal[nnz] = E * KE[i][j];
+                        nnz++;
                     }
                 }
             }
         }
 
-        return K;
+        // Convert COO to CSR (Compressed Sparse Row) for efficient mat-vec
+        const rowPtr = new Int32Array(ndof + 1);
+        
+        // Count entries per row
+        for (let k = 0; k < nnz; k++) {
+            rowPtr[cooRow[k] + 1]++;
+        }
+        // Cumulative sum
+        for (let i = 0; i < ndof; i++) {
+            rowPtr[i + 1] += rowPtr[i];
+        }
+        
+        const colIdx = new Int32Array(nnz);
+        const values = new Float64Array(nnz);
+        const tempPtr = new Int32Array(ndof);
+        for (let i = 0; i < ndof; i++) {
+            tempPtr[i] = rowPtr[i];
+        }
+        
+        for (let k = 0; k < nnz; k++) {
+            const row = cooRow[k];
+            const pos = tempPtr[row];
+            colIdx[pos] = cooCol[k];
+            values[pos] = cooVal[k];
+            tempPtr[row]++;
+        }
+
+        return { ndof, rowPtr, colIdx, values };
+    }
+
+    // Sparse matrix-vector multiply: result = K * x (CSR format)
+    _sparseMatVec(K, x, result, freedofs) {
+        const n = freedofs.length;
+        const { rowPtr, colIdx, values } = K;
+        
+        // Build reverse map: global DOF -> local index (-1 if not free)
+        if (!this._dofMap || this._dofMap.length !== K.ndof) {
+            this._dofMap = new Int32Array(K.ndof).fill(-1);
+        } else {
+            this._dofMap.fill(-1);
+        }
+        for (let i = 0; i < n; i++) {
+            this._dofMap[freedofs[i]] = i;
+        }
+        
+        for (let li = 0; li < n; li++) {
+            const gi = freedofs[li];
+            let sum = 0;
+            for (let k = rowPtr[gi]; k < rowPtr[gi + 1]; k++) {
+                const lj = this._dofMap[colIdx[k]];
+                if (lj >= 0) {
+                    sum += values[k] * x[lj];
+                }
+            }
+            result[li] = sum;
+        }
     }
 
     solveCG(K, F, freedofs, fixeddofs) {
@@ -854,14 +920,24 @@ class TopologyOptimizerWorker {
         // Try WASM accelerated CG solver
         if (this.useWasm && wasmModule) {
             try {
-                // Extract reduced K matrix and F vector for free DOFs
+                // Extract reduced K matrix as dense for WASM (WASM CG expects dense)
                 const Kf = new Float64Array(n * n);
                 const Ff = new Float64Array(n);
                 
+                // Build reverse map for extraction
+                const dofMap = new Int32Array(K.ndof).fill(-1);
+                for (let i = 0; i < n; i++) {
+                    dofMap[freedofs[i]] = i;
+                }
+                
                 for (let i = 0; i < n; i++) {
                     Ff[i] = F[freedofs[i]];
-                    for (let j = 0; j < n; j++) {
-                        Kf[i * n + j] = K[freedofs[i]][freedofs[j]];
+                    const gi = freedofs[i];
+                    for (let k = K.rowPtr[gi]; k < K.rowPtr[gi + 1]; k++) {
+                        const lj = dofMap[K.colIdx[k]];
+                        if (lj >= 0) {
+                            Kf[i * n + lj] += K.values[k];
+                        }
                     }
                 }
                 
@@ -893,15 +969,17 @@ class TopologyOptimizerWorker {
             }
         }
 
-        // Pure JavaScript CG solver fallback
+        // Pure JavaScript CG solver fallback using sparse mat-vec
         const r = new Float32Array(n);
         const p = new Float32Array(n);
+        const Ap = new Float32Array(n);
 
         for (let i = 0; i < n; i++) {
             r[i] = F[freedofs[i]];
         }
 
         const maxIter = Math.min(n, 1000);
+        const tolSq = CG_TOLERANCE * CG_TOLERANCE;
 
         let rho = 0;
         for (let i = 0; i < n; i++) {
@@ -910,14 +988,10 @@ class TopologyOptimizerWorker {
         }
 
         for (let iter = 0; iter < maxIter; iter++) {
-            if (Math.sqrt(rho) < CG_TOLERANCE) break;
+            if (rho < tolSq) break;
 
-            const Ap = new Float32Array(n);
-            for (let i = 0; i < n; i++) {
-                for (let j = 0; j < n; j++) {
-                    Ap[i] += K[freedofs[i]][freedofs[j]] * p[j];
-                }
-            }
+            // Sparse mat-vec: Ap = K * p
+            this._sparseMatVec(K, p, Ap, freedofs);
 
             let pAp = 0;
             for (let i = 0; i < n; i++) {

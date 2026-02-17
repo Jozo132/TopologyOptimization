@@ -230,6 +230,7 @@ export function applyDensityFilter(
   radius: f64
 ): void {
   const rmin: i32 = i32(Math.ceil(radius));
+  const radiusSq: f64 = radius * radius;
 
   for (let ez = 0; ez < nz; ez++) {
     for (let ey = 0; ey < ny; ey++) {
@@ -250,9 +251,10 @@ export function applyDensityFilter(
               const dx: f64 = f64(ex - kx);
               const dy: f64 = f64(ey - ky);
               const dz: f64 = f64(ez - kz);
-              const dist: f64 = Math.sqrt(dx * dx + dy * dy + dz * dz);
+              const distSq: f64 = dx * dx + dy * dy + dz * dz;
 
-              if (dist <= radius) {
+              if (distSq <= radiusSq) {
+                const dist: f64 = Math.sqrt(distSq);
                 const weight: f64 = radius - dist;
                 const idx: i32 = kx + ky * nx + kz * nx * ny;
                 sum += weight * unchecked(densities[idx]);
