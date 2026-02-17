@@ -1,4 +1,6 @@
 // Model exporter for STL and JSON
+import { DENSITY_THRESHOLD } from './constants.js';
+
 export class ModelExporter {
     constructor() {}
 
@@ -41,7 +43,6 @@ export class ModelExporter {
 
     generateSTL(densities, nx, ny, nz) {
         // Generate binary STL file
-        const threshold = 0.3; // Density threshold for solid elements
         const triangles = [];
         
         // Convert density field to mesh (marching cubes simplified)
@@ -49,7 +50,7 @@ export class ModelExporter {
             for (let y = 0; y < ny; y++) {
                 for (let z = 0; z < nz; z++) {
                     const index = x + y * nx + z * nx * ny;
-                    if (densities[index] > threshold) {
+                    if (densities[index] > DENSITY_THRESHOLD) {
                         // Add cube faces as triangles
                         this.addCubeTriangles(triangles, x, y, z);
                     }

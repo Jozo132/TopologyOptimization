@@ -1,4 +1,6 @@
 // 3D Viewer using Canvas 2D (no external dependencies)
+import { DENSITY_THRESHOLD } from './constants.js';
+
 export class Viewer3D {
     constructor(containerId) {
         this.containerId = containerId;
@@ -120,7 +122,7 @@ export class Viewer3D {
                     const index = x + y * nx + z * nx * ny;
                     const density = this.densities ? this.densities[index] : elements[index];
                     
-                    if (density > 0.3) { // Threshold for visibility
+                    if (density > DENSITY_THRESHOLD) { // Threshold for visibility
                         voxels.push({ x, y, z, density });
                     }
                 }

@@ -1,4 +1,6 @@
 // Topology Optimizer using SIMP (Solid Isotropic Material with Penalization)
+import { EPSILON, CG_TOLERANCE } from './constants.js';
+
 export class TopologyOptimizer {
     constructor() {
         this.rmin = 1.5; // Filter radius
@@ -337,7 +339,6 @@ export class TopologyOptimizer {
         
         // CG iterations (simplified)
         const maxIter = Math.min(n, 1000);
-        const tol = 1e-8;
         
         let rho = 0;
         for (let i = 0; i < n; i++) {
@@ -346,7 +347,7 @@ export class TopologyOptimizer {
         }
         
         for (let iter = 0; iter < maxIter; iter++) {
-            if (Math.sqrt(rho) < tol) break;
+            if (Math.sqrt(rho) < CG_TOLERANCE) break;
             
             // Compute Ap
             const Ap = new Float32Array(n);
@@ -361,7 +362,7 @@ export class TopologyOptimizer {
             for (let i = 0; i < n; i++) {
                 pAp += p[i] * Ap[i];
             }
-            const alpha = rho / (pAp + 1e-12);
+            const alpha = rho / (pAp + EPSILON);
             
             // Update solution and residual
             let rho_new = 0;
@@ -372,7 +373,7 @@ export class TopologyOptimizer {
             }
             
             // Update search direction
-            const beta = rho_new / (rho + 1e-12);
+            const beta = rho_new / (rho + EPSILON);
             for (let i = 0; i < n; i++) {
                 p[i] = r[i] + beta * p[i];
             }
