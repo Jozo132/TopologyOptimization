@@ -18,6 +18,17 @@ export class Viewer3D {
         
         this.densities = null;
         this.meshData = null; // Triangle mesh data from optimizer
+
+        // Paint mode for face selection
+        this.paintMode = null; // null | 'constraint' | 'force'
+        this.paintedConstraintFaces = new Set(); // "x,y,z,face" keys
+        this.paintedForceFaces = new Set();
+        this.forceDirection = 'down';
+        this.forceMagnitude = 1000;
+        this.isPainting = false;
+
+        // Cached boundary faces for picking
+        this._boundaryFaces = [];
     }
 
     async init() {
@@ -47,11 +58,20 @@ export class Viewer3D {
 
     setupControls() {
         this.canvas.addEventListener('mousedown', (e) => {
+            if (this.paintMode && this.model) {
+                this.isPainting = true;
+                this.handlePaintClick(e);
+                return;
+            }
             this.isDragging = true;
             this.lastMousePos = { x: e.clientX, y: e.clientY };
         });
         
         this.canvas.addEventListener('mousemove', (e) => {
+            if (this.isPainting && this.paintMode && this.model) {
+                this.handlePaintClick(e);
+                return;
+            }
             if (this.isDragging) {
                 const dx = e.clientX - this.lastMousePos.x;
                 const dy = e.clientY - this.lastMousePos.y;
@@ -69,10 +89,12 @@ export class Viewer3D {
         
         this.canvas.addEventListener('mouseup', () => {
             this.isDragging = false;
+            this.isPainting = false;
         });
         
         this.canvas.addEventListener('mouseleave', () => {
             this.isDragging = false;
+            this.isPainting = false;
         });
         
         this.canvas.addEventListener('wheel', (e) => {
@@ -81,6 +103,67 @@ export class Viewer3D {
             this.zoom = Math.max(0.1, Math.min(5, this.zoom));
             this.draw();
         });
+    }
+
+    /** Set the paint mode: null (orbit), 'constraint', or 'force' */
+    setPaintMode(mode) {
+        this.paintMode = mode;
+        this.canvas.style.cursor = mode ? 'crosshair' : 'grab';
+    }
+
+    /** Handle a paint click/drag on the canvas */
+    handlePaintClick(e) {
+        const rect = this.canvas.getBoundingClientRect();
+        const mx = (e.clientX - rect.left) * (this.canvas.width / rect.width);
+        const my = (e.clientY - rect.top) * (this.canvas.height / rect.height);
+
+        // Find closest boundary face to click position
+        const { width, height } = this.canvas;
+        const { nx, ny, nz } = this.model;
+        const centerX = width / 2;
+        const centerY = height / 2;
+        const scale = Math.min(width, height) / Math.max(nx, ny, nz) * 0.7 * this.zoom;
+
+        let bestDist = Infinity;
+        let bestFace = null;
+
+        for (const bf of this._boundaryFaces) {
+            const screenVerts = bf.projVerts.map(pv => ({
+                x: centerX + pv.x * scale,
+                y: centerY - pv.y * scale
+            }));
+            // Test if point is inside the quad (approximate with centroid distance)
+            const cx = (screenVerts[0].x + screenVerts[1].x + screenVerts[2].x + screenVerts[3].x) / 4;
+            const cy = (screenVerts[0].y + screenVerts[1].y + screenVerts[2].y + screenVerts[3].y) / 4;
+            const dist = Math.sqrt((mx - cx) ** 2 + (my - cy) ** 2);
+
+            // Verify point is roughly within the quad bounds
+            const maxR = Math.max(
+                ...screenVerts.map(v => Math.sqrt((v.x - cx) ** 2 + (v.y - cy) ** 2))
+            );
+            if (dist < maxR * 1.2) {
+                // Prefer the closest face to the camera (highest avgDepth)
+                if (bestFace === null || bf.avgDepth > bestFace.avgDepth) {
+                    bestDist = dist;
+                    bestFace = bf;
+                } else if (Math.abs(bf.avgDepth - bestFace.avgDepth) < 0.01 && dist < bestDist) {
+                    bestDist = dist;
+                    bestFace = bf;
+                }
+            }
+        }
+
+        if (bestFace) {
+            const key = bestFace.key;
+            const targetSet = this.paintMode === 'constraint' ? this.paintedConstraintFaces : this.paintedForceFaces;
+
+            if (e.shiftKey) {
+                targetSet.delete(key);
+            } else {
+                targetSet.add(key);
+            }
+            this.draw();
+        }
     }
 
     onWindowResize() {
@@ -93,6 +176,8 @@ export class Viewer3D {
         this.model = model;
         this.densities = null;
         this.meshData = null;
+        this.paintedConstraintFaces = new Set();
+        this.paintedForceFaces = new Set();
         this.draw();
     }
 
@@ -121,12 +206,25 @@ export class Viewer3D {
         } else {
             this.drawVoxels(nx, ny, nz);
         }
+
+        // Draw constraint and force overlays on top
+        this.drawConstraintOverlay(nx, ny, nz);
+        this.drawForceArrows(nx, ny, nz);
         
         // Draw axes
         const centerX = width / 2;
         const centerY = height / 2;
         const scale = Math.min(width, height) / Math.max(nx, ny, nz) * 0.7 * this.zoom;
         this.drawAxes(centerX, centerY, scale);
+
+        // Draw paint mode indicator
+        if (this.paintMode) {
+            this.ctx.fillStyle = this.paintMode === 'constraint' ? 'rgba(0,200,100,0.8)' : 'rgba(255,100,50,0.8)';
+            this.ctx.font = '14px Arial';
+            this.ctx.textAlign = 'left';
+            const label = this.paintMode === 'constraint' ? '🖌 Painting Constraints (Shift+click to remove)' : '🖌 Painting Forces (Shift+click to remove)';
+            this.ctx.fillText(label, 10, height - 10);
+        }
     }
 
     drawTriangleMesh(nx, ny, nz) {
@@ -192,93 +290,243 @@ export class Viewer3D {
         const centerY = height / 2;
         const scale = Math.min(width, height) / Math.max(nx, ny, nz) * 0.7 * this.zoom;
 
-        // Collect visible voxels
-        const voxels = [];
+        // Build a lookup set for occupied voxels to cull interior faces
+        const occupied = new Uint8Array(nx * ny * nz);
         for (let x = 0; x < nx; x++) {
             for (let y = 0; y < ny; y++) {
                 for (let z = 0; z < nz; z++) {
                     const index = x + y * nx + z * nx * ny;
                     const density = this.densities ? this.densities[index] : elements[index];
-                    
                     if (density > DENSITY_THRESHOLD) {
-                        voxels.push({ x, y, z, density });
+                        occupied[index] = 1;
                     }
                 }
             }
         }
-        
-        // Sort by depth (painter's algorithm)
-        voxels.sort((a, b) => {
-            const depthA = this.getDepth(a.x, a.y, a.z);
-            const depthB = this.getDepth(b.x, b.y, b.z);
-            return depthA - depthB;
-        });
-        
-        // Draw each voxel as two triangles (a quad split into triangles)
-        voxels.forEach(voxel => {
-            const projected = this.project3D(voxel.x, voxel.y, voxel.z, nx, ny, nz);
-            const screenX = centerX + projected.x * scale;
-            const screenY = centerY - projected.y * scale;
-            const halfSize = scale * 0.4;
-            
+
+        const isOccupied = (x, y, z) => {
+            if (x < 0 || x >= nx || y < 0 || y >= ny || z < 0 || z >= nz) return false;
+            return occupied[x + y * nx + z * nx * ny] === 1;
+        };
+
+        // Collect all visible faces as triangles
+        const faces = [];
+        // Define 6 face directions with their vertex offsets and normals
+        const faceDefinitions = [
+            { dir: [0, 0, -1], verts: [[0,0,0],[1,0,0],[1,1,0],[0,1,0]] },  // Front (z-)
+            { dir: [0, 0, 1],  verts: [[1,0,1],[0,0,1],[0,1,1],[1,1,1]] },  // Back (z+)
+            { dir: [-1, 0, 0], verts: [[0,0,1],[0,0,0],[0,1,0],[0,1,1]] },  // Left (x-)
+            { dir: [1, 0, 0],  verts: [[1,0,0],[1,0,1],[1,1,1],[1,1,0]] },  // Right (x+)
+            { dir: [0, -1, 0], verts: [[0,0,1],[1,0,1],[1,0,0],[0,0,0]] },  // Bottom (y-)
+            { dir: [0, 1, 0],  verts: [[0,1,0],[1,1,0],[1,1,1],[0,1,1]] },  // Top (y+)
+        ];
+
+        for (let x = 0; x < nx; x++) {
+            for (let y = 0; y < ny; y++) {
+                for (let z = 0; z < nz; z++) {
+                    if (!isOccupied(x, y, z)) continue;
+                    const index = x + y * nx + z * nx * ny;
+                    const density = this.densities ? this.densities[index] : elements[index];
+
+                    for (let fi = 0; fi < faceDefinitions.length; fi++) {
+                        const face = faceDefinitions[fi];
+                        const [dx, dy, dz] = face.dir;
+                        // Skip face if neighbour in that direction is also occupied
+                        if (isOccupied(x + dx, y + dy, z + dz)) continue;
+
+                        const verts = face.verts.map(([vx, vy, vz]) =>
+                            this.project3D(x + vx, y + vy, z + vz, nx, ny, nz)
+                        );
+                        const avgDepth = (verts[0].z + verts[1].z + verts[2].z + verts[3].z) / 4;
+                        const key = `${x},${y},${z},${fi}`;
+
+                        faces.push({ verts, density, normal: face.dir, avgDepth, key, projVerts: verts });
+                    }
+                }
+            }
+        }
+
+        // Sort by depth (painter's algorithm — farthest first)
+        faces.sort((a, b) => a.avgDepth - b.avgDepth);
+
+        // Cache boundary faces for paint picking
+        this._boundaryFaces = faces;
+
+        const lightDir = { x: 0.3, y: 0.5, z: 0.8 };
+        const lightMag = Math.sqrt(lightDir.x ** 2 + lightDir.y ** 2 + lightDir.z ** 2);
+
+        faces.forEach(face => {
+            const screenVerts = face.verts.map(pv => ({
+                x: centerX + pv.x * scale,
+                y: centerY - pv.y * scale
+            }));
+
             // Color based on density
             let r, g, b;
             if (this.densities) {
-                r = Math.floor(voxel.density * 255);
+                r = Math.floor(face.density * 255);
                 g = 76;
-                b = Math.floor((1 - voxel.density) * 255);
+                b = Math.floor((1 - face.density) * 255);
             } else {
                 r = 74;
                 g = 144;
                 b = 226;
             }
-            
-            // Apply lighting based on depth
-            const lightFactor = 0.5 + 0.5 * (projected.z + 1) / 2;
+
+            // Apply per-face lighting from normal
+            const dot = Math.abs(
+                (face.normal[0] * lightDir.x + face.normal[1] * lightDir.y + face.normal[2] * lightDir.z) / lightMag
+            );
+            const lightFactor = 0.4 + 0.6 * dot;
             r = Math.floor(r * lightFactor);
             g = Math.floor(g * lightFactor);
             b = Math.floor(b * lightFactor);
-            
-            // Draw as two triangles instead of a square
-            const x0 = screenX - halfSize;
-            const y0 = screenY - halfSize;
-            const x1 = screenX + halfSize;
-            const y1 = screenY + halfSize;
 
+            // Draw quad as two triangles
             if (this.wireframe) {
                 this.ctx.strokeStyle = `rgb(${r}, ${g}, ${b})`;
-                // Triangle 1
                 this.ctx.beginPath();
-                this.ctx.moveTo(x0, y0);
-                this.ctx.lineTo(x1, y0);
-                this.ctx.lineTo(x1, y1);
+                this.ctx.moveTo(screenVerts[0].x, screenVerts[0].y);
+                this.ctx.lineTo(screenVerts[1].x, screenVerts[1].y);
+                this.ctx.lineTo(screenVerts[2].x, screenVerts[2].y);
                 this.ctx.closePath();
                 this.ctx.stroke();
-                // Triangle 2
                 this.ctx.beginPath();
-                this.ctx.moveTo(x0, y0);
-                this.ctx.lineTo(x1, y1);
-                this.ctx.lineTo(x0, y1);
+                this.ctx.moveTo(screenVerts[0].x, screenVerts[0].y);
+                this.ctx.lineTo(screenVerts[2].x, screenVerts[2].y);
+                this.ctx.lineTo(screenVerts[3].x, screenVerts[3].y);
                 this.ctx.closePath();
                 this.ctx.stroke();
             } else {
                 this.ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
-                // Triangle 1
                 this.ctx.beginPath();
-                this.ctx.moveTo(x0, y0);
-                this.ctx.lineTo(x1, y0);
-                this.ctx.lineTo(x1, y1);
+                this.ctx.moveTo(screenVerts[0].x, screenVerts[0].y);
+                this.ctx.lineTo(screenVerts[1].x, screenVerts[1].y);
+                this.ctx.lineTo(screenVerts[2].x, screenVerts[2].y);
                 this.ctx.closePath();
                 this.ctx.fill();
-                // Triangle 2
                 this.ctx.beginPath();
-                this.ctx.moveTo(x0, y0);
-                this.ctx.lineTo(x1, y1);
-                this.ctx.lineTo(x0, y1);
+                this.ctx.moveTo(screenVerts[0].x, screenVerts[0].y);
+                this.ctx.lineTo(screenVerts[2].x, screenVerts[2].y);
+                this.ctx.lineTo(screenVerts[3].x, screenVerts[3].y);
                 this.ctx.closePath();
                 this.ctx.fill();
             }
         });
+    }
+
+    /** Draw semi-transparent green overlay on constraint-painted faces */
+    drawConstraintOverlay(nx, ny, nz) {
+        if (this.paintedConstraintFaces.size === 0) return;
+        const { width, height } = this.canvas;
+        const centerX = width / 2;
+        const centerY = height / 2;
+        const scale = Math.min(width, height) / Math.max(nx, ny, nz) * 0.7 * this.zoom;
+
+        for (const bf of this._boundaryFaces) {
+            if (!this.paintedConstraintFaces.has(bf.key)) continue;
+            const screenVerts = bf.projVerts.map(pv => ({
+                x: centerX + pv.x * scale,
+                y: centerY - pv.y * scale
+            }));
+
+            this.ctx.fillStyle = 'rgba(0, 200, 100, 0.45)';
+            this.ctx.beginPath();
+            this.ctx.moveTo(screenVerts[0].x, screenVerts[0].y);
+            this.ctx.lineTo(screenVerts[1].x, screenVerts[1].y);
+            this.ctx.lineTo(screenVerts[2].x, screenVerts[2].y);
+            this.ctx.lineTo(screenVerts[3].x, screenVerts[3].y);
+            this.ctx.closePath();
+            this.ctx.fill();
+
+            // Draw hatching lines for fixed constraint visualization
+            this.ctx.strokeStyle = 'rgba(0, 150, 70, 0.7)';
+            this.ctx.lineWidth = 1;
+            this.ctx.beginPath();
+            this.ctx.moveTo(screenVerts[0].x, screenVerts[0].y);
+            this.ctx.lineTo(screenVerts[2].x, screenVerts[2].y);
+            this.ctx.moveTo(screenVerts[1].x, screenVerts[1].y);
+            this.ctx.lineTo(screenVerts[3].x, screenVerts[3].y);
+            this.ctx.stroke();
+        }
+    }
+
+    /** Draw force arrows on painted force faces */
+    drawForceArrows(nx, ny, nz) {
+        if (this.paintedForceFaces.size === 0) return;
+        const { width, height } = this.canvas;
+        const centerX = width / 2;
+        const centerY = height / 2;
+        const scale = Math.min(width, height) / Math.max(nx, ny, nz) * 0.7 * this.zoom;
+
+        // Determine arrow direction in 3D based on forceDirection
+        let arrowDir;
+        switch (this.forceDirection) {
+            case 'down':  arrowDir = [0, -1, 0]; break;
+            case 'up':    arrowDir = [0, 1, 0]; break;
+            case 'left':  arrowDir = [-1, 0, 0]; break;
+            case 'right': arrowDir = [1, 0, 0]; break;
+            default:      arrowDir = [0, -1, 0];
+        }
+
+        const arrowLen = 1.5; // length in world units
+
+        for (const bf of this._boundaryFaces) {
+            if (!this.paintedForceFaces.has(bf.key)) continue;
+            const screenVerts = bf.projVerts.map(pv => ({
+                x: centerX + pv.x * scale,
+                y: centerY - pv.y * scale
+            }));
+
+            // Highlight the face in orange
+            this.ctx.fillStyle = 'rgba(255, 100, 50, 0.4)';
+            this.ctx.beginPath();
+            this.ctx.moveTo(screenVerts[0].x, screenVerts[0].y);
+            this.ctx.lineTo(screenVerts[1].x, screenVerts[1].y);
+            this.ctx.lineTo(screenVerts[2].x, screenVerts[2].y);
+            this.ctx.lineTo(screenVerts[3].x, screenVerts[3].y);
+            this.ctx.closePath();
+            this.ctx.fill();
+
+            // Parse face key to get voxel position: "x,y,z,fi"
+            const parts = bf.key.split(',');
+            const vx = parseInt(parts[0], 10) + 0.5;
+            const vy = parseInt(parts[1], 10) + 0.5;
+            const vz = parseInt(parts[2], 10) + 0.5;
+
+            // Arrow start: face center in 3D
+            const startProj = this.project3D(vx, vy, vz, nx, ny, nz);
+            const endProj = this.project3D(
+                vx + arrowDir[0] * arrowLen,
+                vy + arrowDir[1] * arrowLen,
+                vz + arrowDir[2] * arrowLen,
+                nx, ny, nz
+            );
+
+            const sx = centerX + startProj.x * scale;
+            const sy = centerY - startProj.y * scale;
+            const ex = centerX + endProj.x * scale;
+            const ey = centerY - endProj.y * scale;
+
+            // Draw arrow line
+            this.ctx.strokeStyle = 'rgba(255, 60, 30, 0.9)';
+            this.ctx.lineWidth = 2.5;
+            this.ctx.beginPath();
+            this.ctx.moveTo(sx, sy);
+            this.ctx.lineTo(ex, ey);
+            this.ctx.stroke();
+
+            // Draw arrowhead
+            const angle = Math.atan2(ey - sy, ex - sx);
+            const headLen = 8;
+            this.ctx.beginPath();
+            this.ctx.moveTo(ex, ey);
+            this.ctx.lineTo(ex - headLen * Math.cos(angle - 0.4), ey - headLen * Math.sin(angle - 0.4));
+            this.ctx.moveTo(ex, ey);
+            this.ctx.lineTo(ex - headLen * Math.cos(angle + 0.4), ey - headLen * Math.sin(angle + 0.4));
+            this.ctx.stroke();
+            this.ctx.lineWidth = 1;
+        }
     }
 
     project3D(x, y, z, nx, ny, nz) {
@@ -363,6 +611,10 @@ export class Viewer3D {
         this.model = null;
         this.densities = null;
         this.meshData = null;
+        this.paintedConstraintFaces = new Set();
+        this.paintedForceFaces = new Set();
+        this.paintMode = null;
+        this._boundaryFaces = [];
         this.draw();
     }
 }

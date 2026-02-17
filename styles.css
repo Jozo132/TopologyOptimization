@@ -352,6 +352,97 @@ button {
     }
 }
 
+/* Step Navigation */
+.step-nav {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border-color);
+}
+
+.step-nav .btn-primary {
+    width: auto;
+    margin-top: 0;
+    margin-left: auto;
+}
+
+.step-nav .btn-secondary {
+    margin-top: 0;
+    margin-right: 0;
+}
+
+.step-nav .btn-primary:disabled,
+.step-nav .btn-secondary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Step indicator bar */
+.step-indicators {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.75rem 1.5rem;
+    background: var(--card-bg);
+    border-bottom: 1px solid var(--border-color);
+    gap: 0.5rem;
+}
+
+.step-indicator {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    border-radius: 50%;
+    font-weight: 700;
+    font-size: 0.875rem;
+    background: var(--border-color);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.step-indicator.active {
+    background: var(--primary-color);
+    color: white;
+}
+
+.step-indicator.reached {
+    background: var(--success-color);
+    color: white;
+}
+
+.step-indicator-line {
+    width: 2rem;
+    height: 2px;
+    background: var(--border-color);
+}
+
+.step-indicator-line.reached {
+    background: var(--success-color);
+}
+
+/* Constraint / Force overlays */
+.paint-toolbar {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.paint-toolbar button {
+    font-size: 0.75rem;
+    padding: 0.375rem 0.75rem;
+}
+
+.paint-toolbar button.active-tool {
+    background: var(--primary-color);
+    color: white;
+    border-color: var(--primary-color);
+}
+
 /* Scrollbar */
 .workflow::-webkit-scrollbar {
     width: 8px;

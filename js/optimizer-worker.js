@@ -48,6 +48,7 @@ class TopologyOptimizerWorker {
         let loop = 0;
         let change = 1;
         let c = 0;
+        let lastElementEnergies = null;
 
         while (change > 0.01 && loop < maxIterations) {
             if (this.cancelled) {
@@ -93,6 +94,7 @@ class TopologyOptimizerWorker {
             }
 
             x = Float32Array.from(xnew);
+            lastElementEnergies = elementEnergies;
 
             // Build adaptive mesh data for this iteration
             const meshData = this.buildAdaptiveMesh(nelx, nely, nelz, x, elementEnergies, elementForces);
@@ -110,7 +112,7 @@ class TopologyOptimizerWorker {
             return;
         }
 
-        const finalMesh = this.buildAdaptiveMesh(nelx, nely, nelz, x, null, elementForces);
+        const finalMesh = this.buildAdaptiveMesh(nelx, nely, nelz, x, lastElementEnergies, elementForces);
 
         // Also build the flat densities3D for export compatibility
         const densities3D = new Float32Array(nelx * nely * nelz);
