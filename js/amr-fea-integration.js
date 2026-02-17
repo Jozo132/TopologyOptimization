@@ -28,7 +28,7 @@ export class AMRFEASolver {
         }
         
         // Refinement frequency (refine every N iterations)
-        this.refinementInterval = 10;
+        this.refinementInterval = config.amrInterval || 3;
         this.lastRefinementIteration = 0;
     }
     
