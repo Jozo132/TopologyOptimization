@@ -396,6 +396,15 @@ class TopologyApp {
                 Volume Fraction: ${(result.volumeFraction * 100).toFixed(1)}%
             `;
             
+            // Add AMR statistics if available
+            if (result.amrStats) {
+                resultsHTML += `<br><br><strong>AMR Statistics:</strong><br>`;
+                resultsHTML += `Groups: ${result.amrStats.groupCount}<br>`;
+                resultsHTML += `Size Range: ${result.amrStats.minGroupSize.toFixed(1)} - ${result.amrStats.maxGroupSize.toFixed(1)}<br>`;
+                resultsHTML += `Avg Size: ${result.amrStats.avgGroupSize.toFixed(1)}<br>`;
+                resultsHTML += `Refinements: ${result.amrStats.refinementCount}`;
+            }
+            
             if (result.timing) {
                 const wasmBadge = result.timing.usingWasm ? '🚀 WASM' : 'JS';
                 resultsHTML += `<br><br><strong>Performance (${wasmBadge}):</strong><br>`;

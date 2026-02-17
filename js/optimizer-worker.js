@@ -31,6 +31,163 @@ async function loadWasmModule() {
     }
 }
 
+// Simple AMR Manager for adaptive element grouping
+class SimpleAMRManager {
+    constructor(nelx, nely, useAMR, minSize, maxSize) {
+        this.nelx = nelx;
+        this.nely = nely;
+        this.useAMR = useAMR;
+        this.minSize = minSize || 0.5;
+        this.maxSize = maxSize || 2;
+        this.groups = [];
+        this.elementToGroup = null;
+        this.refinementCount = 0;
+        
+        if (useAMR) {
+            this.initializeGroups();
+        }
+    }
+    
+    initializeGroups() {
+        const groupSize = Math.max(1, Math.floor(this.maxSize));
+        const nel = this.nelx * this.nely;
+        this.elementToGroup = new Int32Array(nel);
+        this.groups = [];
+        
+        let groupId = 0;
+        const groupsX = Math.ceil(this.nelx / groupSize);
+        const groupsY = Math.ceil(this.nely / groupSize);
+        
+        for (let gy = 0; gy < groupsY; gy++) {
+            for (let gx = 0; gx < groupsX; gx++) {
+                const elements = [];
+                const startX = gx * groupSize;
+                const startY = gy * groupSize;
+                const endX = Math.min(startX + groupSize, this.nelx);
+                const endY = Math.min(startY + groupSize, this.nely);
+                
+                for (let y = startY; y < endY; y++) {
+                    for (let x = startX; x < endX; x++) {
+                        const idx = y + x * this.nely;
+                        this.elementToGroup[idx] = groupId;
+                        elements.push(idx);
+                    }
+                }
+                
+                this.groups.push({
+                    id: groupId,
+                    size: groupSize,
+                    elements: elements,
+                    stress: 0,
+                    density: 0.5
+                });
+                
+                groupId++;
+            }
+        }
+    }
+    
+    updateAndRefine(elementEnergies, densities, iteration) {
+        if (!this.useAMR || this.groups.length === 0) return;
+        if (iteration % 10 !== 0) return; // Refine every 10 iterations
+        
+        // Update group stresses
+        for (const group of this.groups) {
+            let totalStress = 0;
+            let totalDensity = 0;
+            
+            for (const elemIdx of group.elements) {
+                const energy = elementEnergies[elemIdx] || 0;
+                const density = densities[elemIdx] || 0.5;
+                const stiffness = 1e-9 + Math.pow(density, 3) * (1 - 1e-9);
+                totalStress += stiffness * energy;
+                totalDensity += density;
+            }
+            
+            group.stress = totalStress / group.elements.length;
+            group.density = totalDensity / group.elements.length;
+        }
+        
+        // Simple refinement: split high-stress large groups
+        const stresses = this.groups.map(g => g.stress).sort((a, b) => b - a);
+        const highStressThreshold = stresses[Math.floor(stresses.length * 0.2)] || 0;
+        
+        const toRefine = this.groups.filter(g => 
+            g.stress > highStressThreshold && 
+            g.size > this.minSize * 2 &&
+            g.elements.length > 4
+        ).slice(0, 5); // Limit refinements
+        
+        for (const group of toRefine) {
+            this.splitGroup(group);
+        }
+        
+        this.refinementCount++;
+    }
+    
+    splitGroup(group) {
+        const idx = this.groups.indexOf(group);
+        if (idx === -1 || group.elements.length <= 1) return;
+        
+        this.groups.splice(idx, 1);
+        
+        // Find bounding box
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const elemIdx of group.elements) {
+            const y = elemIdx % this.nely;
+            const x = Math.floor(elemIdx / this.nely);
+            minX = Math.min(minX, x);
+            minY = Math.min(minY, y);
+            maxX = Math.max(maxX, x);
+            maxY = Math.max(maxY, y);
+        }
+        
+        const midX = Math.floor((minX + maxX) / 2);
+        const midY = Math.floor((minY + maxY) / 2);
+        const halfSize = Math.max(1, Math.floor(group.size / 2));
+        
+        // Create 4 sub-groups
+        const newGroups = [
+            { id: this.groups.length, size: halfSize, elements: [], stress: group.stress, density: group.density },
+            { id: this.groups.length + 1, size: halfSize, elements: [], stress: group.stress, density: group.density },
+            { id: this.groups.length + 2, size: halfSize, elements: [], stress: group.stress, density: group.density },
+            { id: this.groups.length + 3, size: halfSize, elements: [], stress: group.stress, density: group.density }
+        ];
+        
+        // Assign elements to quadrants
+        for (const elemIdx of group.elements) {
+            const y = elemIdx % this.nely;
+            const x = Math.floor(elemIdx / this.nely);
+            const subIdx = (x >= midX ? 1 : 0) + (y >= midY ? 2 : 0);
+            newGroups[subIdx].elements.push(elemIdx);
+            this.elementToGroup[elemIdx] = newGroups[subIdx].id;
+        }
+        
+        // Add non-empty groups
+        for (const ng of newGroups) {
+            if (ng.elements.length > 0) {
+                this.groups.push(ng);
+            }
+        }
+    }
+    
+    getStats() {
+        if (!this.useAMR || this.groups.length === 0) {
+            return null;
+        }
+        
+        const sizes = this.groups.map(g => g.size);
+        return {
+            groupCount: this.groups.length,
+            minGroupSize: Math.min(...sizes),
+            maxGroupSize: Math.max(...sizes),
+            avgGroupSize: sizes.reduce((a, b) => a + b, 0) / sizes.length,
+            totalElements: this.nelx * this.nely,
+            refinementCount: this.refinementCount
+        };
+    }
+}
+
 class TopologyOptimizerWorker {
     constructor() {
         this.rmin = 1.5;
@@ -62,6 +219,11 @@ class TopologyOptimizerWorker {
         this.cancelled = false;
 
         const nel = nelx * nely;
+        
+        // Initialize AMR manager if enabled
+        const amrManager = config.useAMR ? 
+            new SimpleAMRManager(nelx, nely, true, config.minGranuleSize, config.maxGranuleSize) : 
+            null;
 
         let x = new Float32Array(nel).fill(volfrac);
         let xnew = new Float32Array(nel);
@@ -176,6 +338,11 @@ class TopologyOptimizerWorker {
 
             x = Float32Array.from(xnew);
             lastElementEnergies = elementEnergies;
+            
+            // Perform AMR refinement if enabled
+            if (amrManager) {
+                amrManager.updateAndRefine(elementEnergies, x, loop);
+            }
 
             // Build adaptive mesh data for this iteration
             const meshData = this.buildAdaptiveMesh(nelx, nely, nelz, x, elementEnergies, elementForces);
@@ -227,6 +394,9 @@ class TopologyOptimizerWorker {
         const avgIterTime = iterationTimes.length > 0 
             ? iterationTimes.reduce((a, b) => a + b, 0) / iterationTimes.length 
             : 0;
+        
+        // Get AMR statistics if enabled
+        const amrStats = amrManager ? amrManager.getStats() : null;
 
         postMessage({
             type: 'complete',
@@ -239,6 +409,7 @@ class TopologyOptimizerWorker {
                 ny: nely,
                 nz: nelz,
                 meshData: finalMesh,
+                amrStats: amrStats,
                 timing: {
                     totalTime: totalTime,
                     avgIterationTime: avgIterTime,
