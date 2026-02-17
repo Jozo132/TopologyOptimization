@@ -139,6 +139,8 @@ export class ModelImporter {
                 return this.createBeamTemplate();
             case 'bridge':
                 return this.createBridgeTemplate();
+            case 'cube':
+                return this.createCubeTemplate();
             default:
                 throw new Error('Unknown template type');
         }
@@ -173,6 +175,27 @@ export class ModelImporter {
             nz,
             elements,
             type: 'bridge'
+        };
+    }
+
+    createCubeTemplate() {
+        // Cube test: 10x10x10 elements with specific boundary conditions
+        // Force at top center, constraints at bottom 4 corners
+        // Should produce a pyramid shape wireframe after optimization
+        const nx = 10;
+        const ny = 10;
+        const nz = 10;
+        const elements = new Float32Array(nx * ny * nz).fill(1);
+        
+        return {
+            nx,
+            ny,
+            nz,
+            elements,
+            type: 'cube',
+            // Predefined boundary conditions for cube test
+            forcePosition: 'top-center',  // Force at top center
+            constraintPositions: 'bottom-corners'  // Constraints at bottom 4 corners
         };
     }
 }
