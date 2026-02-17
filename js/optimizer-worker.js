@@ -609,6 +609,50 @@ class TopologyOptimizerWorker {
     solveCG(K, F, freedofs, fixeddofs) {
         const n = freedofs.length;
         const Uf = new Float32Array(n);
+
+        // Try WASM accelerated CG solver
+        if (this.useWasm && wasmModule) {
+            try {
+                // Extract reduced K matrix and F vector for free DOFs
+                const Kf = new Float64Array(n * n);
+                const Ff = new Float64Array(n);
+                
+                for (let i = 0; i < n; i++) {
+                    Ff[i] = F[freedofs[i]];
+                    for (let j = 0; j < n; j++) {
+                        Kf[i * n + j] = K[freedofs[i]][freedofs[j]];
+                    }
+                }
+                
+                const Uf64 = new Float64Array(n);
+                const maxIter = Math.min(n, 1000);
+                
+                // Call WASM CG solver
+                const ptrK = this._copyToWasm(Kf);
+                const ptrF = this._copyToWasm(Ff);
+                const ptrU = this._copyToWasm(Uf64);
+                
+                wasmModule.exports.conjugateGradient(ptrK, ptrF, ptrU, n, maxIter, CG_TOLERANCE);
+                
+                // Read result back
+                const result = this._readFromWasm(ptrU, n);
+                for (let i = 0; i < n; i++) {
+                    Uf[i] = result[i];
+                }
+                
+                // Free WASM memory
+                this._freeWasm(ptrK);
+                this._freeWasm(ptrF);
+                this._freeWasm(ptrU);
+                
+                return Uf;
+            } catch (error) {
+                console.warn('WASM CG solver failed, falling back to JS:', error);
+                // Fall through to JS implementation
+            }
+        }
+
+        // Pure JavaScript CG solver fallback
         const r = new Float32Array(n);
         const p = new Float32Array(n);
 
@@ -852,6 +896,29 @@ class TopologyOptimizerWorker {
         }
 
         return F;
+    }
+
+    /**
+     * WASM Memory Management Helpers
+     */
+    _copyToWasm(arr) {
+        if (!wasmModule) throw new Error('WASM not loaded');
+        const ptr = wasmModule.exports.__new(arr.length, 4); // 4 = Float64Array ID
+        const view = new Float64Array(wasmModule.exports.memory.buffer, ptr, arr.length);
+        view.set(arr);
+        return ptr;
+    }
+
+    _readFromWasm(ptr, length) {
+        if (!wasmModule) throw new Error('WASM not loaded');
+        const view = new Float64Array(wasmModule.exports.memory.buffer, ptr, length);
+        return Float64Array.from(view);
+    }
+
+    _freeWasm(ptr) {
+        if (wasmModule && wasmModule.exports.__unpin) {
+            wasmModule.exports.__unpin(ptr);
+        }
     }
 }
 
