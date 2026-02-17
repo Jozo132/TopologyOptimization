@@ -76,8 +76,8 @@ export class Viewer3D {
                 const dx = e.clientX - this.lastMousePos.x;
                 const dy = e.clientY - this.lastMousePos.y;
                 
-                this.rotation.y += dx * 0.01;
-                this.rotation.x += dy * 0.01;
+                this.rotation.y -= dx * 0.01;
+                this.rotation.x -= dy * 0.01;
                 
                 // Clamp x rotation
                 this.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, this.rotation.x));
@@ -556,34 +556,54 @@ export class Viewer3D {
     }
 
     drawAxes(centerX, centerY, scale) {
-        const axisLength = scale * 2;
+        // Draw axes in the bottom-left corner
+        const axisOriginX = 50;
+        const axisOriginY = this.canvas.height - 50;
+        const axisLen = 35;
         
-        // X axis (red)
-        const xEnd = this.project3D(axisLength / scale, 0, 0, 1, 1, 1);
-        this.ctx.strokeStyle = '#ff0000';
-        this.ctx.lineWidth = 2;
-        this.ctx.beginPath();
-        this.ctx.moveTo(centerX, centerY);
-        this.ctx.lineTo(centerX + xEnd.x * scale, centerY - xEnd.y * scale);
-        this.ctx.stroke();
-        
-        // Y axis (green)
-        const yEnd = this.project3D(0, axisLength / scale, 0, 1, 1, 1);
-        this.ctx.strokeStyle = '#00ff00';
-        this.ctx.beginPath();
-        this.ctx.moveTo(centerX, centerY);
-        this.ctx.lineTo(centerX + yEnd.x * scale, centerY - yEnd.y * scale);
-        this.ctx.stroke();
-        
-        // Z axis (blue)
-        const zEnd = this.project3D(0, 0, axisLength / scale, 1, 1, 1);
-        this.ctx.strokeStyle = '#0000ff';
-        this.ctx.beginPath();
-        this.ctx.moveTo(centerX, centerY);
-        this.ctx.lineTo(centerX + zEnd.x * scale, centerY - zEnd.y * scale);
-        this.ctx.stroke();
-        
+        // Project unit axis vectors without centering offset
+        const axes = [
+            { dir: [1, 0, 0], color: '#ff0000', label: 'X' },
+            { dir: [0, 1, 0], color: '#00ff00', label: 'Y' },
+            { dir: [0, 0, 1], color: '#0088ff', label: 'Z' }
+        ];
+
+        for (const axis of axes) {
+            const [dx, dy, dz] = axis.dir;
+            const projected = this.projectDir(dx, dy, dz);
+
+            const ex = axisOriginX + projected.x * axisLen;
+            const ey = axisOriginY - projected.y * axisLen;
+
+            this.ctx.strokeStyle = axis.color;
+            this.ctx.lineWidth = 2;
+            this.ctx.beginPath();
+            this.ctx.moveTo(axisOriginX, axisOriginY);
+            this.ctx.lineTo(ex, ey);
+            this.ctx.stroke();
+
+            // Label
+            this.ctx.fillStyle = axis.color;
+            this.ctx.font = 'bold 12px Arial';
+            this.ctx.textAlign = 'center';
+            this.ctx.fillText(axis.label, ex + (projected.x * 10), ey - (projected.y * 10));
+        }
         this.ctx.lineWidth = 1;
+    }
+
+    /** Project a direction vector using only rotation (no centering) */
+    projectDir(x, y, z) {
+        const cosY = Math.cos(this.rotation.y);
+        const sinY = Math.sin(this.rotation.y);
+        const x1 = x * cosY - z * sinY;
+        const z1 = x * sinY + z * cosY;
+
+        const cosX = Math.cos(this.rotation.x);
+        const sinX = Math.sin(this.rotation.x);
+        const y1 = y * cosX - z1 * sinX;
+        const z2 = y * sinX + z1 * cosX;
+
+        return { x: x1, y: y1, z: z2 };
     }
 
     updateMesh(meshData) {

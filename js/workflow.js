@@ -60,12 +60,13 @@ export class WorkflowManager {
             }
         });
 
-        // Disable next button if the next step hasn't been reached yet
+        // Enable next button - goToStep handles whether navigation is allowed
+        // But disable Next on step 3 until optimization completes (step 4 enabled)
         const currentEl = document.querySelector(`[data-step="${stepNumber}"]`);
         if (currentEl) {
             const nextBtn = currentEl.querySelector('.step-nav-next');
             if (nextBtn) {
-                nextBtn.disabled = (stepNumber >= this.maxReachedStep);
+                nextBtn.disabled = (stepNumber >= this.maxReachedStep && stepNumber >= 3);
             }
         }
 
@@ -75,6 +76,10 @@ export class WorkflowManager {
 
     goToStep(stepNumber) {
         if (stepNumber < 1 || stepNumber > 4) return;
+        // Allow advancing to the immediate next step from current (but not to step 4 which requires optimization)
+        if (stepNumber === this.currentStep + 1 && stepNumber === this.maxReachedStep + 1 && stepNumber < 4) {
+            this.maxReachedStep = stepNumber;
+        }
         if (stepNumber > this.maxReachedStep) return;
         this.showStep(stepNumber);
     }
@@ -83,7 +88,14 @@ export class WorkflowManager {
         if (stepNumber > this.maxReachedStep) {
             this.maxReachedStep = stepNumber;
         }
-        this.showStep(stepNumber);
+        // Update next button on current step in case it was disabled
+        const currentEl = document.querySelector(`[data-step="${this.currentStep}"]`);
+        if (currentEl) {
+            const nextBtn = currentEl.querySelector('.step-nav-next');
+            if (nextBtn) {
+                nextBtn.disabled = (this.currentStep >= this.maxReachedStep && this.currentStep >= 3);
+            }
+        }
     }
 
     disableStep(stepNumber) {

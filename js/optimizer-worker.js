@@ -33,12 +33,23 @@ class TopologyOptimizerWorker {
         let xold = new Float32Array(nel).fill(1);
 
         const { H, Hs } = this.prepareFilter(nelx, nely, this.rmin);
-        const fixeddofs = this.getFixedDOFs(nelx, nely, config.constraintPosition);
-        const F = this.getLoadVector(nelx, nely, config.forceDirection, config.forceMagnitude);
+        let fixeddofs = this.getFixedDOFs(nelx, nely, config.constraintPosition);
+        let F = this.getLoadVector(nelx, nely, config.forceDirection, config.forceMagnitude);
+
+        // Apply painted constraints (override dropdown if painted faces exist)
+        if (config.paintedConstraints && config.paintedConstraints.length > 0) {
+            fixeddofs = this.getFixedDOFsFromPaint(nelx, nely, config.paintedConstraints);
+        }
+
+        // Apply painted forces (override dropdown if painted faces exist)
+        if (config.paintedForces && config.paintedForces.length > 0) {
+            F = this.getLoadVectorFromPaint(nelx, nely, config.paintedForces, config.forceDirection, config.forceMagnitude);
+        }
 
         const ndof = 2 * (nelx + 1) * (nely + 1);
         const alldofs = Array.from({ length: ndof }, (_, i) => i);
-        const freedofs = alldofs.filter(dof => !fixeddofs.includes(dof));
+        const fixedSet = new Set(fixeddofs);
+        const freedofs = alldofs.filter(dof => !fixedSet.has(dof));
 
         const KE = this.lk();
 
@@ -608,6 +619,82 @@ class TopologyOptimizerWorker {
                 const n_right = Math.floor(nely / 2);
                 F[2 * n_right] = magnitude;
                 break;
+            }
+        }
+
+        return F;
+    }
+
+    /**
+     * Convert painted constraint face keys to fixed DOFs.
+     * Face keys are "x,y,z,faceIndex" where x,y are voxel coordinates.
+     * Maps to 2D nodes at the voxel corners.
+     */
+    getFixedDOFsFromPaint(nelx, nely, paintedKeys) {
+        const dofSet = new Set();
+        for (const key of paintedKeys) {
+            const parts = key.split(',');
+            if (parts.length < 2) continue;
+            const vx = parseInt(parts[0], 10);
+            const vy = parseInt(parts[1], 10);
+            if (isNaN(vx) || isNaN(vy)) continue;
+            // Map voxel (vx, vy) to its 4 corner nodes in 2D
+            const n1 = (nely + 1) * vx + vy;
+            const n2 = (nely + 1) * (vx + 1) + vy;
+            const nodes = [n1, n2, n2 + 1, n1 + 1];
+            for (const n of nodes) {
+                if (n >= 0 && n < (nelx + 1) * (nely + 1)) {
+                    dofSet.add(2 * n);
+                    dofSet.add(2 * n + 1);
+                }
+            }
+        }
+        return Array.from(dofSet);
+    }
+
+    /**
+     * Convert painted force face keys to a load vector.
+     * Distributes force evenly across all painted face nodes.
+     */
+    getLoadVectorFromPaint(nelx, nely, paintedKeys, direction, magnitude) {
+        const ndof = 2 * (nelx + 1) * (nely + 1);
+        const F = new Float32Array(ndof);
+
+        // Determine force direction components
+        let fx = 0, fy = 0;
+        switch (direction) {
+            case 'down':  fy = -1; break;
+            case 'up':    fy = 1; break;
+            case 'left':  fx = -1; break;
+            case 'right': fx = 1; break;
+            default:      fy = -1;
+        }
+
+        // Collect unique nodes from painted faces
+        const nodeSet = new Set();
+        for (const key of paintedKeys) {
+            const parts = key.split(',');
+            if (parts.length < 2) continue;
+            const vx = parseInt(parts[0], 10);
+            const vy = parseInt(parts[1], 10);
+            if (isNaN(vx) || isNaN(vy)) continue;
+            const n1 = (nely + 1) * vx + vy;
+            const n2 = (nely + 1) * (vx + 1) + vy;
+            const nodes = [n1, n2, n2 + 1, n1 + 1];
+            for (const n of nodes) {
+                if (n >= 0 && n < (nelx + 1) * (nely + 1)) {
+                    nodeSet.add(n);
+                }
+            }
+        }
+
+        // Distribute force evenly across all unique nodes
+        const nodeCount = nodeSet.size;
+        if (nodeCount > 0) {
+            const forcePerNode = magnitude / nodeCount;
+            for (const n of nodeSet) {
+                F[2 * n] += fx * forcePerNode;
+                F[2 * n + 1] += fy * forcePerNode;
             }
         }
 

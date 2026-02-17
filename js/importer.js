@@ -2,9 +2,11 @@
 export class ModelImporter {
     constructor() {
         this.reader = new FileReader();
+        this.resolution = 20;
     }
 
-    async importSTL(file) {
+    async importSTL(file, resolution) {
+        this.resolution = resolution || 20;
         return new Promise((resolve, reject) => {
             this.reader.onload = (e) => {
                 try {
@@ -109,8 +111,8 @@ export class ModelImporter {
             maxZ = Math.max(maxZ, v.z);
         });
         
-        // Create voxel grid (simplified - use moderate resolution)
-        const resolution = 20;
+        // Create voxel grid using granule density parameter
+        const resolution = this.resolution || 20;
         const sizeX = maxX - minX || 1;
         const sizeY = maxY - minY || 1;
         const sizeZ = maxZ - minZ || 1;
