@@ -23,7 +23,8 @@ class TopologyApp {
             maxIterations: 100,
             penaltyFactor: 3,
             filterRadius: 1.5,
-            granuleDensity: 20
+            granuleDensity: 20,
+            minCrossSection: 0
         };
     }
 
@@ -87,6 +88,9 @@ class TopologyApp {
         document.getElementById('useBridgeTemplate').addEventListener('click', () => {
             this.loadTemplate('bridge');
         });
+        document.getElementById('useCubeTemplate').addEventListener('click', () => {
+            this.loadTemplate('cube');
+        });
 
         // Granule density slider
         document.getElementById('granuleDensity').addEventListener('input', (e) => {
@@ -145,6 +149,10 @@ class TopologyApp {
         
         document.getElementById('filterRadius').addEventListener('input', (e) => {
             this.config.filterRadius = parseFloat(e.target.value);
+        });
+        
+        document.getElementById('minCrossSection').addEventListener('input', (e) => {
+            this.config.minCrossSection = parseFloat(e.target.value);
         });
         
         document.getElementById('runOptimization').addEventListener('click', () => {
@@ -210,6 +218,14 @@ class TopologyApp {
         console.log('Loading template:', type);
         const model = this.importer.createTemplate(type);
         this.currentModel = model;
+        
+        // For cube template, set specific boundary conditions
+        if (type === 'cube' && model.forcePosition && model.constraintPositions) {
+            this.config.forceDirection = 'down';  // Force pointing down at top center
+            this.config.constraintPosition = 'bottom-corners';  // Special setting for cube
+            document.getElementById('forceDirection').value = 'down';
+            // Note: constraint dropdown doesn't have 'bottom-corners', it will use the config value
+        }
         
         // Display model info
         const info = document.getElementById('modelInfo');

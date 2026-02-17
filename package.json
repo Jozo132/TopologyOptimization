@@ -1,0 +1,33 @@
+{
+  "name": "topologyoptimization",
+  "version": "1.0.0",
+  "description": "A minimalistic but fully functional web-based topology optimization application using vanilla JavaScript and ES6 modules.",
+  "type": "module",
+  "scripts": {
+    "asbuild:debug": "asc assembly/index.ts --target debug --outFile build/optimized.debug.wasm --textFile build/optimized.debug.wat --sourceMap",
+    "asbuild:release": "asc assembly/index.ts --target release --outFile build/optimized.release.wasm --textFile build/optimized.release.wat --sourceMap --optimize",
+    "asbuild": "npm run asbuild:debug && npm run asbuild:release",
+    "test": "node tests",
+    "start": "npx serve ."
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Jozo132/TopologyOptimization.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Jozo132/TopologyOptimization/issues"
+  },
+  "homepage": "https://github.com/Jozo132/TopologyOptimization#readme",
+  "devDependencies": {
+    "assemblyscript": "^0.28.9"
+  },
+  "exports": {
+    ".": {
+      "import": "./build/release.js",
+      "types": "./build/release.d.ts"
+    }
+  }
+}

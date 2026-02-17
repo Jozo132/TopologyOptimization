@@ -2,6 +2,7 @@
 export class TopologyOptimizer {
     constructor() {
         this.worker = null;
+        this.use3D = false;
     }
 
     /**
@@ -14,7 +15,15 @@ export class TopologyOptimizer {
     optimize(model, config, progressCallback) {
         return new Promise((resolve, reject) => {
             this._cancelReject = reject;
-            this.worker = new Worker('js/optimizer-worker.js');
+            
+            // Determine if we should use 3D optimizer
+            // Use 3D if model type is 'cube' or if model has nz > 1
+            this.use3D = model.type === 'cube' || (model.nz && model.nz > 1);
+            
+            const workerScript = this.use3D ? 'js/optimizer-worker-3d.js' : 'js/optimizer-worker.js';
+            console.log(`Using ${this.use3D ? '3D' : '2D'} optimizer worker:`, workerScript);
+            
+            this.worker = new Worker(workerScript);
 
             this.worker.onmessage = (e) => {
                 const { type } = e.data;
@@ -44,7 +53,7 @@ export class TopologyOptimizer {
 
             this.worker.postMessage({
                 type: 'start',
-                model: { nx: model.nx, ny: model.ny, nz: model.nz },
+                model: { nx: model.nx, ny: model.ny, nz: model.nz, type: model.type },
                 config
             });
         });

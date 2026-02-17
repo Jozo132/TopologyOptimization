@@ -82,6 +82,9 @@ out
 .nuxt
 dist
 
+# AssemblyScript build output (but keep compiled WASM files in wasm/)
+build/
+
 # Gatsby files
 .cache/
 # Comment in the public line in if your project uses Gatsby and not Next.js
@@ -137,3 +140,7 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# AssemblyScript test folder
+tests/
+
