@@ -2,6 +2,8 @@
 
 A minimalistic but fully functional web-based topology optimization application using vanilla JavaScript and ES6 modules.
 
+**[Try it out on GitHub Pages](https://jozo132.github.io/TopologyOptimization)**
+
 ## Features
 
 - 🚀 **4-Step Workflow**: Import → Assign → Solve → Export
