@@ -10,7 +10,10 @@ class WasmMatrixOps {
 
     async load() {
         try {
-            const response = await fetch('wasm/matrix-ops.wasm');
+            // Resolve WASM path relative to the project root using import.meta.url.
+            // This module lives in js/, so go up one level to reach wasm/.
+            const baseUrl = new URL('..', import.meta.url).href;
+            const response = await fetch(new URL('wasm/matrix-ops.wasm', baseUrl).href);
             const buffer = await response.arrayBuffer();
             const module = await WebAssembly.compile(buffer);
             

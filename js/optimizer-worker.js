@@ -10,7 +10,11 @@ let wasmLoaded = false;
 
 async function loadWasmModule() {
     try {
-        const response = await fetch('wasm/matrix-ops.wasm');
+        // Resolve WASM path relative to the document root, not the worker script location.
+        // Workers resolve fetch() URLs relative to their own script URL (inside js/),
+        // so we go up one level to reach the project root where wasm/ lives.
+        const baseUrl = new URL('..', self.location.href).href;
+        const response = await fetch(new URL('wasm/matrix-ops.wasm', baseUrl).href);
         const buffer = await response.arrayBuffer();
         const module = await WebAssembly.compile(buffer);
         
