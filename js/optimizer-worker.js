@@ -46,6 +46,36 @@ class TopologyOptimizerWorker {
             F = this.getLoadVectorFromPaint(nelx, nely, config.paintedForces, config.forceDirection, config.forceMagnitude);
         }
 
+        // Build set of element indices that must stay solid (constraint/force surfaces)
+        const preservedElements = new Set();
+        const allPaintedKeys = [
+            ...(config.paintedConstraints || []),
+            ...(config.paintedForces || [])
+        ];
+        for (const key of allPaintedKeys) {
+            const parts = key.split(',');
+            if (parts.length < 2) continue;
+            const vx = parseInt(parts[0], 10);
+            const vy = parseInt(parts[1], 10);
+            if (!isNaN(vx) && !isNaN(vy) && vx >= 0 && vx < nelx && vy >= 0 && vy < nely) {
+                preservedElements.add(vy + vx * nely);
+            }
+        }
+        // Also preserve elements along dropdown-selected constraint/force positions
+        if ((!config.paintedConstraints || config.paintedConstraints.length === 0)) {
+            const constraintElems = this.getConstraintElements(nelx, nely, config.constraintPosition);
+            for (const idx of constraintElems) preservedElements.add(idx);
+        }
+        if ((!config.paintedForces || config.paintedForces.length === 0)) {
+            const forceElems = this.getForceElements(nelx, nely, config.forceDirection);
+            for (const idx of forceElems) preservedElements.add(idx);
+        }
+
+        // Initialize preserved elements to full density
+        for (const idx of preservedElements) {
+            x[idx] = 1.0;
+        }
+
         const ndof = 2 * (nelx + 1) * (nely + 1);
         const alldofs = Array.from({ length: ndof }, (_, i) => i);
         const fixedSet = new Set(fixeddofs);
@@ -97,7 +127,7 @@ class TopologyOptimizerWorker {
             }
 
             const dcn = this.filterSensitivities(dc, x, H, Hs, nelx, nely);
-            xnew = this.OC(nelx, nely, x, volfrac, dcn);
+            xnew = this.OC(nelx, nely, x, volfrac, dcn, preservedElements);
 
             change = 0;
             for (let i = 0; i < nel; i++) {
@@ -178,8 +208,9 @@ class TopologyOptimizerWorker {
 
     /**
      * Build adaptive mesh data.
-     * Elements with higher strain energy or near applied forces get subdivided
-     * into smaller triangles, while low-energy regions use coarser triangles.
+     * Elements with higher stress or near applied forces get subdivided
+     * into smaller triangles, while low-stress regions use coarser triangles.
+     * Uses stiffness-weighted strain energy (stiffness × raw energy) for auto-resizing.
      * Returns an array of { vertices, density } triangle objects for rendering.
      */
     buildAdaptiveMesh(nelx, nely, nelz, x, elementEnergies, elementForces) {
@@ -187,12 +218,15 @@ class TopologyOptimizerWorker {
     const DENSITY_THRESHOLD = 0.3;
         const triangles = [];
 
-        // Determine energy range for adaptive subdivision
-        let maxEnergy = 0;
+        // Compute stress-based metric: scale energy by element stiffness (density^penal)
+        let maxStress = 0;
         let maxForce = 0;
+        const elementStress = elementEnergies ? new Float32Array(elementEnergies.length) : null;
         if (elementEnergies) {
             for (let i = 0; i < elementEnergies.length; i++) {
-                if (elementEnergies[i] > maxEnergy) maxEnergy = elementEnergies[i];
+                const stiffness = this.Emin + Math.pow(x[i], this.penal) * (this.E0 - this.Emin);
+                elementStress[i] = stiffness * elementEnergies[i];
+                if (elementStress[i] > maxStress) maxStress = elementStress[i];
             }
         }
         if (elementForces) {
@@ -209,14 +243,14 @@ class TopologyOptimizerWorker {
 
                     if (density <= DENSITY_THRESHOLD) continue;
 
-                    // Determine subdivision level based on energy / force ratio
+                    // Determine subdivision level based on stress / force ratio
                     let subdivLevel = 1; // default: 2 triangles per face (1x1 subdivision)
-                    if (maxEnergy > 0 && elementEnergies) {
-                        const energyRatio = elementEnergies[idx2D] / maxEnergy;
+                    if (maxStress > 0 && elementStress) {
+                        const stressRatio = elementStress[idx2D] / maxStress;
                         const forceRatio = maxForce > 0 ? elementForces[idx2D] / maxForce : 0;
-                        const ratio = Math.max(energyRatio, forceRatio);
+                        const ratio = Math.max(stressRatio, forceRatio);
                         if (ratio > 0.6) {
-                            subdivLevel = 4; // 4x4 subdivision for high-force areas
+                            subdivLevel = 4; // 4x4 subdivision for high-stress areas
                         } else if (ratio > 0.3) {
                             subdivLevel = 2; // 2x2 subdivision for medium areas
                         }
@@ -390,7 +424,7 @@ class TopologyOptimizerWorker {
         return dcn;
     }
 
-    OC(nelx, nely, x, volfrac, dc) {
+    OC(nelx, nely, x, volfrac, dc, preservedElements) {
         const nel = nelx * nely;
         const xnew = new Float32Array(nel);
         const move = 0.2;
@@ -402,11 +436,15 @@ class TopologyOptimizerWorker {
             const lmid = 0.5 * (l2 + l1);
 
             for (let i = 0; i < nel; i++) {
-                const Be = -dc[i] / lmid;
-                xnew[i] = Math.max(0.0,
-                          Math.max(x[i] - move,
-                          Math.min(1.0,
-                          Math.min(x[i] + move, x[i] * Math.sqrt(Be)))));
+                if (preservedElements && preservedElements.has(i)) {
+                    xnew[i] = 1.0;
+                } else {
+                    const Be = -dc[i] / lmid;
+                    xnew[i] = Math.max(0.0,
+                              Math.max(x[i] - move,
+                              Math.min(1.0,
+                              Math.min(x[i] + move, x[i] * Math.sqrt(Be)))));
+                }
             }
 
             let sumXnew = 0;
@@ -623,6 +661,54 @@ class TopologyOptimizerWorker {
         }
 
         return F;
+    }
+
+    /**
+     * Get element indices along the constraint edge.
+     */
+    getConstraintElements(nelx, nely, position) {
+        const elems = [];
+        switch (position) {
+            case 'left':
+                for (let ey = 0; ey < nely; ey++) elems.push(ey); // elx=0
+                break;
+            case 'right':
+                for (let ey = 0; ey < nely; ey++) elems.push(ey + (nelx - 1) * nely);
+                break;
+            case 'bottom':
+                for (let ex = 0; ex < nelx; ex++) elems.push(ex * nely); // ely=0
+                break;
+            case 'top':
+                for (let ex = 0; ex < nelx; ex++) elems.push((nely - 1) + ex * nely);
+                break;
+        }
+        return elems;
+    }
+
+    /**
+     * Get element indices where the default force is applied.
+     */
+    getForceElements(nelx, nely, direction) {
+        const elems = [];
+        switch (direction) {
+            case 'down':
+                // Force applied downward at right edge bottom node — nearest element (nelx-1, nely-1)
+                elems.push((nely - 1) + (nelx - 1) * nely);
+                break;
+            case 'up':
+                // Force applied upward at right edge top node — nearest element (nelx-1, 0)
+                elems.push((nelx - 1) * nely);
+                break;
+            case 'left':
+                // Force at right-middle — element at (nelx-1, floor(nely/2))
+                elems.push(Math.floor(nely / 2) + (nelx - 1) * nely);
+                break;
+            case 'right':
+                // Force at left-middle — element at (0, floor(nely/2))
+                elems.push(Math.floor(nely / 2));
+                break;
+        }
+        return elems;
     }
 
     /**

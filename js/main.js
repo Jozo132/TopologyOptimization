@@ -236,6 +236,11 @@ class TopologyApp {
         
         console.log('Starting optimization with config:', this.config);
         
+        // Reset mesh data so the viewer shows the original model while solving
+        this.viewer.meshData = null;
+        this.viewer.densities = null;
+        this.viewer.draw();
+        
         // Show progress
         const progressContainer = document.getElementById('progressContainer');
         progressContainer.classList.remove('hidden');
