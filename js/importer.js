@@ -179,12 +179,13 @@ export class ModelImporter {
     }
 
     createCubeTemplate() {
-        // Cube test: 10x10x10 elements with specific boundary conditions
+        // Cube test: 5x5x5 elements with specific boundary conditions
         // Force at top center, constraints at bottom 4 corners
         // Should produce a pyramid shape wireframe after optimization
-        const nx = 10;
-        const ny = 10;
-        const nz = 10;
+        // Using smaller size for faster computation
+        const nx = 5;
+        const ny = 5;
+        const nz = 5;
         const elements = new Float32Array(nx * ny * nz).fill(1);
         
         return {
