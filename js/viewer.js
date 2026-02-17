@@ -6,6 +6,9 @@ import { DENSITY_THRESHOLD } from './constants.js';
 const DENSITY_COLOR_GREEN = 0.298;           // Fixed green channel for density coloring
 const DEFAULT_MESH_COLOR = [0.29, 0.565, 0.886]; // Default blue (no density data)
 const GRID_COLOR = [0.25, 0.25, 0.35];      // Ground grid line color
+const DEFAULT_TRIANGLE_DENSITY = 0.5;
+const WIREFRAME_EDGE_COLOR = 0.2;
+const EDGE_COLOR_COMPONENT_COUNT = 18;
 
 // ─── WebGL Shader Sources ───────────────────────────────────────────────────
 
@@ -616,7 +619,7 @@ export class Viewer3D {
         this._boundaryFaces = [];
 
         for (const tri of this.meshData) {
-            const density = tri.density ?? 0.5;
+            const density = tri.density !== undefined ? tri.density : DEFAULT_TRIANGLE_DENSITY;
             const n = tri.normal || [0, 0, 1];
             const r = density;
             const g = DENSITY_COLOR_GREEN;
@@ -631,11 +634,7 @@ export class Viewer3D {
                 ...tri.vertices[1], ...tri.vertices[2],
                 ...tri.vertices[2], ...tri.vertices[0]
             );
-            edgeColors.push(
-                0.2, 0.2, 0.2, 0.2, 0.2, 0.2,
-                0.2, 0.2, 0.2, 0.2, 0.2, 0.2,
-                0.2, 0.2, 0.2, 0.2, 0.2, 0.2
-            );
+            edgeColors.push(...Array(EDGE_COLOR_COMPONENT_COUNT).fill(WIREFRAME_EDGE_COLOR));
         }
 
         this._uploadMeshBuffers(gl, positions, normals, colors);
