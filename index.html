@@ -185,6 +185,18 @@
                     </svg>
                 </button>
             </div>
+            <div id="strainSliderContainer" class="strain-slider-container hidden">
+                <label class="strain-slider-label">Strain Range</label>
+                <div class="strain-slider-track" id="strainSliderTrack">
+                    <div class="strain-slider-fill" id="strainSliderFill"></div>
+                    <input type="range" class="strain-slider-input strain-slider-min" id="strainMin" min="0" max="1" step="0.01" value="0">
+                    <input type="range" class="strain-slider-input strain-slider-max" id="strainMax" min="0" max="1" step="0.01" value="1">
+                </div>
+                <div class="strain-slider-values">
+                    <span id="strainMinValue">0%</span>
+                    <span id="strainMaxValue">100%</span>
+                </div>
+            </div>
         </div>
     </div>
 
