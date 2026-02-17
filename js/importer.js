@@ -97,7 +97,7 @@ export class ModelImporter {
         return this.voxelizeVertices(vertices);
     }
 
-    voxelizeVertices(vertices) {
+    voxelizeVertices(vertices, resolution = null) {
         // Find bounding box
         let minX = Infinity, minY = Infinity, minZ = Infinity;
         let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
@@ -112,14 +112,15 @@ export class ModelImporter {
         });
         
         // Create voxel grid using granule density parameter
-        const resolution = this.resolution || 20;
+        // Use provided resolution or fall back to instance resolution
+        const res = resolution !== null ? resolution : (this.resolution || 20);
         const sizeX = maxX - minX || 1;
         const sizeY = maxY - minY || 1;
         const sizeZ = maxZ - minZ || 1;
         
-        const nx = Math.min(resolution, Math.ceil(sizeX / Math.max(sizeX, sizeY, sizeZ) * resolution));
-        const ny = Math.min(resolution, Math.ceil(sizeY / Math.max(sizeX, sizeY, sizeZ) * resolution));
-        const nz = Math.min(resolution, Math.ceil(sizeZ / Math.max(sizeX, sizeY, sizeZ) * resolution));
+        const nx = Math.min(res, Math.ceil(sizeX / Math.max(sizeX, sizeY, sizeZ) * res));
+        const ny = Math.min(res, Math.ceil(sizeY / Math.max(sizeX, sizeY, sizeZ) * res));
+        const nz = Math.min(res, Math.ceil(sizeZ / Math.max(sizeX, sizeY, sizeZ) * res));
         
         // Initialize voxel grid with all solid
         const elements = new Float32Array(nx * ny * nz).fill(1);
@@ -129,28 +130,31 @@ export class ModelImporter {
             ny,
             nz,
             elements,
-            bounds: { minX, minY, minZ, maxX, maxY, maxZ }
+            bounds: { minX, minY, minZ, maxX, maxY, maxZ },
+            originalVertices: vertices  // Store vertices for re-voxelization
         };
     }
 
-    createTemplate(type) {
+    createTemplate(type, granuleDensity = 20) {
         switch (type) {
             case 'beam':
-                return this.createBeamTemplate();
+                return this.createBeamTemplate(granuleDensity);
             case 'bridge':
-                return this.createBridgeTemplate();
+                return this.createBridgeTemplate(granuleDensity);
             case 'cube':
-                return this.createCubeTemplate();
+                return this.createCubeTemplate(granuleDensity);
             default:
                 throw new Error('Unknown template type');
         }
     }
 
-    createBeamTemplate() {
-        // Cantilever beam: 30x10x10 elements
-        const nx = 30;
-        const ny = 10;
-        const nz = 10;
+    createBeamTemplate(granuleDensity = 20) {
+        // Cantilever beam: scaled based on granuleDensity
+        // Original: 30x10x10 at granuleDensity=20
+        const scale = granuleDensity / 20;
+        const nx = Math.max(5, Math.round(30 * scale));
+        const ny = Math.max(3, Math.round(10 * scale));
+        const nz = Math.max(3, Math.round(10 * scale));
         const elements = new Float32Array(nx * ny * nz).fill(1);
         
         return {
@@ -158,15 +162,18 @@ export class ModelImporter {
             ny,
             nz,
             elements,
-            type: 'beam'
+            type: 'beam',
+            templateScale: { baseNx: 30, baseNy: 10, baseNz: 10, baseGranuleDensity: 20 }
         };
     }
 
-    createBridgeTemplate() {
-        // Bridge: 40x15x8 elements
-        const nx = 40;
-        const ny = 15;
-        const nz = 8;
+    createBridgeTemplate(granuleDensity = 20) {
+        // Bridge: scaled based on granuleDensity
+        // Original: 40x15x8 at granuleDensity=20
+        const scale = granuleDensity / 20;
+        const nx = Math.max(5, Math.round(40 * scale));
+        const ny = Math.max(3, Math.round(15 * scale));
+        const nz = Math.max(3, Math.round(8 * scale));
         const elements = new Float32Array(nx * ny * nz).fill(1);
         
         return {
@@ -174,18 +181,21 @@ export class ModelImporter {
             ny,
             nz,
             elements,
-            type: 'bridge'
+            type: 'bridge',
+            templateScale: { baseNx: 40, baseNy: 15, baseNz: 8, baseGranuleDensity: 20 }
         };
     }
 
-    createCubeTemplate() {
-        // Cube test: 5x5x5 elements with specific boundary conditions
-        // Force at top center, constraints at bottom 4 corners
-        // Should produce a pyramid shape wireframe after optimization
-        // Using smaller size for faster computation
-        const nx = 5;
-        const ny = 5;
-        const nz = 5;
+    createCubeTemplate(granuleDensity = 20) {
+        // Cube test: scaled based on granuleDensity
+        // Original: 5x5x5 at granuleDensity=20
+        // Keep it simple for cube test - direct scaling
+        const scale = granuleDensity / 20;
+        const baseSize = 5;
+        const scaledSize = Math.max(3, Math.round(baseSize * scale));
+        const nx = scaledSize;
+        const ny = scaledSize;
+        const nz = scaledSize;
         const elements = new Float32Array(nx * ny * nz).fill(1);
         
         return {
@@ -194,6 +204,7 @@ export class ModelImporter {
             nz,
             elements,
             type: 'cube',
+            templateScale: { baseNx: baseSize, baseNy: baseSize, baseNz: baseSize, baseGranuleDensity: 20 },
             // Predefined boundary conditions for cube test
             forcePosition: 'top-center',  // Force at top center
             constraintPositions: 'bottom-corners'  // Constraints at bottom 4 corners

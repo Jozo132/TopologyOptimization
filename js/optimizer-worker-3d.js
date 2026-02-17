@@ -31,6 +31,189 @@ async function loadWasmModule() {
     }
 }
 
+// Simple 3D AMR Manager for adaptive element grouping
+class SimpleAMRManager3D {
+    constructor(nelx, nely, nelz, useAMR, minSize, maxSize) {
+        this.nelx = nelx;
+        this.nely = nely;
+        this.nelz = nelz;
+        this.useAMR = useAMR;
+        this.minSize = minSize || 0.5;
+        this.maxSize = maxSize || 2;
+        this.groups = [];
+        this.elementToGroup = null;
+        this.refinementCount = 0;
+        
+        if (useAMR) {
+            this.initializeGroups();
+        }
+    }
+    
+    initializeGroups() {
+        const groupSize = Math.max(1, Math.floor(this.maxSize));
+        const nel = this.nelx * this.nely * this.nelz;
+        this.elementToGroup = new Int32Array(nel);
+        this.groups = [];
+        
+        let groupId = 0;
+        const groupsX = Math.ceil(this.nelx / groupSize);
+        const groupsY = Math.ceil(this.nely / groupSize);
+        const groupsZ = Math.ceil(this.nelz / groupSize);
+        
+        for (let gz = 0; gz < groupsZ; gz++) {
+            for (let gy = 0; gy < groupsY; gy++) {
+                for (let gx = 0; gx < groupsX; gx++) {
+                    const elements = [];
+                    const startX = gx * groupSize;
+                    const startY = gy * groupSize;
+                    const startZ = gz * groupSize;
+                    const endX = Math.min(startX + groupSize, this.nelx);
+                    const endY = Math.min(startY + groupSize, this.nely);
+                    const endZ = Math.min(startZ + groupSize, this.nelz);
+                    
+                    for (let z = startZ; z < endZ; z++) {
+                        for (let y = startY; y < endY; y++) {
+                            for (let x = startX; x < endX; x++) {
+                                const idx = x + y * this.nelx + z * this.nelx * this.nely;
+                                this.elementToGroup[idx] = groupId;
+                                elements.push(idx);
+                            }
+                        }
+                    }
+                    
+                    this.groups.push({
+                        id: groupId,
+                        size: groupSize,
+                        elements: elements,
+                        stress: 0,
+                        density: 0.5
+                    });
+                    
+                    groupId++;
+                }
+            }
+        }
+    }
+    
+    updateAndRefine(elementEnergies, densities, iteration) {
+        if (!this.useAMR || this.groups.length === 0) return;
+        if (iteration % 10 !== 0) return;
+        
+        // Update group stresses
+        for (const group of this.groups) {
+            let totalStress = 0;
+            let totalDensity = 0;
+            
+            for (const elemIdx of group.elements) {
+                const energy = elementEnergies[elemIdx] || 0;
+                const density = densities[elemIdx] || 0.5;
+                const stiffness = 1e-9 + Math.pow(density, 3) * (1 - 1e-9);
+                totalStress += stiffness * energy;
+                totalDensity += density;
+            }
+            
+            group.stress = totalStress / group.elements.length;
+            group.density = totalDensity / group.elements.length;
+        }
+        
+        // Adaptive refinement with progressive thresholds
+        const progressFactor = Math.min(iteration / 50, 1.0);
+        const stressThreshold = 0.15 + progressFactor * 0.10;
+        
+        const stresses = this.groups.map(g => g.stress).sort((a, b) => b - a);
+        const highStressThreshold = stresses[Math.floor(stresses.length * stressThreshold)] || 0;
+        
+        const toRefine = this.groups.filter(g => 
+            g.stress > highStressThreshold && 
+            g.size > this.minSize * 2 &&
+            g.elements.length > 8
+        ).slice(0, Math.min(3, Math.max(1, Math.floor(6 - iteration / 15)))); // Fewer refinements in 3D
+        
+        for (const group of toRefine) {
+            this.splitGroup(group);
+        }
+        
+        this.refinementCount++;
+    }
+    
+    splitGroup(group) {
+        const idx = this.groups.indexOf(group);
+        if (idx === -1 || group.elements.length <= 1) return;
+        
+        this.groups.splice(idx, 1);
+        
+        // Find bounding box
+        let minX = Infinity, minY = Infinity, minZ = Infinity;
+        let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+        
+        for (const elemIdx of group.elements) {
+            const z = Math.floor(elemIdx / (this.nelx * this.nely));
+            const rem = elemIdx % (this.nelx * this.nely);
+            const y = Math.floor(rem / this.nelx);
+            const x = rem % this.nelx;
+            
+            minX = Math.min(minX, x);
+            minY = Math.min(minY, y);
+            minZ = Math.min(minZ, z);
+            maxX = Math.max(maxX, x);
+            maxY = Math.max(maxY, y);
+            maxZ = Math.max(maxZ, z);
+        }
+        
+        const midX = Math.floor((minX + maxX) / 2);
+        const midY = Math.floor((minY + maxY) / 2);
+        const midZ = Math.floor((minZ + maxZ) / 2);
+        const halfSize = Math.max(1, Math.floor(group.size / 2));
+        
+        // Create 8 sub-groups
+        const newGroups = [];
+        for (let i = 0; i < 8; i++) {
+            newGroups.push({
+                id: this.groups.length + i,
+                size: halfSize,
+                elements: [],
+                stress: group.stress,
+                density: group.density
+            });
+        }
+        
+        // Assign elements to octants
+        for (const elemIdx of group.elements) {
+            const z = Math.floor(elemIdx / (this.nelx * this.nely));
+            const rem = elemIdx % (this.nelx * this.nely);
+            const y = Math.floor(rem / this.nelx);
+            const x = rem % this.nelx;
+            
+            const subIdx = (x >= midX ? 1 : 0) + (y >= midY ? 2 : 0) + (z >= midZ ? 4 : 0);
+            newGroups[subIdx].elements.push(elemIdx);
+            this.elementToGroup[elemIdx] = newGroups[subIdx].id;
+        }
+        
+        // Add non-empty groups
+        for (const ng of newGroups) {
+            if (ng.elements.length > 0) {
+                this.groups.push(ng);
+            }
+        }
+    }
+    
+    getStats() {
+        if (!this.useAMR || this.groups.length === 0) {
+            return null;
+        }
+        
+        const sizes = this.groups.map(g => g.size);
+        return {
+            groupCount: this.groups.length,
+            minGroupSize: Math.min(...sizes),
+            maxGroupSize: Math.max(...sizes),
+            avgGroupSize: sizes.reduce((a, b) => a + b, 0) / sizes.length,
+            totalElements: this.nelx * this.nely * this.nelz,
+            refinementCount: this.refinementCount
+        };
+    }
+}
+
 class TopologyOptimizerWorker3D {
     constructor() {
         this.rmin = 1.5;
@@ -62,6 +245,11 @@ class TopologyOptimizerWorker3D {
         this.cancelled = false;
 
         const nel = nelx * nely * nelz;
+        
+        // Initialize AMR manager if enabled
+        const amrManager = config.useAMR ? 
+            new SimpleAMRManager3D(nelx, nely, nelz, true, config.minGranuleSize, config.maxGranuleSize) : 
+            null;
 
         let x = new Float32Array(nel).fill(volfrac);
         let xnew = new Float32Array(nel);
@@ -163,7 +351,35 @@ class TopologyOptimizerWorker3D {
             }
 
             const dcn = this.filterSensitivities(dc, x, H, Hs, nelx, nely, nelz);
-            xnew = this.OC(nelx, nely, nelz, x, volfrac, dcn, preservedElements);
+            
+            // Apply AMR-weighted filtering if enabled
+            let dcnWeighted = dcn;
+            if (amrManager && amrManager.groups.length > 0) {
+                // Weight sensitivities by group size (smaller groups = more refinement = higher weight)
+                dcnWeighted = new Float32Array(nel);
+                for (const group of amrManager.groups) {
+                    // Inverse size weighting: smaller size = higher weight
+                    const weight = amrManager.maxSize / Math.max(group.size, 0.5);
+                    for (const elemIdx of group.elements) {
+                        dcnWeighted[elemIdx] = dcn[elemIdx] * weight;
+                    }
+                }
+                
+                // Normalize to maintain similar scale
+                let sumOriginal = 0, sumWeighted = 0;
+                for (let i = 0; i < nel; i++) {
+                    sumOriginal += Math.abs(dcn[i]);
+                    sumWeighted += Math.abs(dcnWeighted[i]);
+                }
+                if (sumWeighted > 0) {
+                    const normFactor = sumOriginal / sumWeighted;
+                    for (let i = 0; i < nel; i++) {
+                        dcnWeighted[i] *= normFactor;
+                    }
+                }
+            }
+            
+            xnew = this.OC(nelx, nely, nelz, x, volfrac, dcnWeighted, preservedElements);
 
             change = 0;
             for (let i = 0; i < nel; i++) {
@@ -172,6 +388,11 @@ class TopologyOptimizerWorker3D {
 
             x = Float32Array.from(xnew);
             lastElementEnergies = elementEnergies;
+            
+            // Perform AMR refinement if enabled
+            if (amrManager) {
+                amrManager.updateAndRefine(elementEnergies, x, loop);
+            }
 
             // Build adaptive mesh data for this iteration
             const meshData = this.buildAdaptiveMesh(nelx, nely, nelz, x, elementEnergies, elementForces);
@@ -211,6 +432,9 @@ class TopologyOptimizerWorker3D {
         const avgIterTime = iterationTimes.length > 0 
             ? iterationTimes.reduce((a, b) => a + b, 0) / iterationTimes.length 
             : 0;
+        
+        // Get AMR statistics if enabled
+        const amrStats = amrManager ? amrManager.getStats() : null;
 
         postMessage({
             type: 'complete',
@@ -223,6 +447,7 @@ class TopologyOptimizerWorker3D {
                 ny: nely,
                 nz: nelz,
                 meshData: finalMesh,
+                amrStats: amrStats,
                 timing: {
                     totalTime: totalTime,
                     avgIterationTime: avgIterTime,

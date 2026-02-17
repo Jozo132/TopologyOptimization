@@ -24,7 +24,10 @@ class TopologyApp {
             penaltyFactor: 3,
             filterRadius: 1.5,
             granuleDensity: 20,
-            minCrossSection: 0
+            minCrossSection: 0,
+            useAMR: true,
+            minGranuleSize: 0.5,
+            maxGranuleSize: 2
         };
         
         // Benchmark tracking
@@ -100,6 +103,56 @@ class TopologyApp {
             const value = parseInt(e.target.value);
             this.config.granuleDensity = value;
             document.getElementById('granuleDensityValue').textContent = value;
+            
+            // Re-voxelize the current model if one exists
+            if (this.currentModel) {
+                let newModel = null;
+                
+                // Check if it's an STL model with original vertices
+                if (this.currentModel.originalVertices) {
+                    newModel = this.importer.voxelizeVertices(
+                        this.currentModel.originalVertices,
+                        value
+                    );
+                    // Preserve the model type if it was set
+                    if (this.currentModel.type) {
+                        newModel.type = this.currentModel.type;
+                    }
+                }
+                // Check if it's a template with scaling info
+                else if (this.currentModel.templateScale) {
+                    newModel = this.importer.createTemplate(
+                        this.currentModel.type,
+                        value
+                    );
+                    // Preserve any custom boundary conditions
+                    if (this.currentModel.forcePosition) {
+                        newModel.forcePosition = this.currentModel.forcePosition;
+                    }
+                    if (this.currentModel.constraintPositions) {
+                        newModel.constraintPositions = this.currentModel.constraintPositions;
+                    }
+                }
+                
+                if (newModel) {
+                    this.currentModel = newModel;
+                    
+                    // Update display
+                    const info = document.getElementById('modelInfo');
+                    if (!info.classList.contains('hidden')) {
+                        const modelName = newModel.type ? `${newModel.type} template` : 'Model';
+                        const elementCount = newModel.nx * newModel.ny * newModel.nz;
+                        info.innerHTML = `
+                            <strong>${modelName} updated!</strong><br>
+                            <strong>Elements:</strong> ${elementCount}<br>
+                            <strong>Dimensions:</strong> ${newModel.nx} x ${newModel.ny} x ${newModel.nz}
+                        `;
+                    }
+                    
+                    // Update viewer with new voxel grid
+                    this.viewer.setModel(newModel);
+                }
+            }
         });
         
         // Step 2: Assign
@@ -156,6 +209,25 @@ class TopologyApp {
         
         document.getElementById('minCrossSection').addEventListener('input', (e) => {
             this.config.minCrossSection = parseFloat(e.target.value);
+        });
+        
+        // AMR controls
+        document.getElementById('useAMR').addEventListener('change', (e) => {
+            this.config.useAMR = e.target.checked;
+            const amrControls = document.getElementById('amrControls');
+            const amrControls2 = document.getElementById('amrControls2');
+            if (amrControls && amrControls2) {
+                amrControls.style.display = e.target.checked ? '' : 'none';
+                amrControls2.style.display = e.target.checked ? '' : 'none';
+            }
+        });
+        
+        document.getElementById('minGranuleSize').addEventListener('input', (e) => {
+            this.config.minGranuleSize = parseFloat(e.target.value);
+        });
+        
+        document.getElementById('maxGranuleSize').addEventListener('input', (e) => {
+            this.config.maxGranuleSize = parseFloat(e.target.value);
         });
         
         document.getElementById('runOptimization').addEventListener('click', () => {
@@ -219,7 +291,7 @@ class TopologyApp {
 
     loadTemplate(type) {
         console.log('Loading template:', type);
-        const model = this.importer.createTemplate(type);
+        const model = this.importer.createTemplate(type, this.config.granuleDensity);
         this.currentModel = model;
         
         // For cube template, set specific boundary conditions
@@ -323,6 +395,15 @@ class TopologyApp {
                 Iterations: ${result.iterations}<br>
                 Volume Fraction: ${(result.volumeFraction * 100).toFixed(1)}%
             `;
+            
+            // Add AMR statistics if available
+            if (result.amrStats) {
+                resultsHTML += `<br><br><strong>AMR Statistics:</strong><br>`;
+                resultsHTML += `Groups: ${result.amrStats.groupCount}<br>`;
+                resultsHTML += `Size Range: ${result.amrStats.minGroupSize.toFixed(1)} - ${result.amrStats.maxGroupSize.toFixed(1)}<br>`;
+                resultsHTML += `Avg Size: ${result.amrStats.avgGroupSize.toFixed(1)}<br>`;
+                resultsHTML += `Refinements: ${result.amrStats.refinementCount}`;
+            }
             
             if (result.timing) {
                 const wasmBadge = result.timing.usingWasm ? '🚀 WASM' : 'JS';
@@ -440,14 +521,20 @@ class TopologyApp {
             avgIterationTime: result.timing.avgIterationTime,
             compliance: result.finalCompliance,
             volumeFraction: result.volumeFraction,
-            usingWasm: result.timing.usingWasm || false
+            usingWasm: result.timing.usingWasm || false,
+            // AMR statistics
+            useAMR: result.amrStats !== null,
+            amrGroups: result.amrStats ? result.amrStats.groupCount : null,
+            amrRefinements: result.amrStats ? result.amrStats.refinementCount : null,
+            amrSizeRange: result.amrStats ? 
+                `${result.amrStats.minGroupSize.toFixed(1)}-${result.amrStats.maxGroupSize.toFixed(1)}` : null
         };
         
         this.benchmarkHistory.push(benchmark);
         
-        // Keep only last 10 benchmarks
-        if (this.benchmarkHistory.length > 10) {
-            this.benchmarkHistory = this.benchmarkHistory.slice(-10);
+        // Keep only last 15 benchmarks to allow more comparisons
+        if (this.benchmarkHistory.length > 15) {
+            this.benchmarkHistory = this.benchmarkHistory.slice(-15);
         }
         
         this.saveBenchmarkHistory();
@@ -468,10 +555,10 @@ class TopologyApp {
         // Find baseline (first cube test or first entry)
         const baseline = this.benchmarkHistory.find(b => b.modelType === 'cube') || this.benchmarkHistory[0];
         
-        let html = '<table><thead><tr><th>Model</th><th>Engine</th><th>Avg Iter (ms)</th><th>Total (s)</th><th>vs Baseline</th></tr></thead><tbody>';
+        let html = '<table><thead><tr><th>Model</th><th>Engine</th><th>AMR</th><th>Avg Iter (ms)</th><th>Total (s)</th><th>vs Baseline</th></tr></thead><tbody>';
         
         // Show most recent benchmarks first
-        const recent = this.benchmarkHistory.slice(-5).reverse();
+        const recent = this.benchmarkHistory.slice(-8).reverse();
         for (const bench of recent) {
             const isBaseline = bench === baseline;
             const improvement = baseline.avgIterationTime > 0 
@@ -479,6 +566,7 @@ class TopologyApp {
                 : 0;
             const rowClass = isBaseline ? ' class="benchmark-baseline"' : '';
             const engineBadge = bench.usingWasm ? '🚀 WASM' : 'JS';
+            const amrBadge = bench.useAMR ? `✓ (${bench.amrRefinements})` : '✗';
             
             let comparisonText = '';
             if (!isBaseline) {
@@ -492,10 +580,12 @@ class TopologyApp {
             html += `<tr${rowClass}>
                 <td>${bench.modelType} (${bench.dimensions})</td>
                 <td>${engineBadge}</td>
+                <td>${amrBadge}</td>
                 <td>${bench.avgIterationTime.toFixed(1)}</td>
                 <td>${(bench.totalTime / 1000).toFixed(1)}</td>
                 <td>${comparisonText}</td>
             </tr>`;
+        }
         }
         
         html += '</tbody></table>';
