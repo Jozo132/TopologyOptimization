@@ -158,8 +158,13 @@ export class Viewer3D {
             g = 76;
             b = Math.floor((1 - tri.density) * 255);
 
-            // Apply lighting from normal direction
-            const lightFactor = 0.5 + 0.5 * (tri.projVerts[0].z + 1) / 2;
+            // Apply lighting from face normal dot product with light direction
+            const lightDir = { x: 0.3, y: 0.5, z: 0.8 };
+            const mag = Math.sqrt(lightDir.x ** 2 + lightDir.y ** 2 + lightDir.z ** 2);
+            const dot = Math.abs(
+                (tri.normal[0] * lightDir.x + tri.normal[1] * lightDir.y + tri.normal[2] * lightDir.z) / mag
+            );
+            const lightFactor = 0.4 + 0.6 * dot;
             r = Math.floor(r * lightFactor);
             g = Math.floor(g * lightFactor);
             b = Math.floor(b * lightFactor);

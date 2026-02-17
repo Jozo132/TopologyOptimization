@@ -170,7 +170,8 @@ class TopologyOptimizerWorker {
      * Returns an array of { vertices, density } triangle objects for rendering.
      */
     buildAdaptiveMesh(nelx, nely, nelz, x, elementEnergies, elementForces) {
-        const DENSITY_THRESHOLD = 0.3;
+    // Duplicated from constants.js since workers cannot use ES module imports
+    const DENSITY_THRESHOLD = 0.3;
         const triangles = [];
 
         // Determine energy range for adaptive subdivision
@@ -199,7 +200,7 @@ class TopologyOptimizerWorker {
                     let subdivLevel = 1; // default: 2 triangles per face (1x1 subdivision)
                     if (maxEnergy > 0 && elementEnergies) {
                         const energyRatio = elementEnergies[idx2D] / maxEnergy;
-                        const forceRatio = maxForce > 0 && elementForces ? elementForces[idx2D] / maxForce : 0;
+                        const forceRatio = maxForce > 0 ? elementForces[idx2D] / maxForce : 0;
                         const ratio = Math.max(energyRatio, forceRatio);
                         if (ratio > 0.6) {
                             subdivLevel = 4; // 4x4 subdivision for high-force areas

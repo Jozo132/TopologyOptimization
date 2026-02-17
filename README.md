@@ -49,8 +49,10 @@ git clone https://github.com/Jozo132/TopologyOptimization.git
 cd TopologyOptimization
 
 # Serve with any static HTTP server, for example:
-npx http-server .
-# Then open http://localhost:8080 in your browser
+npx http-server .          # Node.js (requires npm/npx)
+# or
+python3 -m http.server     # Python 3
+# Then open http://localhost:8080 (or :8000 for Python) in your browser
 ```
 
 ## Technology Stack
