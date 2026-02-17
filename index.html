@@ -131,6 +131,11 @@
                             <input type="number" id="maxGranuleSize" value="2" min="1" max="8" step="0.5">
                             <small style="display: block; color: #666; margin-top: 0.25rem;">Largest voxel size in low-stress areas</small>
                         </div>
+                        <div class="control-group" id="amrControls3">
+                            <label>AMR Recalculation Interval</label>
+                            <input type="number" id="amrInterval" value="3" min="1" max="50" step="1">
+                            <small style="display: block; color: #666; margin-top: 0.25rem;">Recalculate dynamic grain sizes every N iterations</small>
+                        </div>
                         <button id="runOptimization" class="btn-primary">Run Optimization</button>
                         <button id="cancelOptimization" class="btn-cancel hidden">Cancel</button>
                     </div>

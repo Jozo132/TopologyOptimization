@@ -37,13 +37,14 @@ async function loadWasmModule() {
 
 // Simple 3D AMR Manager for adaptive element grouping
 class SimpleAMRManager3D {
-    constructor(nelx, nely, nelz, useAMR, minSize, maxSize) {
+    constructor(nelx, nely, nelz, useAMR, minSize, maxSize, amrInterval) {
         this.nelx = nelx;
         this.nely = nely;
         this.nelz = nelz;
         this.useAMR = useAMR;
         this.minSize = minSize || 0.5;
         this.maxSize = maxSize || 2;
+        this.amrInterval = amrInterval || 3;
         this.groups = [];
         this.elementToGroup = null;
         this.refinementCount = 0;
@@ -101,7 +102,7 @@ class SimpleAMRManager3D {
     
     updateAndRefine(elementEnergies, densities, iteration) {
         if (!this.useAMR || this.groups.length === 0) return;
-        if (iteration % 10 !== 0) return;
+        if (iteration % this.amrInterval !== 0) return;
         
         // Update group stresses
         for (const group of this.groups) {
@@ -252,7 +253,7 @@ class TopologyOptimizerWorker3D {
         
         // Initialize AMR manager if enabled
         const amrManager = config.useAMR ? 
-            new SimpleAMRManager3D(nelx, nely, nelz, true, config.minGranuleSize, config.maxGranuleSize) : 
+            new SimpleAMRManager3D(nelx, nely, nelz, true, config.minGranuleSize, config.maxGranuleSize, config.amrInterval) : 
             null;
 
         let x = new Float32Array(nel).fill(volfrac);
