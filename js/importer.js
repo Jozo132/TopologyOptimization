@@ -208,5 +208,4 @@ export class ModelImporter {
             constraintPositions: 'bottom-corners'  // Constraints at bottom 4 corners
         };
     }
-    }
 }
