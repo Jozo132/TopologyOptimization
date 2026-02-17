@@ -19,6 +19,10 @@ export class Viewer3D {
         this.densities = null;
         this.meshData = null; // Triangle mesh data from optimizer
 
+        // Strain range filter (0..1 normalized)
+        this.strainMin = 0;
+        this.strainMax = 1;
+
         // Paint mode for face selection
         this.paintMode = null; // null | 'constraint' | 'force'
         this.paintedConstraintFaces = new Set(); // "x,y,z,face" keys
@@ -233,14 +237,19 @@ export class Viewer3D {
         const centerY = height / 2;
         const scale = Math.min(width, height) / Math.max(nx, ny, nz) * 0.7 * this.zoom;
 
-        // Project and sort triangles by depth (painter's algorithm)
-        const projectedTriangles = this.meshData.map(tri => {
+        // Filter and project triangles
+        const projectedTriangles = [];
+        for (const tri of this.meshData) {
+            // Filter by strain range if strain data is available
+            const strain = tri.strain !== undefined ? tri.strain : 0;
+            if (strain < this.strainMin || strain > this.strainMax) continue;
+
             const projVerts = tri.vertices.map(v =>
                 this.project3D(v[0], v[1], v[2], nx, ny, nz)
             );
             const avgDepth = (projVerts[0].z + projVerts[1].z + projVerts[2].z) / 3;
-            return { projVerts, density: tri.density, normal: tri.normal, avgDepth };
-        });
+            projectedTriangles.push({ projVerts, density: tri.density, normal: tri.normal, avgDepth, strain });
+        }
 
         projectedTriangles.sort((a, b) => a.avgDepth - b.avgDepth);
 
@@ -616,6 +625,12 @@ export class Viewer3D {
         this.draw();
     }
 
+    setStrainRange(min, max) {
+        this.strainMin = min;
+        this.strainMax = max;
+        this.draw();
+    }
+
     toggleWireframe() {
         this.wireframe = !this.wireframe;
         this.draw();
@@ -631,6 +646,8 @@ export class Viewer3D {
         this.model = null;
         this.densities = null;
         this.meshData = null;
+        this.strainMin = 0;
+        this.strainMax = 1;
         this.paintedConstraintFaces = new Set();
         this.paintedForceFaces = new Set();
         this.paintMode = null;

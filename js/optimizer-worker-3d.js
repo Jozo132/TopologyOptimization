@@ -10,7 +10,11 @@ let wasmLoaded = false;
 
 async function loadWasmModule() {
     try {
-        const response = await fetch('wasm/matrix-ops.wasm');
+        // Resolve WASM path relative to the document root, not the worker script location.
+        // Workers resolve fetch() URLs relative to their own script URL (inside js/),
+        // so we go up one level to reach the project root where wasm/ lives.
+        const baseUrl = new URL('..', self.location.href).href;
+        const response = await fetch(new URL('wasm/matrix-ops.wasm', baseUrl).href);
         const buffer = await response.arrayBuffer();
         const module = await WebAssembly.compile(buffer);
         
@@ -510,7 +514,8 @@ class TopologyOptimizerWorker3D {
      * Elements with higher stress or near applied forces get subdivided
      * into smaller triangles, while low-stress regions use coarser triangles.
      * Uses stiffness-weighted strain energy (stiffness × raw energy) for auto-resizing.
-     * Returns an array of { vertices, density } triangle objects for rendering.
+     * Only boundary faces (adjacent to void or domain boundary) are emitted.
+     * Returns an array of { vertices, density, strain } triangle objects for rendering.
      */
     buildAdaptiveMesh(nelx, nely, nelz, x, elementEnergies, elementForces) {
         // Duplicated from constants.js since workers cannot use ES module imports
@@ -534,6 +539,22 @@ class TopologyOptimizerWorker3D {
             }
         }
 
+        // Helper to check if neighbor is solid (above density threshold)
+        const isSolid = (ex, ey, ez) => {
+            if (ex < 0 || ex >= nelx || ey < 0 || ey >= nely || ez < 0 || ez >= nelz) return false;
+            return x[ex + ey * nelx + ez * nelx * nely] > DENSITY_THRESHOLD;
+        };
+
+        // Face directions: [dx, dy, dz] for each of the 6 faces
+        const faceNeighbors = [
+            [-1, 0, 0], // Front face (X = baseX)
+            [1, 0, 0],  // Back face (X = baseX + 1)
+            [0, -1, 0], // Left face (Y = baseY)
+            [0, 1, 0],  // Right face (Y = baseY + 1)
+            [0, 0, -1], // Bottom face (Z = baseZ)
+            [0, 0, 1],  // Top face (Z = baseZ + 1)
+        ];
+
         for (let elz = 0; elz < nelz; elz++) {
             for (let ely = 0; ely < nely; ely++) {
                 for (let elx = 0; elx < nelx; elx++) {
@@ -541,6 +562,18 @@ class TopologyOptimizerWorker3D {
                     const density = x[idx];
 
                     if (density <= DENSITY_THRESHOLD) continue;
+
+                    // Determine which faces are boundary (neighbor is void or outside domain)
+                    const visibleFaces = [];
+                    for (let fi = 0; fi < 6; fi++) {
+                        const [dx, dy, dz] = faceNeighbors[fi];
+                        if (!isSolid(elx + dx, ely + dy, elz + dz)) {
+                            visibleFaces.push(fi);
+                        }
+                    }
+
+                    // Skip fully interior elements
+                    if (visibleFaces.length === 0) continue;
 
                     // Determine subdivision level based on stress / force ratio
                     let subdivLevel = 1; // default: 2 triangles per face (1x1 subdivision)
@@ -555,8 +588,11 @@ class TopologyOptimizerWorker3D {
                         }
                     }
 
-                    // Generate subdivided mesh for this element
-                    this.addSubdividedElement(triangles, elx, ely, elz, density, subdivLevel);
+                    // Normalized strain for this element (0..1)
+                    const strain = (maxStress > 0 && elementStress) ? elementStress[idx] / maxStress : 0;
+
+                    // Generate subdivided mesh for visible faces only
+                    this.addSubdividedElement(triangles, elx, ely, elz, density, subdivLevel, visibleFaces, strain);
                 }
             }
         }
@@ -566,11 +602,13 @@ class TopologyOptimizerWorker3D {
 
     /**
      * Add an 8-node hexahedral element as triangulated faces with adaptive subdivision.
+     * Only emits faces listed in visibleFaces (indices 0-5).
      * subdivLevel=1 means 2 triangles per visible face (standard).
      * subdivLevel=2 means 4x2=8 triangles per face (2x2 grid).
      * subdivLevel=4 means 16x2=32 triangles per face (4x4 grid).
+     * @param {number} strain - Normalized strain value (0..1) for this element.
      */
-    addSubdividedElement(triangles, ex, ey, ez, density, subdivLevel) {
+    addSubdividedElement(triangles, ex, ey, ez, density, subdivLevel, visibleFaces, strain) {
         const n = subdivLevel;
         const step = 1.0 / n;
 
@@ -578,129 +616,116 @@ class TopologyOptimizerWorker3D {
         const baseY = ey;
         const baseZ = ez;
 
-        // Front face (X = baseX)
-        for (let sy = 0; sy < n; sy++) {
-            for (let sz = 0; sz < n; sz++) {
-                const y0 = baseY + sy * step;
-                const z0 = baseZ + sz * step;
-                const y1 = y0 + step;
-                const z1 = z0 + step;
-
-                triangles.push({
-                    vertices: [[baseX, y0, z0], [baseX, y1, z0], [baseX, y1, z1]],
-                    normal: [-1, 0, 0],
-                    density
-                });
-                triangles.push({
-                    vertices: [[baseX, y0, z0], [baseX, y1, z1], [baseX, y0, z1]],
-                    normal: [-1, 0, 0],
-                    density
-                });
-            }
-        }
-
-        // Back face (X = baseX + 1)
-        for (let sy = 0; sy < n; sy++) {
-            for (let sz = 0; sz < n; sz++) {
-                const y0 = baseY + sy * step;
-                const z0 = baseZ + sz * step;
-                const y1 = y0 + step;
-                const z1 = z0 + step;
-
-                triangles.push({
-                    vertices: [[baseX + 1, y1, z0], [baseX + 1, y0, z0], [baseX + 1, y0, z1]],
-                    normal: [1, 0, 0],
-                    density
-                });
-                triangles.push({
-                    vertices: [[baseX + 1, y1, z0], [baseX + 1, y0, z1], [baseX + 1, y1, z1]],
-                    normal: [1, 0, 0],
-                    density
-                });
-            }
-        }
-
-        // Left face (Y = baseY)
-        for (let sx = 0; sx < n; sx++) {
-            for (let sz = 0; sz < n; sz++) {
-                const x0 = baseX + sx * step;
-                const z0 = baseZ + sz * step;
-                const x1 = x0 + step;
-                const z1 = z0 + step;
-
-                triangles.push({
-                    vertices: [[x0, baseY, z0], [x0, baseY, z1], [x1, baseY, z1]],
-                    normal: [0, -1, 0],
-                    density
-                });
-                triangles.push({
-                    vertices: [[x0, baseY, z0], [x1, baseY, z1], [x1, baseY, z0]],
-                    normal: [0, -1, 0],
-                    density
-                });
-            }
-        }
-
-        // Right face (Y = baseY + 1)
-        for (let sx = 0; sx < n; sx++) {
-            for (let sz = 0; sz < n; sz++) {
-                const x0 = baseX + sx * step;
-                const z0 = baseZ + sz * step;
-                const x1 = x0 + step;
-                const z1 = z0 + step;
-
-                triangles.push({
-                    vertices: [[x0, baseY + 1, z1], [x0, baseY + 1, z0], [x1, baseY + 1, z0]],
-                    normal: [0, 1, 0],
-                    density
-                });
-                triangles.push({
-                    vertices: [[x0, baseY + 1, z1], [x1, baseY + 1, z0], [x1, baseY + 1, z1]],
-                    normal: [0, 1, 0],
-                    density
-                });
-            }
-        }
-
-        // Bottom face (Z = baseZ)
-        for (let sx = 0; sx < n; sx++) {
-            for (let sy = 0; sy < n; sy++) {
-                const x0 = baseX + sx * step;
-                const y0 = baseY + sy * step;
-                const x1 = x0 + step;
-                const y1 = y0 + step;
-
-                triangles.push({
-                    vertices: [[x0, y0, baseZ], [x1, y0, baseZ], [x1, y1, baseZ]],
-                    normal: [0, 0, -1],
-                    density
-                });
-                triangles.push({
-                    vertices: [[x0, y0, baseZ], [x1, y1, baseZ], [x0, y1, baseZ]],
-                    normal: [0, 0, -1],
-                    density
-                });
-            }
-        }
-
-        // Top face (Z = baseZ + 1)
-        for (let sx = 0; sx < n; sx++) {
-            for (let sy = 0; sy < n; sy++) {
-                const x0 = baseX + sx * step;
-                const y0 = baseY + sy * step;
-                const x1 = x0 + step;
-                const y1 = y0 + step;
-
-                triangles.push({
-                    vertices: [[x1, y0, baseZ + 1], [x0, y0, baseZ + 1], [x0, y1, baseZ + 1]],
-                    normal: [0, 0, 1],
-                    density
-                });
-                triangles.push({
-                    vertices: [[x1, y0, baseZ + 1], [x0, y1, baseZ + 1], [x1, y1, baseZ + 1]],
-                    normal: [0, 0, 1],
-                    density
-                });
+        for (const fi of visibleFaces) {
+            switch (fi) {
+                case 0: // Front face (X = baseX)
+                    for (let sy = 0; sy < n; sy++) {
+                        for (let sz = 0; sz < n; sz++) {
+                            const y0 = baseY + sy * step;
+                            const z0 = baseZ + sz * step;
+                            const y1 = y0 + step;
+                            const z1 = z0 + step;
+                            triangles.push({
+                                vertices: [[baseX, y0, z0], [baseX, y1, z0], [baseX, y1, z1]],
+                                normal: [-1, 0, 0], density, strain
+                            });
+                            triangles.push({
+                                vertices: [[baseX, y0, z0], [baseX, y1, z1], [baseX, y0, z1]],
+                                normal: [-1, 0, 0], density, strain
+                            });
+                        }
+                    }
+                    break;
+                case 1: // Back face (X = baseX + 1)
+                    for (let sy = 0; sy < n; sy++) {
+                        for (let sz = 0; sz < n; sz++) {
+                            const y0 = baseY + sy * step;
+                            const z0 = baseZ + sz * step;
+                            const y1 = y0 + step;
+                            const z1 = z0 + step;
+                            triangles.push({
+                                vertices: [[baseX + 1, y1, z0], [baseX + 1, y0, z0], [baseX + 1, y0, z1]],
+                                normal: [1, 0, 0], density, strain
+                            });
+                            triangles.push({
+                                vertices: [[baseX + 1, y1, z0], [baseX + 1, y0, z1], [baseX + 1, y1, z1]],
+                                normal: [1, 0, 0], density, strain
+                            });
+                        }
+                    }
+                    break;
+                case 2: // Left face (Y = baseY)
+                    for (let sx = 0; sx < n; sx++) {
+                        for (let sz = 0; sz < n; sz++) {
+                            const x0 = baseX + sx * step;
+                            const z0 = baseZ + sz * step;
+                            const x1 = x0 + step;
+                            const z1 = z0 + step;
+                            triangles.push({
+                                vertices: [[x0, baseY, z0], [x0, baseY, z1], [x1, baseY, z1]],
+                                normal: [0, -1, 0], density, strain
+                            });
+                            triangles.push({
+                                vertices: [[x0, baseY, z0], [x1, baseY, z1], [x1, baseY, z0]],
+                                normal: [0, -1, 0], density, strain
+                            });
+                        }
+                    }
+                    break;
+                case 3: // Right face (Y = baseY + 1)
+                    for (let sx = 0; sx < n; sx++) {
+                        for (let sz = 0; sz < n; sz++) {
+                            const x0 = baseX + sx * step;
+                            const z0 = baseZ + sz * step;
+                            const x1 = x0 + step;
+                            const z1 = z0 + step;
+                            triangles.push({
+                                vertices: [[x0, baseY + 1, z1], [x0, baseY + 1, z0], [x1, baseY + 1, z0]],
+                                normal: [0, 1, 0], density, strain
+                            });
+                            triangles.push({
+                                vertices: [[x0, baseY + 1, z1], [x1, baseY + 1, z0], [x1, baseY + 1, z1]],
+                                normal: [0, 1, 0], density, strain
+                            });
+                        }
+                    }
+                    break;
+                case 4: // Bottom face (Z = baseZ)
+                    for (let sx = 0; sx < n; sx++) {
+                        for (let sy = 0; sy < n; sy++) {
+                            const x0 = baseX + sx * step;
+                            const y0 = baseY + sy * step;
+                            const x1 = x0 + step;
+                            const y1 = y0 + step;
+                            triangles.push({
+                                vertices: [[x0, y0, baseZ], [x1, y0, baseZ], [x1, y1, baseZ]],
+                                normal: [0, 0, -1], density, strain
+                            });
+                            triangles.push({
+                                vertices: [[x0, y0, baseZ], [x1, y1, baseZ], [x0, y1, baseZ]],
+                                normal: [0, 0, -1], density, strain
+                            });
+                        }
+                    }
+                    break;
+                case 5: // Top face (Z = baseZ + 1)
+                    for (let sx = 0; sx < n; sx++) {
+                        for (let sy = 0; sy < n; sy++) {
+                            const x0 = baseX + sx * step;
+                            const y0 = baseY + sy * step;
+                            const x1 = x0 + step;
+                            const y1 = y0 + step;
+                            triangles.push({
+                                vertices: [[x1, y0, baseZ + 1], [x0, y0, baseZ + 1], [x0, y1, baseZ + 1]],
+                                normal: [0, 0, 1], density, strain
+                            });
+                            triangles.push({
+                                vertices: [[x1, y0, baseZ + 1], [x0, y1, baseZ + 1], [x1, y1, baseZ + 1]],
+                                normal: [0, 0, 1], density, strain
+                            });
+                        }
+                    }
+                    break;
             }
         }
     }
