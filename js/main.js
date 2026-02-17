@@ -294,6 +294,8 @@ class TopologyApp {
                     
                     let complianceInfo = `Compliance: ${compliance.toFixed(2)}`;
                     if (timing) {
+                        const wasmBadge = timing.usingWasm ? ' 🚀 WASM' : ' JS';
+                        complianceInfo += wasmBadge;
                         complianceInfo += `<br>Time/Iter: ${timing.iterationTime.toFixed(1)}ms`;
                         complianceInfo += ` | Avg: ${timing.avgIterationTime.toFixed(1)}ms`;
                         complianceInfo += `<br>Elapsed: ${(timing.elapsedTime / 1000).toFixed(1)}s`;
@@ -323,7 +325,8 @@ class TopologyApp {
             `;
             
             if (result.timing) {
-                resultsHTML += `<br><br><strong>Performance:</strong><br>`;
+                const wasmBadge = result.timing.usingWasm ? '🚀 WASM' : 'JS';
+                resultsHTML += `<br><br><strong>Performance (${wasmBadge}):</strong><br>`;
                 resultsHTML += `Total Time: ${(result.timing.totalTime / 1000).toFixed(2)}s<br>`;
                 resultsHTML += `Avg Time/Iteration: ${result.timing.avgIterationTime.toFixed(1)}ms<br>`;
                 resultsHTML += `Throughput: ${(result.iterations / (result.timing.totalTime / 1000)).toFixed(2)} iter/s`;
@@ -436,7 +439,8 @@ class TopologyApp {
             totalTime: result.timing.totalTime,
             avgIterationTime: result.timing.avgIterationTime,
             compliance: result.finalCompliance,
-            volumeFraction: result.volumeFraction
+            volumeFraction: result.volumeFraction,
+            usingWasm: result.timing.usingWasm || false
         };
         
         this.benchmarkHistory.push(benchmark);
@@ -464,7 +468,7 @@ class TopologyApp {
         // Find baseline (first cube test or first entry)
         const baseline = this.benchmarkHistory.find(b => b.modelType === 'cube') || this.benchmarkHistory[0];
         
-        let html = '<table><thead><tr><th>Model</th><th>Avg Iter (ms)</th><th>Total (s)</th><th>vs Baseline</th></tr></thead><tbody>';
+        let html = '<table><thead><tr><th>Model</th><th>Engine</th><th>Avg Iter (ms)</th><th>Total (s)</th><th>vs Baseline</th></tr></thead><tbody>';
         
         // Show most recent benchmarks first
         const recent = this.benchmarkHistory.slice(-5).reverse();
@@ -472,6 +476,7 @@ class TopologyApp {
             const isBaseline = bench === baseline;
             const improvement = ((baseline.avgIterationTime - bench.avgIterationTime) / baseline.avgIterationTime * 100);
             const rowClass = isBaseline ? ' class="benchmark-baseline"' : '';
+            const engineBadge = bench.usingWasm ? '🚀 WASM' : 'JS';
             
             let comparisonText = '';
             if (!isBaseline) {
@@ -484,6 +489,7 @@ class TopologyApp {
             
             html += `<tr${rowClass}>
                 <td>${bench.modelType} (${bench.dimensions})</td>
+                <td>${engineBadge}</td>
                 <td>${bench.avgIterationTime.toFixed(1)}</td>
                 <td>${(bench.totalTime / 1000).toFixed(1)}</td>
                 <td>${comparisonText}</td>

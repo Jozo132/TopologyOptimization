@@ -4,6 +4,33 @@
 const EPSILON = 1e-12;
 const CG_TOLERANCE = 1e-8;
 
+// WASM Module for high-performance operations
+let wasmModule = null;
+let wasmLoaded = false;
+
+async function loadWasmModule() {
+    try {
+        const response = await fetch('wasm/matrix-ops.wasm');
+        const buffer = await response.arrayBuffer();
+        const module = await WebAssembly.compile(buffer);
+        
+        wasmModule = await WebAssembly.instantiate(module, {
+            env: {
+                abort: () => console.error('WASM abort called'),
+                seed: () => Date.now()
+            }
+        });
+        
+        wasmLoaded = true;
+        console.log('WASM module loaded in worker');
+        return true;
+    } catch (error) {
+        console.warn('Failed to load WASM in worker, using pure JS:', error);
+        wasmLoaded = false;
+        return false;
+    }
+}
+
 class TopologyOptimizerWorker {
     constructor() {
         this.rmin = 1.5;
@@ -12,9 +39,17 @@ class TopologyOptimizerWorker {
         this.Emin = 1e-9;
         this.nu = 0.3;
         this.cancelled = false;
+        this.useWasm = false;
     }
 
-    optimize(model, config) {
+    async optimize(model, config) {
+        // Try to load WASM module if not already loaded
+        if (!wasmLoaded && !this.wasmLoadAttempted) {
+            this.wasmLoadAttempted = true;
+            await loadWasmModule();
+            this.useWasm = wasmLoaded;
+        }
+        
         const { nx, ny, nz } = model;
         const nelx = nx;
         const nely = ny;
@@ -162,7 +197,8 @@ class TopologyOptimizerWorker {
                 timing: {
                     iterationTime: iterTime,
                     avgIterationTime: avgIterTime,
-                    elapsedTime: elapsedTime
+                    elapsedTime: elapsedTime,
+                    usingWasm: this.useWasm
                 }
             });
         }
@@ -206,7 +242,8 @@ class TopologyOptimizerWorker {
                 timing: {
                     totalTime: totalTime,
                     avgIterationTime: avgIterTime,
-                    iterationTimes: iterationTimes
+                    iterationTimes: iterationTimes,
+                    usingWasm: this.useWasm
                 }
             }
         });
@@ -821,12 +858,12 @@ class TopologyOptimizerWorker {
 // Worker message handler
 const optimizer = new TopologyOptimizerWorker();
 
-self.onmessage = function(e) {
+self.onmessage = async function(e) {
     const { type, model, config } = e.data;
 
     if (type === 'start') {
         optimizer.cancelled = false;
-        optimizer.optimize(model, config);
+        await optimizer.optimize(model, config);
     } else if (type === 'cancel') {
         optimizer.cancelled = true;
     }
