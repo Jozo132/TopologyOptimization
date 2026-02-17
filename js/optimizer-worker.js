@@ -634,8 +634,10 @@ class TopologyOptimizerWorker {
         const dofSet = new Set();
         for (const key of paintedKeys) {
             const parts = key.split(',');
+            if (parts.length < 2) continue;
             const vx = parseInt(parts[0], 10);
             const vy = parseInt(parts[1], 10);
+            if (isNaN(vx) || isNaN(vy)) continue;
             // Map voxel (vx, vy) to its 4 corner nodes in 2D
             const n1 = (nely + 1) * vx + vy;
             const n2 = (nely + 1) * (vx + 1) + vy;
@@ -672,8 +674,10 @@ class TopologyOptimizerWorker {
         const nodeSet = new Set();
         for (const key of paintedKeys) {
             const parts = key.split(',');
+            if (parts.length < 2) continue;
             const vx = parseInt(parts[0], 10);
             const vy = parseInt(parts[1], 10);
+            if (isNaN(vx) || isNaN(vy)) continue;
             const n1 = (nely + 1) * vx + vy;
             const n2 = (nely + 1) * (vx + 1) + vy;
             const nodes = [n1, n2, n2 + 1, n1 + 1];
