@@ -191,9 +191,11 @@ export class ModelImporter {
         // Original: 5x5x5 at granuleDensity=20
         // Keep it simple for cube test - direct scaling
         const scale = granuleDensity / 20;
-        const nx = Math.max(3, Math.round(5 * scale));
-        const ny = Math.max(3, Math.round(5 * scale));
-        const nz = Math.max(3, Math.round(5 * scale));
+        const baseSize = 5;
+        const scaledSize = Math.max(3, Math.round(baseSize * scale));
+        const nx = scaledSize;
+        const ny = scaledSize;
+        const nz = scaledSize;
         const elements = new Float32Array(nx * ny * nz).fill(1);
         
         return {
@@ -202,7 +204,7 @@ export class ModelImporter {
             nz,
             elements,
             type: 'cube',
-            templateScale: { baseNx: 5, baseNy: 5, baseNz: 5, baseGranuleDensity: 20 },
+            templateScale: { baseNx: baseSize, baseNy: baseSize, baseNz: baseSize, baseGranuleDensity: 20 },
             // Predefined boundary conditions for cube test
             forcePosition: 'top-center',  // Force at top center
             constraintPositions: 'bottom-corners'  // Constraints at bottom 4 corners

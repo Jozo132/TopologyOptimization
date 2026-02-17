@@ -138,9 +138,10 @@ class TopologyApp {
                     const info = document.getElementById('modelInfo');
                     if (!info.classList.contains('hidden')) {
                         const modelName = newModel.type ? `${newModel.type} template` : 'Model';
+                        const elementCount = newModel.nx * newModel.ny * newModel.nz;
                         info.innerHTML = `
                             <strong>${modelName} updated!</strong><br>
-                            <strong>Elements:</strong> ${newModel.nx * newModel.ny * newModel.nz}<br>
+                            <strong>Elements:</strong> ${elementCount}<br>
                             <strong>Dimensions:</strong> ${newModel.nx} x ${newModel.ny} x ${newModel.nz}
                         `;
                     }
