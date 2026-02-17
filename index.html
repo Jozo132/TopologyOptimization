@@ -30,6 +30,11 @@
                         <p>Drop STL file here or click to browse</p>
                         <input type="file" id="fileInput" accept=".stl" hidden>
                     </div>
+                    <div class="control-group" style="margin-top: 1rem;">
+                        <label>Granule Density (voxel resolution)</label>
+                        <input type="range" id="granuleDensity" min="5" max="50" step="1" value="20">
+                        <span id="granuleDensityValue">20</span>
+                    </div>
                     <div class="quick-start">
                         <p>Or start with a template:</p>
                         <button id="useBeamTemplate" class="btn-secondary">Cantilever Beam</button>

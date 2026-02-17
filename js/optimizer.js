@@ -13,6 +13,7 @@ export class TopologyOptimizer {
      */
     optimize(model, config, progressCallback) {
         return new Promise((resolve, reject) => {
+            this._cancelReject = reject;
             this.worker = new Worker('js/optimizer-worker.js');
 
             this.worker.onmessage = (e) => {
@@ -25,10 +26,12 @@ export class TopologyOptimizer {
                 } else if (type === 'complete') {
                     this.worker.terminate();
                     this.worker = null;
+                    this._cancelReject = null;
                     resolve(e.data.result);
                 } else if (type === 'cancelled') {
                     this.worker.terminate();
                     this.worker = null;
+                    this._cancelReject = null;
                     reject(new Error('Optimization cancelled'));
                 }
             };
@@ -53,11 +56,16 @@ export class TopologyOptimizer {
     cancel() {
         if (this.worker) {
             this.worker.postMessage({ type: 'cancel' });
-            // Also force-terminate after a short grace period
+            // Force-terminate after a short grace period and trigger rejection
             setTimeout(() => {
                 if (this.worker) {
                     this.worker.terminate();
                     this.worker = null;
+                    // Trigger the pending reject via _cancelReject if set
+                    if (this._cancelReject) {
+                        this._cancelReject(new Error('Optimization cancelled'));
+                        this._cancelReject = null;
+                    }
                 }
             }, 200);
         }

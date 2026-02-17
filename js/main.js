@@ -22,7 +22,8 @@ class TopologyApp {
             constraintPosition: 'left',
             maxIterations: 100,
             penaltyFactor: 3,
-            filterRadius: 1.5
+            filterRadius: 1.5,
+            granuleDensity: 20
         };
     }
 
@@ -38,6 +39,15 @@ class TopologyApp {
         this.exporter = new ModelExporter();
         this.workflow = new WorkflowManager();
         this.workflow.init();
+        
+        // Clear paint mode when leaving step 2
+        this.workflow.onStepChange = (step) => {
+            if (step !== 2) {
+                this.viewer.setPaintMode(null);
+                document.getElementById('paintConstraint').classList.remove('active-tool');
+                document.getElementById('paintForce').classList.remove('active-tool');
+            }
+        };
         
         // Setup event listeners
         this.setupEventListeners();
@@ -76,6 +86,13 @@ class TopologyApp {
         });
         document.getElementById('useBridgeTemplate').addEventListener('click', () => {
             this.loadTemplate('bridge');
+        });
+
+        // Granule density slider
+        document.getElementById('granuleDensity').addEventListener('input', (e) => {
+            const value = parseInt(e.target.value);
+            this.config.granuleDensity = value;
+            document.getElementById('granuleDensityValue').textContent = value;
         });
         
         // Step 2: Assign
@@ -164,7 +181,7 @@ class TopologyApp {
     async handleFileImport(file) {
         try {
             console.log('Importing file:', file.name);
-            const model = await this.importer.importSTL(file);
+            const model = await this.importer.importSTL(file, this.config.granuleDensity);
             this.currentModel = model;
             
             // Display model info
@@ -179,8 +196,9 @@ class TopologyApp {
             // Visualize
             this.viewer.setModel(model);
             
-            // Enable next step
+            // Enable and navigate to step 2
             this.workflow.enableStep(2);
+            this.workflow.goToStep(2);
             
         } catch (error) {
             console.error('Import error:', error);
@@ -205,9 +223,9 @@ class TopologyApp {
         // Visualize
         this.viewer.setModel(model);
         
-        // Enable next step
+        // Enable and navigate to step 2
         this.workflow.enableStep(2);
-        this.workflow.enableStep(3);
+        this.workflow.goToStep(2);
     }
 
     async runOptimization() {
@@ -233,10 +251,17 @@ class TopologyApp {
         cancelButton.classList.remove('hidden');
         
         try {
+            // Include painted constraint/force data in config
+            const optimConfig = {
+                ...this.config,
+                paintedConstraints: Array.from(this.viewer.paintedConstraintFaces),
+                paintedForces: Array.from(this.viewer.paintedForceFaces)
+            };
+
             // Run optimization in worker
             const result = await this.optimizer.optimize(
                 this.currentModel,
-                this.config,
+                optimConfig,
                 (iteration, compliance, meshData) => {
                     // Progress callback
                     const progress = (iteration / this.config.maxIterations) * 100;
@@ -266,8 +291,9 @@ class TopologyApp {
                 Volume Fraction: ${(result.volumeFraction * 100).toFixed(1)}%
             `;
             
-            // Enable export step
+            // Enable export step and navigate to it
             this.workflow.enableStep(4);
+            this.workflow.goToStep(4);
             
             console.log('Optimization completed successfully');
             
@@ -275,6 +301,10 @@ class TopologyApp {
             if (error.message === 'Optimization cancelled') {
                 console.log('Optimization was cancelled by user');
                 progressText.textContent = 'Cancelled';
+                // Reset progress UI so user can restart
+                progressFill.style.width = '0%';
+                complianceText.textContent = '';
+                progressContainer.classList.add('hidden');
             } else {
                 console.error('Optimization error:', error);
                 alert('Optimization failed: ' + error.message);
