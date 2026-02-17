@@ -67,10 +67,8 @@ export class GPUCompute {
         const device = this.device;
 
         // Use Float32 for GPU (WebGPU doesn't support f64 in compute shaders universally)
-        const A32 = new Float32Array(A.length);
-        const x32 = new Float32Array(x.length);
-        for (let i = 0; i < A.length; i++) A32[i] = A[i];
-        for (let i = 0; i < x.length; i++) x32[i] = x[i];
+        const A32 = new Float32Array(A);
+        const x32 = new Float32Array(x);
 
         // Create GPU buffers
         const matrixBuffer = device.createBuffer({
@@ -153,8 +151,7 @@ export class GPUCompute {
         // Read back
         await readBuffer.mapAsync(GPUMapMode.READ);
         const resultData = new Float32Array(readBuffer.getMappedRange());
-        const result64 = new Float64Array(n);
-        for (let i = 0; i < n; i++) result64[i] = resultData[i];
+        const result64 = new Float64Array(resultData);
         readBuffer.unmap();
 
         // Cleanup

@@ -253,6 +253,7 @@ export function applyDensityFilter(
               const dz: f64 = f64(ez - kz);
               const distSq: f64 = dx * dx + dy * dy + dz * dz;
 
+              // Early rejection using squared distance avoids sqrt for elements outside radius
               if (distSq <= radiusSq) {
                 const dist: f64 = Math.sqrt(distSq);
                 const weight: f64 = radius - dist;

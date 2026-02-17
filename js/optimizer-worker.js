@@ -885,19 +885,24 @@ class TopologyOptimizerWorker {
         return { ndof, rowPtr, colIdx, values };
     }
 
-    // Sparse matrix-vector multiply: result = K * x (CSR format)
-    _sparseMatVec(K, x, result, freedofs) {
+    // Build reverse map: global DOF -> local index (-1 if not free)
+    // Cache the dofMap per ndof size to avoid repeated allocation across CG iterations
+    _sparseMatVec(K, p, Ap, freedofs) {
         const n = freedofs.length;
         const { rowPtr, colIdx, values } = K;
         
-        // Build reverse map: global DOF -> local index (-1 if not free)
         if (!this._dofMap || this._dofMap.length !== K.ndof) {
             this._dofMap = new Int32Array(K.ndof).fill(-1);
-        } else {
-            this._dofMap.fill(-1);
+            this._dofMapInitialized = false;
         }
-        for (let i = 0; i < n; i++) {
-            this._dofMap[freedofs[i]] = i;
+        
+        // Only rebuild the map if freedofs changed (first call per FE solve)
+        if (!this._dofMapInitialized) {
+            this._dofMap.fill(-1);
+            for (let i = 0; i < n; i++) {
+                this._dofMap[freedofs[i]] = i;
+            }
+            this._dofMapInitialized = true;
         }
         
         for (let li = 0; li < n; li++) {
@@ -906,16 +911,19 @@ class TopologyOptimizerWorker {
             for (let k = rowPtr[gi]; k < rowPtr[gi + 1]; k++) {
                 const lj = this._dofMap[colIdx[k]];
                 if (lj >= 0) {
-                    sum += values[k] * x[lj];
+                    sum += values[k] * p[lj];
                 }
             }
-            result[li] = sum;
+            Ap[li] = sum;
         }
     }
 
     solveCG(K, F, freedofs, fixeddofs) {
         const n = freedofs.length;
         const Uf = new Float32Array(n);
+        
+        // Reset dofMap cache for this new solve
+        this._dofMapInitialized = false;
 
         // Try WASM accelerated CG solver
         if (this.useWasm && wasmModule) {
@@ -979,6 +987,7 @@ class TopologyOptimizerWorker {
         }
 
         const maxIter = Math.min(n, 1000);
+        // Compare rho (= ||r||²) against tolSq to avoid sqrt per iteration
         const tolSq = CG_TOLERANCE * CG_TOLERANCE;
 
         let rho = 0;
