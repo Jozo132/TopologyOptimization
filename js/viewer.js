@@ -573,7 +573,6 @@ export class Viewer3D {
      */
     _buildTriangleMeshBuffers(nx, ny, nz) {
         const gl = this.gl;
-
         const hasStrainFilter = this.strainMin > 0 || this.strainMax < 1;
         if (!hasStrainFilter) {
             this._buildDirectTriangleMeshBuffers(gl);
