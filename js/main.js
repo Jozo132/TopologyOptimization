@@ -37,6 +37,7 @@ class TopologyApp {
         this.optimizer = new TopologyOptimizer();
         this.exporter = new ModelExporter();
         this.workflow = new WorkflowManager();
+        this.workflow.init();
         
         // Setup event listeners
         this.setupEventListeners();
@@ -86,14 +87,34 @@ class TopologyApp {
         
         document.getElementById('forceDirection').addEventListener('change', (e) => {
             this.config.forceDirection = e.target.value;
+            this.viewer.forceDirection = e.target.value;
+            this.viewer.draw();
         });
         
         document.getElementById('forceMagnitude').addEventListener('input', (e) => {
             this.config.forceMagnitude = parseFloat(e.target.value);
+            this.viewer.forceMagnitude = parseFloat(e.target.value);
         });
         
         document.getElementById('constraintPosition').addEventListener('change', (e) => {
             this.config.constraintPosition = e.target.value;
+        });
+
+        // Paint toolbar
+        document.getElementById('paintConstraint').addEventListener('click', () => {
+            this.viewer.setPaintMode('constraint');
+            document.getElementById('paintConstraint').classList.add('active-tool');
+            document.getElementById('paintForce').classList.remove('active-tool');
+        });
+        document.getElementById('paintForce').addEventListener('click', () => {
+            this.viewer.setPaintMode('force');
+            document.getElementById('paintForce').classList.add('active-tool');
+            document.getElementById('paintConstraint').classList.remove('active-tool');
+        });
+        document.getElementById('clearPaint').addEventListener('click', () => {
+            this.viewer.setPaintMode(null);
+            document.getElementById('paintConstraint').classList.remove('active-tool');
+            document.getElementById('paintForce').classList.remove('active-tool');
         });
         
         // Step 3: Solve
