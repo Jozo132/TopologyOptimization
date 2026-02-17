@@ -574,6 +574,10 @@ export class Viewer3D {
     _buildTriangleMeshBuffers(nx, ny, nz) {
         const gl = this.gl;
         const hasStrainFilter = this.strainMin > 0 || this.strainMax < 1;
+        if (!hasStrainFilter) {
+            this._buildDirectTriangleMeshBuffers(gl);
+            return;
+        }
 
         // Build per-element visibility map and metadata from mesh triangles
         const visibleElements = new Uint8Array(nx * ny * nz);
