@@ -95,7 +95,7 @@ function solveCG_WASM(K, F, n, maxIter) {
     function copyToWasm(arr) {
         const byteLength = arr.length * 8;
         const buffer = wasmModule.exports.__pin(wasmModule.exports.__new(byteLength, 1));
-        const header = wasmModule.exports.__pin(wasmModule.exports.__new(12, 4));
+        const header = wasmModule.exports.__pin(wasmModule.exports.__new(12, 4)); // 4 = Float64Array type ID in AssemblyScript
         
         const memory = wasmModule.exports.memory;
         const view = new DataView(memory.buffer);
@@ -225,7 +225,7 @@ async function runBenchmark(size, iterations = 10) {
             wasmMin = Math.min(...wasmResults);
             wasmMax = Math.max(...wasmResults);
             wasmStdDev = Math.sqrt(wasmResults.reduce((sq, n) => sq + Math.pow(n - wasmAvg, 2), 0) / wasmResults.length);
-            speedup = ((jsAvg - wasmAvg) / jsAvg * 100);
+            speedup = ((jsAvg - wasmAvg) / jsAvg * 100); // Percentage improvement
             
             // Verify correctness
             const jsResult = solveCG_JS(K, F, size, maxIter);

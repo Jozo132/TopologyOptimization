@@ -18,7 +18,7 @@
 | 200×200    | 12.82ms   | 0.92ms | 13.93x  | +92.8%      |
 | 500×500    | 80.58ms   | 5.28ms | 15.27x  | +93.5%      |
 
-**Average Performance Improvement: +76.9%**
+**Average Performance Improvement: +77.0%**
 
 ## Key Findings
 
