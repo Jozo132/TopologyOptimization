@@ -210,7 +210,7 @@ class TopologyOptimizerWorker {
      * Build adaptive mesh data.
      * Elements with higher stress or near applied forces get subdivided
      * into smaller triangles, while low-stress regions use coarser triangles.
-     * Uses stress (density-weighted strain energy) for auto-resizing.
+     * Uses stiffness-weighted strain energy (stiffness × raw energy) for auto-resizing.
      * Returns an array of { vertices, density } triangle objects for rendering.
      */
     buildAdaptiveMesh(nelx, nely, nelz, x, elementEnergies, elementForces) {
@@ -692,11 +692,11 @@ class TopologyOptimizerWorker {
         const elems = [];
         switch (direction) {
             case 'down':
-                // Force at bottom-right corner node — element at (nelx-1, nely-1)
+                // Force applied downward at right edge bottom node — nearest element (nelx-1, nely-1)
                 elems.push((nely - 1) + (nelx - 1) * nely);
                 break;
             case 'up':
-                // Force at top-right corner node — element at (nelx-1, 0)
+                // Force applied upward at right edge top node — nearest element (nelx-1, 0)
                 elems.push((nelx - 1) * nely);
                 break;
             case 'left':
