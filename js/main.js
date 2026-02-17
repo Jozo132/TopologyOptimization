@@ -586,7 +586,6 @@ class TopologyApp {
                 <td>${comparisonText}</td>
             </tr>`;
         }
-        }
         
         html += '</tbody></table>';
         benchmarkResults.innerHTML = html;
