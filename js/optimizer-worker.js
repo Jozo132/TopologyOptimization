@@ -900,19 +900,48 @@ class TopologyOptimizerWorker {
 
     /**
      * WASM Memory Management Helpers
+     * AssemblyScript uses a custom memory layout with headers for typed arrays
      */
     _copyToWasm(arr) {
         if (!wasmModule) throw new Error('WASM not loaded');
-        const ptr = wasmModule.exports.__new(arr.length, 4); // 4 = Float64Array ID
-        const view = new Float64Array(wasmModule.exports.memory.buffer, ptr, arr.length);
-        view.set(arr);
-        return ptr;
+        
+        // AssemblyScript TypedArray layout:
+        // - Buffer: allocated with __new(byteLength, 1) for ArrayBuffer
+        // - Array header: __new(12, typeId) with pointers to buffer
+        // For Float64Array: typeId = 4, align = 3 (8 bytes per element)
+        
+        const byteLength = arr.length * 8; // 8 bytes per Float64
+        const buffer = wasmModule.exports.__pin(wasmModule.exports.__new(byteLength, 1));
+        const header = wasmModule.exports.__new(12, 4); // 4 = Float64Array type ID
+        
+        // Set up the header (ArrayBufferView structure)
+        const memory = wasmModule.exports.memory;
+        const view = new DataView(memory.buffer);
+        view.setUint32(header, buffer, true);  // buffer pointer
+        view.setUint32(header + 4, buffer, true); // dataStart pointer  
+        view.setUint32(header + 8, byteLength, true); // byteLength
+        
+        // Copy data to buffer
+        new Float64Array(memory.buffer, buffer, arr.length).set(arr);
+        wasmModule.exports.__unpin(buffer);
+        
+        return header;
     }
 
     _readFromWasm(ptr, length) {
         if (!wasmModule) throw new Error('WASM not loaded');
-        const view = new Float64Array(wasmModule.exports.memory.buffer, ptr, length);
-        return Float64Array.from(view);
+        
+        const memory = wasmModule.exports.memory;
+        const view = new DataView(memory.buffer);
+        
+        // Read the buffer pointer from the array header
+        const buffer = view.getUint32(ptr, true);
+        
+        // Read data from buffer
+        const result = new Float64Array(length);
+        result.set(new Float64Array(memory.buffer, buffer, length));
+        
+        return result;
     }
 
     _freeWasm(ptr) {
