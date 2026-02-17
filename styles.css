@@ -319,12 +319,13 @@ button {
 .viewer-container {
     grid-column: 2;
     position: relative;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    background: #1a1a2e;
 }
 
 #viewer3D {
     width: 100%;
     height: 100%;
+    position: relative;
 }
 
 .viewer-controls {
