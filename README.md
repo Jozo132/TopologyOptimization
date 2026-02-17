@@ -10,6 +10,10 @@ A minimalistic but fully functional web-based topology optimization application 
 - 📦 **STL Support**: Import and export STL files
 - 🎯 **Template Models**: Quick start with cantilever beam or bridge templates
 - 💾 **Export Options**: Download optimized STL or JSON data
+- ⚡ **Web Worker Optimization**: Runs optimization in a background thread, keeping the UI responsive
+- ❌ **Cancellable Optimization**: Cancel a running optimization at any point
+- 🔬 **Adaptive Mesh**: Dynamically refines mesh resolution in high-force / high-energy regions
+- 🔺 **Triangle Mesh Rendering**: Displays elements as proper triangulated mesh, not just squares
 
 ## Usage
 
@@ -28,6 +32,7 @@ A minimalistic but fully functional web-based topology optimization application 
      - Penalty factor (default: 3)
      - Filter radius (default: 1.5)
    - Run the optimization and watch progress
+   - Cancel at any time using the Cancel button
 
 4. **Export Result**
    - Download optimized model as STL file
@@ -36,25 +41,25 @@ A minimalistic but fully functional web-based topology optimization application 
 
 ## Getting Started
 
-Simply open `index.html` in a modern web browser. No build step or server required!
+Simply open `index.html` in a modern web browser served via a local HTTP server. ES modules require a server context.
 
 ```bash
 # Clone the repository
 git clone https://github.com/Jozo132/TopologyOptimization.git
 cd TopologyOptimization
 
-# Open in browser
-open index.html  # macOS
+# Serve with any static HTTP server, for example:
+npx http-server .          # Node.js (requires npm/npx)
 # or
-start index.html  # Windows
-# or
-xdg-open index.html  # Linux
+python3 -m http.server     # Python 3
+# Then open http://localhost:8080 (or :8000 for Python) in your browser
 ```
 
 ## Technology Stack
 
 - **HTML5/CSS3**: Modern, responsive UI
 - **Vanilla JavaScript**: No frameworks, pure ES6 modules
+- **Web Workers**: Background thread for heavy computation
 - **Canvas 2D**: Interactive 3D visualization with no external dependencies
 - **SIMP Algorithm**: Industry-standard topology optimization
 
@@ -67,6 +72,10 @@ This application implements the SIMP (Solid Isotropic Material with Penalization
 3. **Density Filtering**: Smooths density field
 4. **Optimality Criteria**: Updates design variables
 5. **Convergence Check**: Iterates until convergence
+
+### Adaptive Mesh Resolution
+
+Elements with higher strain energy or proximity to applied forces are subdivided into finer triangles during visualization. Low-energy regions use coarser triangles. This provides more visual detail where it matters most without uniformly increasing the mesh resolution.
 
 ## Browser Compatibility
 

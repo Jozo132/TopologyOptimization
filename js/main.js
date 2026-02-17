@@ -113,6 +113,10 @@ class TopologyApp {
             this.runOptimization();
         });
         
+        document.getElementById('cancelOptimization').addEventListener('click', () => {
+            this.cancelOptimization();
+        });
+        
         // Step 4: Export
         document.getElementById('downloadSTL').addEventListener('click', () => {
             this.exportSTL();
@@ -201,31 +205,37 @@ class TopologyApp {
         const progressText = document.getElementById('progressText');
         const complianceText = document.getElementById('complianceText');
         
-        // Disable button
+        // Toggle buttons: hide Run, show Cancel
         const runButton = document.getElementById('runOptimization');
-        runButton.disabled = true;
-        runButton.textContent = 'Optimizing...';
+        const cancelButton = document.getElementById('cancelOptimization');
+        runButton.classList.add('hidden');
+        cancelButton.classList.remove('hidden');
         
         try {
-            // Run optimization
+            // Run optimization in worker
             const result = await this.optimizer.optimize(
                 this.currentModel,
                 this.config,
-                (iteration, compliance, densities) => {
+                (iteration, compliance, meshData) => {
                     // Progress callback
                     const progress = (iteration / this.config.maxIterations) * 100;
                     progressFill.style.width = `${progress}%`;
                     progressText.textContent = `Iteration ${iteration} / ${this.config.maxIterations}`;
                     complianceText.textContent = `Compliance: ${compliance.toFixed(2)}`;
                     
-                    // Update visualization
-                    if (densities) {
-                        this.viewer.updateDensities(densities);
+                    // Update visualization with triangle mesh
+                    if (meshData) {
+                        this.viewer.updateMesh(meshData);
                     }
                 }
             );
             
             this.optimizedModel = result;
+            
+            // Update viewer with final mesh
+            if (result.meshData) {
+                this.viewer.updateMesh(result.meshData);
+            }
             
             // Show results
             document.getElementById('optimizationResults').innerHTML = `
@@ -241,12 +251,22 @@ class TopologyApp {
             console.log('Optimization completed successfully');
             
         } catch (error) {
-            console.error('Optimization error:', error);
-            alert('Optimization failed: ' + error.message);
+            if (error.message === 'Optimization cancelled') {
+                console.log('Optimization was cancelled by user');
+                progressText.textContent = 'Cancelled';
+            } else {
+                console.error('Optimization error:', error);
+                alert('Optimization failed: ' + error.message);
+            }
         } finally {
-            runButton.disabled = false;
-            runButton.textContent = 'Run Optimization';
+            runButton.classList.remove('hidden');
+            cancelButton.classList.add('hidden');
         }
+    }
+
+    cancelOptimization() {
+        console.log('Cancelling optimization...');
+        this.optimizer.cancel();
     }
 
     exportSTL() {
@@ -272,6 +292,9 @@ class TopologyApp {
     reset() {
         console.log('Resetting app...');
         
+        // Cancel any running optimization
+        this.optimizer.cancel();
+        
         this.currentModel = null;
         this.optimizedModel = null;
         
@@ -279,6 +302,8 @@ class TopologyApp {
         document.getElementById('modelInfo').classList.add('hidden');
         document.getElementById('progressContainer').classList.add('hidden');
         document.getElementById('fileInput').value = '';
+        document.getElementById('runOptimization').classList.remove('hidden');
+        document.getElementById('cancelOptimization').classList.add('hidden');
         
         // Reset viewer
         this.viewer.clear();
