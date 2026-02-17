@@ -521,14 +521,20 @@ class TopologyApp {
             avgIterationTime: result.timing.avgIterationTime,
             compliance: result.finalCompliance,
             volumeFraction: result.volumeFraction,
-            usingWasm: result.timing.usingWasm || false
+            usingWasm: result.timing.usingWasm || false,
+            // AMR statistics
+            useAMR: result.amrStats !== null,
+            amrGroups: result.amrStats ? result.amrStats.groupCount : null,
+            amrRefinements: result.amrStats ? result.amrStats.refinementCount : null,
+            amrSizeRange: result.amrStats ? 
+                `${result.amrStats.minGroupSize.toFixed(1)}-${result.amrStats.maxGroupSize.toFixed(1)}` : null
         };
         
         this.benchmarkHistory.push(benchmark);
         
-        // Keep only last 10 benchmarks
-        if (this.benchmarkHistory.length > 10) {
-            this.benchmarkHistory = this.benchmarkHistory.slice(-10);
+        // Keep only last 15 benchmarks to allow more comparisons
+        if (this.benchmarkHistory.length > 15) {
+            this.benchmarkHistory = this.benchmarkHistory.slice(-15);
         }
         
         this.saveBenchmarkHistory();
@@ -549,10 +555,10 @@ class TopologyApp {
         // Find baseline (first cube test or first entry)
         const baseline = this.benchmarkHistory.find(b => b.modelType === 'cube') || this.benchmarkHistory[0];
         
-        let html = '<table><thead><tr><th>Model</th><th>Engine</th><th>Avg Iter (ms)</th><th>Total (s)</th><th>vs Baseline</th></tr></thead><tbody>';
+        let html = '<table><thead><tr><th>Model</th><th>Engine</th><th>AMR</th><th>Avg Iter (ms)</th><th>Total (s)</th><th>vs Baseline</th></tr></thead><tbody>';
         
         // Show most recent benchmarks first
-        const recent = this.benchmarkHistory.slice(-5).reverse();
+        const recent = this.benchmarkHistory.slice(-8).reverse();
         for (const bench of recent) {
             const isBaseline = bench === baseline;
             const improvement = baseline.avgIterationTime > 0 
@@ -560,6 +566,7 @@ class TopologyApp {
                 : 0;
             const rowClass = isBaseline ? ' class="benchmark-baseline"' : '';
             const engineBadge = bench.usingWasm ? '🚀 WASM' : 'JS';
+            const amrBadge = bench.useAMR ? `✓ (${bench.amrRefinements})` : '✗';
             
             let comparisonText = '';
             if (!isBaseline) {
@@ -573,10 +580,12 @@ class TopologyApp {
             html += `<tr${rowClass}>
                 <td>${bench.modelType} (${bench.dimensions})</td>
                 <td>${engineBadge}</td>
+                <td>${amrBadge}</td>
                 <td>${bench.avgIterationTime.toFixed(1)}</td>
                 <td>${(bench.totalTime / 1000).toFixed(1)}</td>
                 <td>${comparisonText}</td>
             </tr>`;
+        }
         }
         
         html += '</tbody></table>';

@@ -108,15 +108,19 @@ class SimpleAMRManager {
             group.density = totalDensity / group.elements.length;
         }
         
-        // Simple refinement: split high-stress large groups
+        // Adaptive refinement: split high-stress large groups
+        // Use more aggressive thresholds as optimization progresses
+        const progressFactor = Math.min(iteration / 50, 1.0); // 0 to 1 over 50 iterations
+        const stressThreshold = 0.15 + progressFactor * 0.10; // 15% to 25%
+        
         const stresses = this.groups.map(g => g.stress).sort((a, b) => b - a);
-        const highStressThreshold = stresses[Math.floor(stresses.length * 0.2)] || 0;
+        const highStressThreshold = stresses[Math.floor(stresses.length * stressThreshold)] || 0;
         
         const toRefine = this.groups.filter(g => 
             g.stress > highStressThreshold && 
             g.size > this.minSize * 2 &&
             g.elements.length > 4
-        ).slice(0, 5); // Limit refinements
+        ).slice(0, Math.min(5, Math.max(2, Math.floor(10 - iteration / 10)))); // Reduce refinements over time
         
         for (const group of toRefine) {
             this.splitGroup(group);
@@ -329,7 +333,35 @@ class TopologyOptimizerWorker {
             }
 
             const dcn = this.filterSensitivities(dc, x, H, Hs, nelx, nely);
-            xnew = this.OC(nelx, nely, x, volfrac, dcn, preservedElements);
+            
+            // Apply AMR-weighted filtering if enabled
+            let dcnWeighted = dcn;
+            if (amrManager && amrManager.groups.length > 0) {
+                // Weight sensitivities by group size (smaller groups = more refinement = higher weight)
+                dcnWeighted = new Float32Array(nel);
+                for (const group of amrManager.groups) {
+                    // Inverse size weighting: smaller size = higher weight
+                    const weight = amrManager.maxSize / Math.max(group.size, 0.5);
+                    for (const elemIdx of group.elements) {
+                        dcnWeighted[elemIdx] = dcn[elemIdx] * weight;
+                    }
+                }
+                
+                // Normalize to maintain similar scale
+                let sumOriginal = 0, sumWeighted = 0;
+                for (let i = 0; i < nel; i++) {
+                    sumOriginal += Math.abs(dcn[i]);
+                    sumWeighted += Math.abs(dcnWeighted[i]);
+                }
+                if (sumWeighted > 0) {
+                    const normFactor = sumOriginal / sumWeighted;
+                    for (let i = 0; i < nel; i++) {
+                        dcnWeighted[i] *= normFactor;
+                    }
+                }
+            }
+            
+            xnew = this.OC(nelx, nely, x, volfrac, dcnWeighted, preservedElements);
 
             change = 0;
             for (let i = 0; i < nel; i++) {
