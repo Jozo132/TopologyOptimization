@@ -65,7 +65,7 @@ export class WorkflowManager {
         if (currentEl) {
             const nextBtn = currentEl.querySelector('.step-nav-next');
             if (nextBtn) {
-                nextBtn.disabled = (stepNumber + 1 > this.maxReachedStep);
+                nextBtn.disabled = (stepNumber >= this.maxReachedStep);
             }
         }
 

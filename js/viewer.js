@@ -137,13 +137,16 @@ export class Viewer3D {
             const cy = (screenVerts[0].y + screenVerts[1].y + screenVerts[2].y + screenVerts[3].y) / 4;
             const dist = Math.sqrt((mx - cx) ** 2 + (my - cy) ** 2);
 
-            // Also check the face is front-facing (avgDepth should be positive relative)
-            if (dist < bestDist && bf.avgDepth > 0) {
-                // Verify point is roughly within the quad bounds
-                const maxR = Math.max(
-                    ...screenVerts.map(v => Math.sqrt((v.x - cx) ** 2 + (v.y - cy) ** 2))
-                );
-                if (dist < maxR * 1.2) {
+            // Verify point is roughly within the quad bounds
+            const maxR = Math.max(
+                ...screenVerts.map(v => Math.sqrt((v.x - cx) ** 2 + (v.y - cy) ** 2))
+            );
+            if (dist < maxR * 1.2) {
+                // Prefer the closest face to the camera (highest avgDepth)
+                if (bestFace === null || bf.avgDepth > bestFace.avgDepth) {
+                    bestDist = dist;
+                    bestFace = bf;
+                } else if (Math.abs(bf.avgDepth - bestFace.avgDepth) < 0.01 && dist < bestDist) {
                     bestDist = dist;
                     bestFace = bf;
                 }
@@ -487,9 +490,9 @@ export class Viewer3D {
 
             // Parse face key to get voxel position: "x,y,z,fi"
             const parts = bf.key.split(',');
-            const vx = parseFloat(parts[0]) + 0.5;
-            const vy = parseFloat(parts[1]) + 0.5;
-            const vz = parseFloat(parts[2]) + 0.5;
+            const vx = parseInt(parts[0], 10) + 0.5;
+            const vy = parseInt(parts[1], 10) + 0.5;
+            const vz = parseInt(parts[2], 10) + 0.5;
 
             // Arrow start: face center in 3D
             const startProj = this.project3D(vx, vy, vz, nx, ny, nz);
@@ -612,7 +615,6 @@ export class Viewer3D {
         this.paintedForceFaces = new Set();
         this.paintMode = null;
         this._boundaryFaces = [];
-        this.draw();
         this.draw();
     }
 }
