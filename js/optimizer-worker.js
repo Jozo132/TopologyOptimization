@@ -638,6 +638,7 @@ class TopologyOptimizerWorker {
                     const density = x[idx2D];
                     if (density <= DENSITY_THRESHOLD) continue;
 
+                    // Front (z=0) and back (z=1) are always boundary for 2D single-layer extrusion
                     const visibleFaces = [0, 1];
                     for (const { fi, dx, dy } of xyNeighbors) {
                         if (!isSolid2D(elx + dx, ely + dy)) visibleFaces.push(fi);

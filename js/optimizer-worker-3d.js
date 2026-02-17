@@ -595,32 +595,56 @@ class TopologyOptimizerWorker3D {
                 const isNeighbourSolid = (dx, dy, dz) => {
                     if (dx === -1) {
                         if (bx0 === 0) return false;
-                        for (let gy = by0; gy < by1; gy++) for (let gz = bz0; gz < bz1; gz++) if (!isSolid(bx0 - 1, gy, gz)) return false;
+                        for (let gy = by0; gy < by1; gy++) {
+                            for (let gz = bz0; gz < bz1; gz++) {
+                                if (!isSolid(bx0 - 1, gy, gz)) return false;
+                            }
+                        }
                         return true;
                     }
                     if (dx === 1) {
                         if (bx1 >= nelx) return false;
-                        for (let gy = by0; gy < by1; gy++) for (let gz = bz0; gz < bz1; gz++) if (!isSolid(bx1, gy, gz)) return false;
+                        for (let gy = by0; gy < by1; gy++) {
+                            for (let gz = bz0; gz < bz1; gz++) {
+                                if (!isSolid(bx1, gy, gz)) return false;
+                            }
+                        }
                         return true;
                     }
                     if (dy === -1) {
                         if (by0 === 0) return false;
-                        for (let gx = bx0; gx < bx1; gx++) for (let gz = bz0; gz < bz1; gz++) if (!isSolid(gx, by0 - 1, gz)) return false;
+                        for (let gx = bx0; gx < bx1; gx++) {
+                            for (let gz = bz0; gz < bz1; gz++) {
+                                if (!isSolid(gx, by0 - 1, gz)) return false;
+                            }
+                        }
                         return true;
                     }
                     if (dy === 1) {
                         if (by1 >= nely) return false;
-                        for (let gx = bx0; gx < bx1; gx++) for (let gz = bz0; gz < bz1; gz++) if (!isSolid(gx, by1, gz)) return false;
+                        for (let gx = bx0; gx < bx1; gx++) {
+                            for (let gz = bz0; gz < bz1; gz++) {
+                                if (!isSolid(gx, by1, gz)) return false;
+                            }
+                        }
                         return true;
                     }
                     if (dz === -1) {
                         if (bz0 === 0) return false;
-                        for (let gx = bx0; gx < bx1; gx++) for (let gy = by0; gy < by1; gy++) if (!isSolid(gx, gy, bz0 - 1)) return false;
+                        for (let gx = bx0; gx < bx1; gx++) {
+                            for (let gy = by0; gy < by1; gy++) {
+                                if (!isSolid(gx, gy, bz0 - 1)) return false;
+                            }
+                        }
                         return true;
                     }
                     if (dz === 1) {
                         if (bz1 >= nelz) return false;
-                        for (let gx = bx0; gx < bx1; gx++) for (let gy = by0; gy < by1; gy++) if (!isSolid(gx, gy, bz1)) return false;
+                        for (let gx = bx0; gx < bx1; gx++) {
+                            for (let gy = by0; gy < by1; gy++) {
+                                if (!isSolid(gx, gy, bz1)) return false;
+                            }
+                        }
                         return true;
                     }
                     return false;

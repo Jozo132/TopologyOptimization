@@ -645,7 +645,7 @@ export class Viewer3D {
                     const v3 = next.vertices[2];
                     // 4 perimeter edges: v0→v1, v1→v2, v2→v3, v3→v0
                     edgePositions.push(...v0, ...v1, ...v1, ...v2, ...v2, ...v3, ...v3, ...v0);
-                    edgeColors.push(...Array(8 * 3).fill(WIREFRAME_EDGE_COLOR));
+                    edgeColors.push(...Array(4 * 2 * 3).fill(WIREFRAME_EDGE_COLOR)); // 4 edges × 2 vertices × 3 RGB
                 }
             }
         }
