@@ -17,6 +17,7 @@ export class Viewer3D {
         this.lastMousePos = { x: 0, y: 0 };
         
         this.densities = null;
+        this.meshData = null; // Triangle mesh data from optimizer
     }
 
     async init() {
@@ -91,6 +92,7 @@ export class Viewer3D {
     setModel(model) {
         this.model = model;
         this.densities = null;
+        this.meshData = null;
         this.draw();
     }
 
@@ -112,9 +114,80 @@ export class Viewer3D {
             return;
         }
         
-        const { nx, ny, nz, elements } = this.model;
+        const { nx, ny, nz } = this.model;
         
-        // Project 3D voxels to 2D
+        if (this.meshData && this.meshData.length > 0) {
+            this.drawTriangleMesh(nx, ny, nz);
+        } else {
+            this.drawVoxels(nx, ny, nz);
+        }
+        
+        // Draw axes
+        const centerX = width / 2;
+        const centerY = height / 2;
+        const scale = Math.min(width, height) / Math.max(nx, ny, nz) * 0.7 * this.zoom;
+        this.drawAxes(centerX, centerY, scale);
+    }
+
+    drawTriangleMesh(nx, ny, nz) {
+        const { width, height } = this.canvas;
+        const centerX = width / 2;
+        const centerY = height / 2;
+        const scale = Math.min(width, height) / Math.max(nx, ny, nz) * 0.7 * this.zoom;
+
+        // Project and sort triangles by depth (painter's algorithm)
+        const projectedTriangles = this.meshData.map(tri => {
+            const projVerts = tri.vertices.map(v =>
+                this.project3D(v[0], v[1], v[2], nx, ny, nz)
+            );
+            const avgDepth = (projVerts[0].z + projVerts[1].z + projVerts[2].z) / 3;
+            return { projVerts, density: tri.density, normal: tri.normal, avgDepth };
+        });
+
+        projectedTriangles.sort((a, b) => a.avgDepth - b.avgDepth);
+
+        projectedTriangles.forEach(tri => {
+            const screenVerts = tri.projVerts.map(pv => ({
+                x: centerX + pv.x * scale,
+                y: centerY - pv.y * scale
+            }));
+
+            // Color based on density
+            let r, g, b;
+            r = Math.floor(tri.density * 255);
+            g = 76;
+            b = Math.floor((1 - tri.density) * 255);
+
+            // Apply lighting from normal direction
+            const lightFactor = 0.5 + 0.5 * (tri.projVerts[0].z + 1) / 2;
+            r = Math.floor(r * lightFactor);
+            g = Math.floor(g * lightFactor);
+            b = Math.floor(b * lightFactor);
+
+            this.ctx.beginPath();
+            this.ctx.moveTo(screenVerts[0].x, screenVerts[0].y);
+            this.ctx.lineTo(screenVerts[1].x, screenVerts[1].y);
+            this.ctx.lineTo(screenVerts[2].x, screenVerts[2].y);
+            this.ctx.closePath();
+
+            if (this.wireframe) {
+                this.ctx.strokeStyle = `rgb(${r}, ${g}, ${b})`;
+                this.ctx.stroke();
+            } else {
+                this.ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+                this.ctx.fill();
+            }
+        });
+    }
+
+    drawVoxels(nx, ny, nz) {
+        const { width, height } = this.canvas;
+        const { elements } = this.model;
+        const centerX = width / 2;
+        const centerY = height / 2;
+        const scale = Math.min(width, height) / Math.max(nx, ny, nz) * 0.7 * this.zoom;
+
+        // Collect visible voxels
         const voxels = [];
         for (let x = 0; x < nx; x++) {
             for (let y = 0; y < ny; y++) {
@@ -122,7 +195,7 @@ export class Viewer3D {
                     const index = x + y * nx + z * nx * ny;
                     const density = this.densities ? this.densities[index] : elements[index];
                     
-                    if (density > DENSITY_THRESHOLD) { // Threshold for visibility
+                    if (density > DENSITY_THRESHOLD) {
                         voxels.push({ x, y, z, density });
                     }
                 }
@@ -136,26 +209,20 @@ export class Viewer3D {
             return depthA - depthB;
         });
         
-        // Draw voxels
-        const centerX = width / 2;
-        const centerY = height / 2;
-        const scale = Math.min(width, height) / Math.max(nx, ny, nz) * 0.7 * this.zoom;
-        
+        // Draw each voxel as two triangles (a quad split into triangles)
         voxels.forEach(voxel => {
             const projected = this.project3D(voxel.x, voxel.y, voxel.z, nx, ny, nz);
             const screenX = centerX + projected.x * scale;
             const screenY = centerY - projected.y * scale;
-            const size = scale * 0.8;
+            const halfSize = scale * 0.4;
             
             // Color based on density
             let r, g, b;
             if (this.densities) {
-                // Gradient from blue (low density) to red (high density)
                 r = Math.floor(voxel.density * 255);
-                g = Math.floor(76);
+                g = 76;
                 b = Math.floor((1 - voxel.density) * 255);
             } else {
-                // Default blue
                 r = 74;
                 g = 144;
                 b = 226;
@@ -167,18 +234,46 @@ export class Viewer3D {
             g = Math.floor(g * lightFactor);
             b = Math.floor(b * lightFactor);
             
-            this.ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
-            
+            // Draw as two triangles instead of a square
+            const x0 = screenX - halfSize;
+            const y0 = screenY - halfSize;
+            const x1 = screenX + halfSize;
+            const y1 = screenY + halfSize;
+
             if (this.wireframe) {
                 this.ctx.strokeStyle = `rgb(${r}, ${g}, ${b})`;
-                this.ctx.strokeRect(screenX - size / 2, screenY - size / 2, size, size);
+                // Triangle 1
+                this.ctx.beginPath();
+                this.ctx.moveTo(x0, y0);
+                this.ctx.lineTo(x1, y0);
+                this.ctx.lineTo(x1, y1);
+                this.ctx.closePath();
+                this.ctx.stroke();
+                // Triangle 2
+                this.ctx.beginPath();
+                this.ctx.moveTo(x0, y0);
+                this.ctx.lineTo(x1, y1);
+                this.ctx.lineTo(x0, y1);
+                this.ctx.closePath();
+                this.ctx.stroke();
             } else {
-                this.ctx.fillRect(screenX - size / 2, screenY - size / 2, size, size);
+                this.ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+                // Triangle 1
+                this.ctx.beginPath();
+                this.ctx.moveTo(x0, y0);
+                this.ctx.lineTo(x1, y0);
+                this.ctx.lineTo(x1, y1);
+                this.ctx.closePath();
+                this.ctx.fill();
+                // Triangle 2
+                this.ctx.beginPath();
+                this.ctx.moveTo(x0, y0);
+                this.ctx.lineTo(x1, y1);
+                this.ctx.lineTo(x0, y1);
+                this.ctx.closePath();
+                this.ctx.fill();
             }
         });
-        
-        // Draw axes
-        this.drawAxes(centerX, centerY, scale);
     }
 
     project3D(x, y, z, nx, ny, nz) {
@@ -238,6 +333,11 @@ export class Viewer3D {
         this.ctx.lineWidth = 1;
     }
 
+    updateMesh(meshData) {
+        this.meshData = meshData;
+        this.draw();
+    }
+
     updateDensities(densities) {
         this.densities = densities;
         this.draw();
@@ -257,6 +357,7 @@ export class Viewer3D {
     clear() {
         this.model = null;
         this.densities = null;
+        this.meshData = null;
         this.draw();
     }
 }
