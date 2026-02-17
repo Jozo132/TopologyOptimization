@@ -100,6 +100,55 @@ class TopologyApp {
             const value = parseInt(e.target.value);
             this.config.granuleDensity = value;
             document.getElementById('granuleDensityValue').textContent = value;
+            
+            // Re-voxelize the current model if one exists
+            if (this.currentModel) {
+                let newModel = null;
+                
+                // Check if it's an STL model with original vertices
+                if (this.currentModel.originalVertices) {
+                    newModel = this.importer.voxelizeVertices(
+                        this.currentModel.originalVertices,
+                        value
+                    );
+                    // Preserve the model type if it was set
+                    if (this.currentModel.type) {
+                        newModel.type = this.currentModel.type;
+                    }
+                }
+                // Check if it's a template with scaling info
+                else if (this.currentModel.templateScale) {
+                    newModel = this.importer.createTemplate(
+                        this.currentModel.type,
+                        value
+                    );
+                    // Preserve any custom boundary conditions
+                    if (this.currentModel.forcePosition) {
+                        newModel.forcePosition = this.currentModel.forcePosition;
+                    }
+                    if (this.currentModel.constraintPositions) {
+                        newModel.constraintPositions = this.currentModel.constraintPositions;
+                    }
+                }
+                
+                if (newModel) {
+                    this.currentModel = newModel;
+                    
+                    // Update display
+                    const info = document.getElementById('modelInfo');
+                    if (!info.classList.contains('hidden')) {
+                        const modelName = newModel.type ? `${newModel.type} template` : 'Model';
+                        info.innerHTML = `
+                            <strong>${modelName} updated!</strong><br>
+                            <strong>Elements:</strong> ${newModel.nx * newModel.ny * newModel.nz}<br>
+                            <strong>Dimensions:</strong> ${newModel.nx} x ${newModel.ny} x ${newModel.nz}
+                        `;
+                    }
+                    
+                    // Update viewer with new voxel grid
+                    this.viewer.setModel(newModel);
+                }
+            }
         });
         
         // Step 2: Assign
@@ -219,7 +268,7 @@ class TopologyApp {
 
     loadTemplate(type) {
         console.log('Loading template:', type);
-        const model = this.importer.createTemplate(type);
+        const model = this.importer.createTemplate(type, this.config.granuleDensity);
         this.currentModel = model;
         
         // For cube template, set specific boundary conditions
