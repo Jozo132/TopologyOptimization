@@ -520,8 +520,8 @@ export class Viewer3D {
             this._drawMesh(gl, projection, modelView, normalMatrix);
         }
 
-        // Draw edges
-        if (this._edgeBuffers && this._edgeBuffers.count > 0 && this.wireframe) {
+        // Draw edges: always for AMR triangle mesh (to show block boundaries), wireframe-only otherwise
+        if (this._edgeBuffers && this._edgeBuffers.count > 0 && (this.wireframe || this.meshData)) {
             this._drawEdges(gl, projection, modelView);
         }
 
@@ -617,7 +617,11 @@ export class Viewer3D {
 
         this._boundaryFaces = [];
 
-        for (const tri of this.meshData) {
+        // Process triangles in consecutive pairs (each face = 2 triangles sharing a diagonal).
+        // For merged AMR blocks (blockSize > 1) emit the 4 perimeter edges of the quad.
+        // For individual-element triangles (blockSize === 1) emit no edges (no visible grid clutter).
+        for (let ti = 0; ti < this.meshData.length; ti++) {
+            const tri = this.meshData[ti];
             const density = tri.density !== undefined ? tri.density : DEFAULT_TRIANGLE_DENSITY;
             const n = tri.normal || [0, 0, 1];
             const r = density;
@@ -628,12 +632,22 @@ export class Viewer3D {
             normals.push(...n, ...n, ...n);
             colors.push(r, g, b, r, g, b, r, g, b);
 
-            edgePositions.push(
-                ...tri.vertices[0], ...tri.vertices[1],
-                ...tri.vertices[1], ...tri.vertices[2],
-                ...tri.vertices[2], ...tri.vertices[0]
-            );
-            edgeColors.push(...Array(EDGE_COLOR_COMPONENT_COUNT).fill(WIREFRAME_EDGE_COLOR));
+            // Emit block boundary edges only for merged AMR quads.
+            // Each face is emitted as two consecutive triangles: (v0,v1,v2) and (v0,v2,v3).
+            // Perimeter edges are v0→v1, v1→v2 on the first triangle, and v2→v3, v3→v0
+            // on the second (i.e. v2→v3 and v3→v0 where v3 = second tri's v2).
+            const blockSize = tri.blockSize !== undefined ? tri.blockSize : 1;
+            if (blockSize > 1) {
+                const next = this.meshData[ti + 1];
+                if (next && ti % 2 === 0) {
+                    // v0, v1, v2 from first tri; v3 = next.vertices[2] (4th corner)
+                    const v0 = tri.vertices[0], v1 = tri.vertices[1], v2 = tri.vertices[2];
+                    const v3 = next.vertices[2];
+                    // 4 perimeter edges: v0→v1, v1→v2, v2→v3, v3→v0
+                    edgePositions.push(...v0, ...v1, ...v1, ...v2, ...v2, ...v3, ...v3, ...v0);
+                    edgeColors.push(...Array(8 * 3).fill(WIREFRAME_EDGE_COLOR));
+                }
+            }
         }
 
         this._uploadMeshBuffers(gl, positions, normals, colors);

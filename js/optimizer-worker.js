@@ -382,7 +382,7 @@ class TopologyOptimizerWorker {
             }
 
             // Build adaptive mesh data for this iteration
-            const meshData = this.buildAdaptiveMesh(nelx, nely, nelz, x, elementEnergies, elementForces);
+            const meshData = this.buildAdaptiveMesh(nelx, nely, nelz, x, elementEnergies, elementForces, amrManager);
 
             // Track iteration timing
             const iterEndTime = performance.now();
@@ -412,7 +412,7 @@ class TopologyOptimizerWorker {
             return;
         }
 
-        const finalMesh = this.buildAdaptiveMesh(nelx, nely, nelz, x, lastElementEnergies, elementForces);
+        const finalMesh = this.buildAdaptiveMesh(nelx, nely, nelz, x, lastElementEnergies, elementForces, amrManager);
 
         // Also build the flat densities3D for export compatibility
         const densities3D = new Float32Array(nelx * nely * nelz);
@@ -483,20 +483,21 @@ class TopologyOptimizerWorker {
 
     /**
      * Build adaptive mesh data.
-     * Elements with higher stress or near applied forces get subdivided
-     * into smaller triangles, while low-stress regions use coarser triangles.
-     * Uses stiffness-weighted strain energy (stiffness × raw energy) for auto-resizing.
-     * Only boundary faces (adjacent to void or domain boundary) are emitted.
-     * Returns an array of { vertices, density, strain } triangle objects for rendering.
+     * When AMR is active each AMR group is rendered as a merged block whose face size
+     * matches the group bounding box — coarse groups produce large faces (low stress)
+     * and fine groups produce small faces (high stress), making the grain size
+     * variation visually obvious.  When AMR is disabled every element is rendered
+     * individually (original behaviour).
+     * Returns an array of { vertices, normal, density, strain, blockSize } triangle
+     * objects for rendering.
      */
-    buildAdaptiveMesh(nelx, nely, nelz, x, elementEnergies, elementForces) {
-    // Duplicated from constants.js since workers cannot use ES module imports
-    const DENSITY_THRESHOLD = 0.3;
+    buildAdaptiveMesh(nelx, nely, nelz, x, elementEnergies, elementForces, amrManager) {
+        // Duplicated from constants.js since workers cannot use ES module imports
+        const DENSITY_THRESHOLD = 0.3;
         const triangles = [];
 
-        // Compute stress-based metric: scale energy by element stiffness (density^penal)
+        // Compute stress-based metric: stiffness × strain energy per element
         let maxStress = 0;
-        let maxForce = 0;
         const elementStress = elementEnergies ? new Float32Array(elementEnergies.length) : null;
         if (elementEnergies) {
             for (let i = 0; i < elementEnergies.length; i++) {
@@ -505,64 +506,145 @@ class TopologyOptimizerWorker {
                 if (elementStress[i] > maxStress) maxStress = elementStress[i];
             }
         }
-        if (elementForces) {
-            for (let i = 0; i < elementForces.length; i++) {
-                if (elementForces[i] > maxForce) maxForce = elementForces[i];
-            }
-        }
 
-        // Helper to check if neighbor is solid (2D index: ely + elx * nely)
+        // Helper – is an element solid? (2D index: ely + elx * nely)
         const isSolid2D = (elx, ely) => {
             if (elx < 0 || elx >= nelx || ely < 0 || ely >= nely) return false;
             return x[ely + elx * nely] > DENSITY_THRESHOLD;
         };
 
-        // Face neighbor directions for 2D-extruded elements:
-        // 0: Front (z-), 1: Back (z+), 2: Bottom (y-), 3: Top (y+), 4: Left (x-), 5: Right (x+)
-        // For 2D: z is always one layer, so front/back are always boundary.
-        // Only x/y neighbors need checking.
+        // ── AMR-aware rendering ──────────────────────────────────────────────
+        // Build a set of element indices that have already been emitted so that
+        // per-element fallback doesn't double-render anything covered by a group.
+        const rendered = new Uint8Array(nelx * nely);
+
+        if (amrManager && amrManager.groups && amrManager.groups.length > 0) {
+            for (const group of amrManager.groups) {
+                if (group.elements.length === 0) continue;
+
+                // Compute group bounding box in element coordinates
+                let minGX = nelx, minGY = nely, maxGX = -1, maxGY = -1;
+                let totalDensity = 0;
+                let totalStress = 0;
+                let solidCount = 0;
+
+                for (const idx of group.elements) {
+                    const ely = idx % nely;
+                    const elx = Math.floor(idx / nely);
+                    const density = x[idx];
+                    if (density > DENSITY_THRESHOLD) {
+                        solidCount++;
+                        totalDensity += density;
+                        totalStress += elementStress ? elementStress[idx] : 0;
+                        if (elx < minGX) minGX = elx;
+                        if (ely < minGY) minGY = ely;
+                        if (elx > maxGX) maxGX = elx;
+                        if (ely > maxGY) maxGY = ely;
+                    }
+                    rendered[idx] = 1;
+                }
+
+                if (solidCount === 0) continue;
+
+                const avgDensity = totalDensity / solidCount;
+                const avgStress = totalStress / solidCount;
+                const strain = maxStress > 0 ? avgStress / maxStress : 0;
+
+                // Block spans the group bounding box
+                const bx0 = minGX, bx1 = maxGX + 1;
+                const by0 = minGY, by1 = maxGY + 1;
+                const bw = bx1 - bx0; // block width  in elements
+                const bh = by1 - by0; // block height in elements
+
+                // Helper – is the block's neighbour in direction (dx,dy) solid?
+                // A neighbouring block boundary is void if ANY element on the edge
+                // outside the group is void (conservative: show face whenever boundary).
+                const isNeighbourSolid = (dx, dy) => {
+                    if (dx === -1) {
+                        if (bx0 === 0) return false;
+                        for (let gy = by0; gy < by1; gy++) {
+                            if (!isSolid2D(bx0 - 1, gy)) return false;
+                        }
+                        return true;
+                    }
+                    if (dx === 1) {
+                        if (bx1 >= nelx) return false;
+                        for (let gy = by0; gy < by1; gy++) {
+                            if (!isSolid2D(bx1, gy)) return false;
+                        }
+                        return true;
+                    }
+                    if (dy === -1) {
+                        if (by0 === 0) return false;
+                        for (let gx = bx0; gx < bx1; gx++) {
+                            if (!isSolid2D(gx, by0 - 1)) return false;
+                        }
+                        return true;
+                    }
+                    if (dy === 1) {
+                        if (by1 >= nely) return false;
+                        for (let gx = bx0; gx < bx1; gx++) {
+                            if (!isSolid2D(gx, by1)) return false;
+                        }
+                        return true;
+                    }
+                    return false;
+                };
+
+                // Emit one merged quad per boundary face of the block
+                // Front / back (z faces) are always visible for 2D extrusion
+                // Face 0: Front (z = 0)
+                triangles.push({ vertices: [[bx0, by0, 0], [bx1, by0, 0], [bx1, by1, 0]], normal: [0, 0, -1], density: avgDensity, strain, blockSize: bw });
+                triangles.push({ vertices: [[bx0, by0, 0], [bx1, by1, 0], [bx0, by1, 0]], normal: [0, 0, -1], density: avgDensity, strain, blockSize: bw });
+                // Face 1: Back (z = 1)
+                triangles.push({ vertices: [[bx1, by0, 1], [bx0, by0, 1], [bx0, by1, 1]], normal: [0, 0, 1], density: avgDensity, strain, blockSize: bw });
+                triangles.push({ vertices: [[bx1, by0, 1], [bx0, by1, 1], [bx1, by1, 1]], normal: [0, 0, 1], density: avgDensity, strain, blockSize: bw });
+                // Face 2: Bottom (y = by0)
+                if (!isNeighbourSolid(0, -1)) {
+                    triangles.push({ vertices: [[bx0, by0, 0], [bx1, by0, 0], [bx1, by0, 1]], normal: [0, -1, 0], density: avgDensity, strain, blockSize: bw });
+                    triangles.push({ vertices: [[bx0, by0, 0], [bx1, by0, 1], [bx0, by0, 1]], normal: [0, -1, 0], density: avgDensity, strain, blockSize: bw });
+                }
+                // Face 3: Top (y = by1)
+                if (!isNeighbourSolid(0, 1)) {
+                    triangles.push({ vertices: [[bx0, by1, 1], [bx1, by1, 1], [bx1, by1, 0]], normal: [0, 1, 0], density: avgDensity, strain, blockSize: bw });
+                    triangles.push({ vertices: [[bx0, by1, 1], [bx1, by1, 0], [bx0, by1, 0]], normal: [0, 1, 0], density: avgDensity, strain, blockSize: bw });
+                }
+                // Face 4: Left (x = bx0)
+                if (!isNeighbourSolid(-1, 0)) {
+                    triangles.push({ vertices: [[bx0, by0, 1], [bx0, by1, 1], [bx0, by1, 0]], normal: [-1, 0, 0], density: avgDensity, strain, blockSize: bw });
+                    triangles.push({ vertices: [[bx0, by0, 1], [bx0, by1, 0], [bx0, by0, 0]], normal: [-1, 0, 0], density: avgDensity, strain, blockSize: bw });
+                }
+                // Face 5: Right (x = bx1)
+                if (!isNeighbourSolid(1, 0)) {
+                    triangles.push({ vertices: [[bx1, by0, 0], [bx1, by1, 0], [bx1, by1, 1]], normal: [1, 0, 0], density: avgDensity, strain, blockSize: bw });
+                    triangles.push({ vertices: [[bx1, by0, 0], [bx1, by1, 1], [bx1, by0, 1]], normal: [1, 0, 0], density: avgDensity, strain, blockSize: bw });
+                }
+            }
+        }
+
+        // ── Per-element fallback for elements not covered by any AMR group ───
         const xyNeighbors = [
-            { fi: 2, dx: 0, dy: -1 }, // Bottom (y-)
-            { fi: 3, dx: 0, dy: 1 },  // Top (y+)
-            { fi: 4, dx: -1, dy: 0 }, // Left (x-)
-            { fi: 5, dx: 1, dy: 0 },  // Right (x+)
+            { fi: 2, dx: 0, dy: -1 },
+            { fi: 3, dx: 0, dy: 1 },
+            { fi: 4, dx: -1, dy: 0 },
+            { fi: 5, dx: 1, dy: 0 },
         ];
 
         for (let z = 0; z < nelz; z++) {
             for (let ely = 0; ely < nely; ely++) {
                 for (let elx = 0; elx < nelx; elx++) {
                     const idx2D = ely + elx * nely;
+                    if (rendered[idx2D]) continue;
                     const density = x[idx2D];
-
                     if (density <= DENSITY_THRESHOLD) continue;
 
-                    // Determine visible faces
-                    // Front (z-) and Back (z+) are always visible for single-layer 2D
                     const visibleFaces = [0, 1];
                     for (const { fi, dx, dy } of xyNeighbors) {
-                        if (!isSolid2D(elx + dx, ely + dy)) {
-                            visibleFaces.push(fi);
-                        }
+                        if (!isSolid2D(elx + dx, ely + dy)) visibleFaces.push(fi);
                     }
 
-                    // Determine subdivision level based on stress / force ratio
-                    let subdivLevel = 1; // default: 2 triangles per face (1x1 subdivision)
-                    if (maxStress > 0 && elementStress) {
-                        const stressRatio = elementStress[idx2D] / maxStress;
-                        const forceRatio = maxForce > 0 ? elementForces[idx2D] / maxForce : 0;
-                        const ratio = Math.max(stressRatio, forceRatio);
-                        if (ratio > 0.6) {
-                            subdivLevel = 4; // 4x4 subdivision for high-stress areas
-                        } else if (ratio > 0.3) {
-                            subdivLevel = 2; // 2x2 subdivision for medium areas
-                        }
-                    }
-
-                    // Normalized strain for this element (0..1)
                     const strain = (maxStress > 0 && elementStress) ? elementStress[idx2D] / maxStress : 0;
-
-                    // Generate subdivided mesh for visible faces only
-                    this.addSubdividedElement(triangles, elx, ely, z, density, subdivLevel, visibleFaces, strain);
+                    this.addSubdividedElement(triangles, elx, ely, z, density, 1, visibleFaces, strain);
                 }
             }
         }
@@ -571,12 +653,8 @@ class TopologyOptimizerWorker {
     }
 
     /**
-     * Add an element as triangulated quads with adaptive subdivision.
-     * Only emits faces listed in visibleFaces (0=front, 1=back, 2=bottom, 3=top, 4=left, 5=right).
-     * subdivLevel=1 means 2 triangles per visible face (standard).
-     * subdivLevel=2 means 4x2=8 triangles per face (2x2 grid).
-     * subdivLevel=4 means 16x2=32 triangles per face (4x4 grid).
-     * @param {number} strain - Normalized strain value (0..1) for this element.
+     * Add an element as two triangles per visible face (simple quad split).
+     * visibleFaces: 0=front(z-), 1=back(z+), 2=bottom(y-), 3=top(y+), 4=left(x-), 5=right(x+).
      */
     addSubdividedElement(triangles, ex, ey, ez, density, subdivLevel, visibleFaces, strain) {
         const n = subdivLevel;
@@ -597,23 +675,11 @@ class TopologyOptimizerWorker {
                             const x1 = x0 + step;
                             const y1 = y0 + step;
                             if (fi === 0) {
-                                triangles.push({
-                                    vertices: [[x0, y0, baseZ], [x1, y0, baseZ], [x1, y1, baseZ]],
-                                    normal: [0, 0, -1], density, strain
-                                });
-                                triangles.push({
-                                    vertices: [[x0, y0, baseZ], [x1, y1, baseZ], [x0, y1, baseZ]],
-                                    normal: [0, 0, -1], density, strain
-                                });
+                                triangles.push({ vertices: [[x0, y0, baseZ], [x1, y0, baseZ], [x1, y1, baseZ]], normal: [0, 0, -1], density, strain, blockSize: 1 });
+                                triangles.push({ vertices: [[x0, y0, baseZ], [x1, y1, baseZ], [x0, y1, baseZ]], normal: [0, 0, -1], density, strain, blockSize: 1 });
                             } else {
-                                triangles.push({
-                                    vertices: [[x1, y0, baseZ + 1], [x0, y0, baseZ + 1], [x0, y1, baseZ + 1]],
-                                    normal: [0, 0, 1], density, strain
-                                });
-                                triangles.push({
-                                    vertices: [[x1, y0, baseZ + 1], [x0, y1, baseZ + 1], [x1, y1, baseZ + 1]],
-                                    normal: [0, 0, 1], density, strain
-                                });
+                                triangles.push({ vertices: [[x1, y0, baseZ + 1], [x0, y0, baseZ + 1], [x0, y1, baseZ + 1]], normal: [0, 0, 1], density, strain, blockSize: 1 });
+                                triangles.push({ vertices: [[x1, y0, baseZ + 1], [x0, y1, baseZ + 1], [x1, y1, baseZ + 1]], normal: [0, 0, 1], density, strain, blockSize: 1 });
                             }
                         }
                     }
@@ -622,56 +688,32 @@ class TopologyOptimizerWorker {
                     for (let s = 0; s < n; s++) {
                         const t0 = s * step;
                         const t1 = t0 + step;
-                        triangles.push({
-                            vertices: [[baseX + t0, baseY, baseZ], [baseX + t1, baseY, baseZ], [baseX + t1, baseY, baseZ + 1]],
-                            normal: [0, -1, 0], density, strain
-                        });
-                        triangles.push({
-                            vertices: [[baseX + t0, baseY, baseZ], [baseX + t1, baseY, baseZ + 1], [baseX + t0, baseY, baseZ + 1]],
-                            normal: [0, -1, 0], density, strain
-                        });
+                        triangles.push({ vertices: [[baseX + t0, baseY, baseZ], [baseX + t1, baseY, baseZ], [baseX + t1, baseY, baseZ + 1]], normal: [0, -1, 0], density, strain, blockSize: 1 });
+                        triangles.push({ vertices: [[baseX + t0, baseY, baseZ], [baseX + t1, baseY, baseZ + 1], [baseX + t0, baseY, baseZ + 1]], normal: [0, -1, 0], density, strain, blockSize: 1 });
                     }
                     break;
                 case 3: // Top face (y = baseY + 1)
                     for (let s = 0; s < n; s++) {
                         const t0 = s * step;
                         const t1 = t0 + step;
-                        triangles.push({
-                            vertices: [[baseX + t0, baseY + 1, baseZ + 1], [baseX + t1, baseY + 1, baseZ + 1], [baseX + t1, baseY + 1, baseZ]],
-                            normal: [0, 1, 0], density, strain
-                        });
-                        triangles.push({
-                            vertices: [[baseX + t0, baseY + 1, baseZ + 1], [baseX + t1, baseY + 1, baseZ], [baseX + t0, baseY + 1, baseZ]],
-                            normal: [0, 1, 0], density, strain
-                        });
+                        triangles.push({ vertices: [[baseX + t0, baseY + 1, baseZ + 1], [baseX + t1, baseY + 1, baseZ + 1], [baseX + t1, baseY + 1, baseZ]], normal: [0, 1, 0], density, strain, blockSize: 1 });
+                        triangles.push({ vertices: [[baseX + t0, baseY + 1, baseZ + 1], [baseX + t1, baseY + 1, baseZ], [baseX + t0, baseY + 1, baseZ]], normal: [0, 1, 0], density, strain, blockSize: 1 });
                     }
                     break;
                 case 4: // Left face (x = baseX)
                     for (let s = 0; s < n; s++) {
                         const t0 = s * step;
                         const t1 = t0 + step;
-                        triangles.push({
-                            vertices: [[baseX, baseY + t0, baseZ + 1], [baseX, baseY + t1, baseZ + 1], [baseX, baseY + t1, baseZ]],
-                            normal: [-1, 0, 0], density, strain
-                        });
-                        triangles.push({
-                            vertices: [[baseX, baseY + t0, baseZ + 1], [baseX, baseY + t1, baseZ], [baseX, baseY + t0, baseZ]],
-                            normal: [-1, 0, 0], density, strain
-                        });
+                        triangles.push({ vertices: [[baseX, baseY + t0, baseZ + 1], [baseX, baseY + t1, baseZ + 1], [baseX, baseY + t1, baseZ]], normal: [-1, 0, 0], density, strain, blockSize: 1 });
+                        triangles.push({ vertices: [[baseX, baseY + t0, baseZ + 1], [baseX, baseY + t1, baseZ], [baseX, baseY + t0, baseZ]], normal: [-1, 0, 0], density, strain, blockSize: 1 });
                     }
                     break;
                 case 5: // Right face (x = baseX + 1)
                     for (let s = 0; s < n; s++) {
                         const t0 = s * step;
                         const t1 = t0 + step;
-                        triangles.push({
-                            vertices: [[baseX + 1, baseY + t0, baseZ], [baseX + 1, baseY + t1, baseZ], [baseX + 1, baseY + t1, baseZ + 1]],
-                            normal: [1, 0, 0], density, strain
-                        });
-                        triangles.push({
-                            vertices: [[baseX + 1, baseY + t0, baseZ], [baseX + 1, baseY + t1, baseZ + 1], [baseX + 1, baseY + t0, baseZ + 1]],
-                            normal: [1, 0, 0], density, strain
-                        });
+                        triangles.push({ vertices: [[baseX + 1, baseY + t0, baseZ], [baseX + 1, baseY + t1, baseZ], [baseX + 1, baseY + t1, baseZ + 1]], normal: [1, 0, 0], density, strain, blockSize: 1 });
+                        triangles.push({ vertices: [[baseX + 1, baseY + t0, baseZ], [baseX + 1, baseY + t1, baseZ + 1], [baseX + 1, baseY + t0, baseZ + 1]], normal: [1, 0, 0], density, strain, blockSize: 1 });
                     }
                     break;
             }

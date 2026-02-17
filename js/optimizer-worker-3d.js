@@ -400,7 +400,7 @@ class TopologyOptimizerWorker3D {
             }
 
             // Build adaptive mesh data for this iteration
-            const meshData = this.buildAdaptiveMesh(nelx, nely, nelz, x, elementEnergies, elementForces);
+            const meshData = this.buildAdaptiveMesh(nelx, nely, nelz, x, elementEnergies, elementForces, amrManager);
 
             // Track iteration timing
             const iterEndTime = performance.now();
@@ -430,7 +430,7 @@ class TopologyOptimizerWorker3D {
             return;
         }
 
-        const finalMesh = this.buildAdaptiveMesh(nelx, nely, nelz, x, lastElementEnergies, elementForces);
+        const finalMesh = this.buildAdaptiveMesh(nelx, nely, nelz, x, lastElementEnergies, elementForces, amrManager);
         
         // Final timing statistics
         const totalTime = performance.now() - startTime;
@@ -512,20 +512,21 @@ class TopologyOptimizerWorker3D {
 
     /**
      * Build adaptive mesh data.
-     * Elements with higher stress or near applied forces get subdivided
-     * into smaller triangles, while low-stress regions use coarser triangles.
-     * Uses stiffness-weighted strain energy (stiffness × raw energy) for auto-resizing.
-     * Only boundary faces (adjacent to void or domain boundary) are emitted.
-     * Returns an array of { vertices, density, strain } triangle objects for rendering.
+     * When AMR is active each AMR group is rendered as a merged block whose face size
+     * matches the group bounding box — coarse groups produce large faces (low stress)
+     * and fine groups produce small faces (high stress), making the grain size
+     * variation visually obvious.  When AMR is disabled every element is rendered
+     * individually (original behaviour).
+     * Returns an array of { vertices, normal, density, strain, blockSize } triangle
+     * objects for rendering.
      */
-    buildAdaptiveMesh(nelx, nely, nelz, x, elementEnergies, elementForces) {
+    buildAdaptiveMesh(nelx, nely, nelz, x, elementEnergies, elementForces, amrManager) {
         // Duplicated from constants.js since workers cannot use ES module imports
         const DENSITY_THRESHOLD = 0.3;
         const triangles = [];
 
-        // Compute stress-based metric: scale energy by element stiffness (density^penal)
+        // Compute stress-based metric: stiffness × strain energy per element
         let maxStress = 0;
-        let maxForce = 0;
         const elementStress = elementEnergies ? new Float32Array(elementEnergies.length) : null;
         if (elementEnergies) {
             for (let i = 0; i < elementEnergies.length; i++) {
@@ -534,66 +535,149 @@ class TopologyOptimizerWorker3D {
                 if (elementStress[i] > maxStress) maxStress = elementStress[i];
             }
         }
-        if (elementForces) {
-            for (let i = 0; i < elementForces.length; i++) {
-                if (elementForces[i] > maxForce) maxForce = elementForces[i];
-            }
-        }
 
-        // Helper to check if neighbor is solid (above density threshold)
+        // Helper – is an element solid?
         const isSolid = (ex, ey, ez) => {
             if (ex < 0 || ex >= nelx || ey < 0 || ey >= nely || ez < 0 || ez >= nelz) return false;
             return x[ex + ey * nelx + ez * nelx * nely] > DENSITY_THRESHOLD;
         };
 
-        // Face directions: [dx, dy, dz] for each of the 6 faces
+        // Face directions: [dx,dy,dz] for each of the 6 faces
         const faceNeighbors = [
-            [-1, 0, 0], // Front face (X = baseX)
-            [1, 0, 0],  // Back face (X = baseX + 1)
-            [0, -1, 0], // Left face (Y = baseY)
-            [0, 1, 0],  // Right face (Y = baseY + 1)
-            [0, 0, -1], // Bottom face (Z = baseZ)
-            [0, 0, 1],  // Top face (Z = baseZ + 1)
+            [-1, 0, 0], [1, 0, 0],
+            [0, -1, 0], [0, 1, 0],
+            [0, 0, -1], [0, 0, 1],
         ];
 
+        // ── AMR-aware rendering ──────────────────────────────────────────────
+        const rendered = new Uint8Array(nelx * nely * nelz);
+
+        if (amrManager && amrManager.groups && amrManager.groups.length > 0) {
+            for (const group of amrManager.groups) {
+                if (group.elements.length === 0) continue;
+
+                let minGX = nelx, minGY = nely, minGZ = nelz;
+                let maxGX = -1, maxGY = -1, maxGZ = -1;
+                let totalDensity = 0, totalStress = 0, solidCount = 0;
+
+                for (const idx of group.elements) {
+                    const elz = Math.floor(idx / (nelx * nely));
+                    const rem = idx % (nelx * nely);
+                    const ely = Math.floor(rem / nelx);
+                    const elx = rem % nelx;
+                    const density = x[idx];
+                    if (density > DENSITY_THRESHOLD) {
+                        solidCount++;
+                        totalDensity += density;
+                        totalStress += elementStress ? elementStress[idx] : 0;
+                        if (elx < minGX) minGX = elx;
+                        if (ely < minGY) minGY = ely;
+                        if (elz < minGZ) minGZ = elz;
+                        if (elx > maxGX) maxGX = elx;
+                        if (ely > maxGY) maxGY = ely;
+                        if (elz > maxGZ) maxGZ = elz;
+                    }
+                    rendered[idx] = 1;
+                }
+
+                if (solidCount === 0) continue;
+
+                const avgDensity = totalDensity / solidCount;
+                const avgStress = totalStress / solidCount;
+                const strain = maxStress > 0 ? avgStress / maxStress : 0;
+
+                const bx0 = minGX, bx1 = maxGX + 1;
+                const by0 = minGY, by1 = maxGY + 1;
+                const bz0 = minGZ, bz1 = maxGZ + 1;
+                const bw = bx1 - bx0;
+
+                // Is a neighbouring slab of the block fully solid outside?
+                const isNeighbourSolid = (dx, dy, dz) => {
+                    if (dx === -1) {
+                        if (bx0 === 0) return false;
+                        for (let gy = by0; gy < by1; gy++) for (let gz = bz0; gz < bz1; gz++) if (!isSolid(bx0 - 1, gy, gz)) return false;
+                        return true;
+                    }
+                    if (dx === 1) {
+                        if (bx1 >= nelx) return false;
+                        for (let gy = by0; gy < by1; gy++) for (let gz = bz0; gz < bz1; gz++) if (!isSolid(bx1, gy, gz)) return false;
+                        return true;
+                    }
+                    if (dy === -1) {
+                        if (by0 === 0) return false;
+                        for (let gx = bx0; gx < bx1; gx++) for (let gz = bz0; gz < bz1; gz++) if (!isSolid(gx, by0 - 1, gz)) return false;
+                        return true;
+                    }
+                    if (dy === 1) {
+                        if (by1 >= nely) return false;
+                        for (let gx = bx0; gx < bx1; gx++) for (let gz = bz0; gz < bz1; gz++) if (!isSolid(gx, by1, gz)) return false;
+                        return true;
+                    }
+                    if (dz === -1) {
+                        if (bz0 === 0) return false;
+                        for (let gx = bx0; gx < bx1; gx++) for (let gy = by0; gy < by1; gy++) if (!isSolid(gx, gy, bz0 - 1)) return false;
+                        return true;
+                    }
+                    if (dz === 1) {
+                        if (bz1 >= nelz) return false;
+                        for (let gx = bx0; gx < bx1; gx++) for (let gy = by0; gy < by1; gy++) if (!isSolid(gx, gy, bz1)) return false;
+                        return true;
+                    }
+                    return false;
+                };
+
+                // Emit one merged quad per exposed boundary face of the block
+                // Face 0: X- face
+                if (!isNeighbourSolid(-1, 0, 0)) {
+                    triangles.push({ vertices: [[bx0, by0, bz0], [bx0, by1, bz0], [bx0, by1, bz1]], normal: [-1, 0, 0], density: avgDensity, strain, blockSize: bw });
+                    triangles.push({ vertices: [[bx0, by0, bz0], [bx0, by1, bz1], [bx0, by0, bz1]], normal: [-1, 0, 0], density: avgDensity, strain, blockSize: bw });
+                }
+                // Face 1: X+ face
+                if (!isNeighbourSolid(1, 0, 0)) {
+                    triangles.push({ vertices: [[bx1, by1, bz0], [bx1, by0, bz0], [bx1, by0, bz1]], normal: [1, 0, 0], density: avgDensity, strain, blockSize: bw });
+                    triangles.push({ vertices: [[bx1, by1, bz0], [bx1, by0, bz1], [bx1, by1, bz1]], normal: [1, 0, 0], density: avgDensity, strain, blockSize: bw });
+                }
+                // Face 2: Y- face
+                if (!isNeighbourSolid(0, -1, 0)) {
+                    triangles.push({ vertices: [[bx0, by0, bz0], [bx0, by0, bz1], [bx1, by0, bz1]], normal: [0, -1, 0], density: avgDensity, strain, blockSize: bw });
+                    triangles.push({ vertices: [[bx0, by0, bz0], [bx1, by0, bz1], [bx1, by0, bz0]], normal: [0, -1, 0], density: avgDensity, strain, blockSize: bw });
+                }
+                // Face 3: Y+ face
+                if (!isNeighbourSolid(0, 1, 0)) {
+                    triangles.push({ vertices: [[bx0, by1, bz1], [bx0, by1, bz0], [bx1, by1, bz0]], normal: [0, 1, 0], density: avgDensity, strain, blockSize: bw });
+                    triangles.push({ vertices: [[bx0, by1, bz1], [bx1, by1, bz0], [bx1, by1, bz1]], normal: [0, 1, 0], density: avgDensity, strain, blockSize: bw });
+                }
+                // Face 4: Z- face
+                if (!isNeighbourSolid(0, 0, -1)) {
+                    triangles.push({ vertices: [[bx0, by0, bz0], [bx1, by0, bz0], [bx1, by1, bz0]], normal: [0, 0, -1], density: avgDensity, strain, blockSize: bw });
+                    triangles.push({ vertices: [[bx0, by0, bz0], [bx1, by1, bz0], [bx0, by1, bz0]], normal: [0, 0, -1], density: avgDensity, strain, blockSize: bw });
+                }
+                // Face 5: Z+ face
+                if (!isNeighbourSolid(0, 0, 1)) {
+                    triangles.push({ vertices: [[bx1, by0, bz1], [bx0, by0, bz1], [bx0, by1, bz1]], normal: [0, 0, 1], density: avgDensity, strain, blockSize: bw });
+                    triangles.push({ vertices: [[bx1, by0, bz1], [bx0, by1, bz1], [bx1, by1, bz1]], normal: [0, 0, 1], density: avgDensity, strain, blockSize: bw });
+                }
+            }
+        }
+
+        // ── Per-element fallback for elements not covered by any AMR group ───
         for (let elz = 0; elz < nelz; elz++) {
             for (let ely = 0; ely < nely; ely++) {
                 for (let elx = 0; elx < nelx; elx++) {
                     const idx = elx + ely * nelx + elz * nelx * nely;
+                    if (rendered[idx]) continue;
                     const density = x[idx];
-
                     if (density <= DENSITY_THRESHOLD) continue;
 
-                    // Determine which faces are boundary (neighbor is void or outside domain)
                     const visibleFaces = [];
                     for (let fi = 0; fi < 6; fi++) {
                         const [dx, dy, dz] = faceNeighbors[fi];
-                        if (!isSolid(elx + dx, ely + dy, elz + dz)) {
-                            visibleFaces.push(fi);
-                        }
+                        if (!isSolid(elx + dx, ely + dy, elz + dz)) visibleFaces.push(fi);
                     }
-
-                    // Skip fully interior elements
                     if (visibleFaces.length === 0) continue;
 
-                    // Determine subdivision level based on stress / force ratio
-                    let subdivLevel = 1; // default: 2 triangles per face (1x1 subdivision)
-                    if (maxStress > 0 && elementStress) {
-                        const stressRatio = elementStress[idx] / maxStress;
-                        const forceRatio = maxForce > 0 ? elementForces[idx] / maxForce : 0;
-                        const ratio = Math.max(stressRatio, forceRatio);
-                        if (ratio > 0.6) {
-                            subdivLevel = 4; // 4x4 subdivision for high-stress areas
-                        } else if (ratio > 0.3) {
-                            subdivLevel = 2; // 2x2 subdivision for medium areas
-                        }
-                    }
-
-                    // Normalized strain for this element (0..1)
                     const strain = (maxStress > 0 && elementStress) ? elementStress[idx] / maxStress : 0;
-
-                    // Generate subdivided mesh for visible faces only
-                    this.addSubdividedElement(triangles, elx, ely, elz, density, subdivLevel, visibleFaces, strain);
+                    this.addSubdividedElement(triangles, elx, ely, elz, density, 1, visibleFaces, strain);
                 }
             }
         }
@@ -602,12 +686,8 @@ class TopologyOptimizerWorker3D {
     }
 
     /**
-     * Add an 8-node hexahedral element as triangulated faces with adaptive subdivision.
+     * Add an 8-node hexahedral element as triangulated faces.
      * Only emits faces listed in visibleFaces (indices 0-5).
-     * subdivLevel=1 means 2 triangles per visible face (standard).
-     * subdivLevel=2 means 4x2=8 triangles per face (2x2 grid).
-     * subdivLevel=4 means 16x2=32 triangles per face (4x4 grid).
-     * @param {number} strain - Normalized strain value (0..1) for this element.
      */
     addSubdividedElement(triangles, ex, ey, ez, density, subdivLevel, visibleFaces, strain) {
         const n = subdivLevel;
@@ -626,14 +706,8 @@ class TopologyOptimizerWorker3D {
                             const z0 = baseZ + sz * step;
                             const y1 = y0 + step;
                             const z1 = z0 + step;
-                            triangles.push({
-                                vertices: [[baseX, y0, z0], [baseX, y1, z0], [baseX, y1, z1]],
-                                normal: [-1, 0, 0], density, strain
-                            });
-                            triangles.push({
-                                vertices: [[baseX, y0, z0], [baseX, y1, z1], [baseX, y0, z1]],
-                                normal: [-1, 0, 0], density, strain
-                            });
+                            triangles.push({ vertices: [[baseX, y0, z0], [baseX, y1, z0], [baseX, y1, z1]], normal: [-1, 0, 0], density, strain, blockSize: 1 });
+                            triangles.push({ vertices: [[baseX, y0, z0], [baseX, y1, z1], [baseX, y0, z1]], normal: [-1, 0, 0], density, strain, blockSize: 1 });
                         }
                     }
                     break;
@@ -644,14 +718,8 @@ class TopologyOptimizerWorker3D {
                             const z0 = baseZ + sz * step;
                             const y1 = y0 + step;
                             const z1 = z0 + step;
-                            triangles.push({
-                                vertices: [[baseX + 1, y1, z0], [baseX + 1, y0, z0], [baseX + 1, y0, z1]],
-                                normal: [1, 0, 0], density, strain
-                            });
-                            triangles.push({
-                                vertices: [[baseX + 1, y1, z0], [baseX + 1, y0, z1], [baseX + 1, y1, z1]],
-                                normal: [1, 0, 0], density, strain
-                            });
+                            triangles.push({ vertices: [[baseX + 1, y1, z0], [baseX + 1, y0, z0], [baseX + 1, y0, z1]], normal: [1, 0, 0], density, strain, blockSize: 1 });
+                            triangles.push({ vertices: [[baseX + 1, y1, z0], [baseX + 1, y0, z1], [baseX + 1, y1, z1]], normal: [1, 0, 0], density, strain, blockSize: 1 });
                         }
                     }
                     break;
@@ -662,14 +730,8 @@ class TopologyOptimizerWorker3D {
                             const z0 = baseZ + sz * step;
                             const x1 = x0 + step;
                             const z1 = z0 + step;
-                            triangles.push({
-                                vertices: [[x0, baseY, z0], [x0, baseY, z1], [x1, baseY, z1]],
-                                normal: [0, -1, 0], density, strain
-                            });
-                            triangles.push({
-                                vertices: [[x0, baseY, z0], [x1, baseY, z1], [x1, baseY, z0]],
-                                normal: [0, -1, 0], density, strain
-                            });
+                            triangles.push({ vertices: [[x0, baseY, z0], [x0, baseY, z1], [x1, baseY, z1]], normal: [0, -1, 0], density, strain, blockSize: 1 });
+                            triangles.push({ vertices: [[x0, baseY, z0], [x1, baseY, z1], [x1, baseY, z0]], normal: [0, -1, 0], density, strain, blockSize: 1 });
                         }
                     }
                     break;
@@ -680,14 +742,8 @@ class TopologyOptimizerWorker3D {
                             const z0 = baseZ + sz * step;
                             const x1 = x0 + step;
                             const z1 = z0 + step;
-                            triangles.push({
-                                vertices: [[x0, baseY + 1, z1], [x0, baseY + 1, z0], [x1, baseY + 1, z0]],
-                                normal: [0, 1, 0], density, strain
-                            });
-                            triangles.push({
-                                vertices: [[x0, baseY + 1, z1], [x1, baseY + 1, z0], [x1, baseY + 1, z1]],
-                                normal: [0, 1, 0], density, strain
-                            });
+                            triangles.push({ vertices: [[x0, baseY + 1, z1], [x0, baseY + 1, z0], [x1, baseY + 1, z0]], normal: [0, 1, 0], density, strain, blockSize: 1 });
+                            triangles.push({ vertices: [[x0, baseY + 1, z1], [x1, baseY + 1, z0], [x1, baseY + 1, z1]], normal: [0, 1, 0], density, strain, blockSize: 1 });
                         }
                     }
                     break;
@@ -698,14 +754,8 @@ class TopologyOptimizerWorker3D {
                             const y0 = baseY + sy * step;
                             const x1 = x0 + step;
                             const y1 = y0 + step;
-                            triangles.push({
-                                vertices: [[x0, y0, baseZ], [x1, y0, baseZ], [x1, y1, baseZ]],
-                                normal: [0, 0, -1], density, strain
-                            });
-                            triangles.push({
-                                vertices: [[x0, y0, baseZ], [x1, y1, baseZ], [x0, y1, baseZ]],
-                                normal: [0, 0, -1], density, strain
-                            });
+                            triangles.push({ vertices: [[x0, y0, baseZ], [x1, y0, baseZ], [x1, y1, baseZ]], normal: [0, 0, -1], density, strain, blockSize: 1 });
+                            triangles.push({ vertices: [[x0, y0, baseZ], [x1, y1, baseZ], [x0, y1, baseZ]], normal: [0, 0, -1], density, strain, blockSize: 1 });
                         }
                     }
                     break;
@@ -716,14 +766,8 @@ class TopologyOptimizerWorker3D {
                             const y0 = baseY + sy * step;
                             const x1 = x0 + step;
                             const y1 = y0 + step;
-                            triangles.push({
-                                vertices: [[x1, y0, baseZ + 1], [x0, y0, baseZ + 1], [x0, y1, baseZ + 1]],
-                                normal: [0, 0, 1], density, strain
-                            });
-                            triangles.push({
-                                vertices: [[x1, y0, baseZ + 1], [x0, y1, baseZ + 1], [x1, y1, baseZ + 1]],
-                                normal: [0, 0, 1], density, strain
-                            });
+                            triangles.push({ vertices: [[x1, y0, baseZ + 1], [x0, y0, baseZ + 1], [x0, y1, baseZ + 1]], normal: [0, 0, 1], density, strain, blockSize: 1 });
+                            triangles.push({ vertices: [[x1, y0, baseZ + 1], [x0, y1, baseZ + 1], [x1, y1, baseZ + 1]], normal: [0, 0, 1], density, strain, blockSize: 1 });
                         }
                     }
                     break;
