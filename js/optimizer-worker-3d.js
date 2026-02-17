@@ -197,9 +197,6 @@ class TopologyOptimizerWorker3D {
                     usingWasm: this.useWasm
                 }
             });
-                    elapsedTime: elapsedTime
-                }
-            });
         }
 
         if (this.cancelled) {
@@ -231,11 +228,6 @@ class TopologyOptimizerWorker3D {
                     avgIterationTime: avgIterTime,
                     iterationTimes: iterationTimes,
                     usingWasm: this.useWasm
-                }
-            }
-        });
-                    avgIterationTime: avgIterTime,
-                    iterationTimes: iterationTimes
                 }
             }
         });
