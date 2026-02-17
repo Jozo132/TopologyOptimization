@@ -132,7 +132,14 @@ export function assembleElementStiffness(
 
 /**
  * 3D element stiffness matrix (8-node hexahedral element)
- * Returns the 24x24 stiffness matrix for a brick element
+ * NOTE: This is a simplified placeholder for demonstration purposes.
+ * The actual 3D FEA implementation in optimizer-worker-3d.js uses
+ * proper 2×2×2 Gauss quadrature integration for accurate results.
+ * This WASM function is provided for future integration but is not
+ * currently used in production code.
+ * 
+ * For production use, this should be replaced with a full numerical
+ * integration implementation matching the JavaScript version.
  */
 export function get3DElementStiffness(
   KE: Float64Array,
@@ -143,22 +150,18 @@ export function get3DElementStiffness(
   const k: f64 = E / ((1.0 + nu) * (1.0 - 2.0 * nu));
   const G: f64 = E / (2.0 * (1.0 + nu));
 
-  // Simplified 8-node brick element stiffness
-  // Using single integration point (reduced integration)
+  // Simplified single-point integration (for demonstration only)
   const a: f64 = k * (1.0 - nu);
   const b: f64 = k * nu;
   const c: f64 = G;
-
-  // Fill the 24x24 stiffness matrix
-  // For brevity, using a simplified approach
-  // In practice, this would be computed via numerical integration
 
   // Zero out the matrix first
   for (let i = 0; i < 24 * 24; i++) {
     unchecked((KE[i] = 0.0));
   }
 
-  // Diagonal blocks (representative simplified form)
+  // Diagonal blocks (simplified representative form)
+  // Real implementation should use Gauss quadrature as in optimizer-worker-3d.js
   for (let node = 0; node < 8; node++) {
     const offset: i32 = node * 3;
     // Diagonal terms

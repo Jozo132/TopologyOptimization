@@ -224,7 +224,7 @@ class TopologyApp {
             this.config.forceDirection = 'down';  // Force pointing down at top center
             this.config.constraintPosition = 'bottom-corners';  // Special setting for cube
             document.getElementById('forceDirection').value = 'down';
-            document.getElementById('constraintPosition').value = 'bottom';
+            // Note: constraint dropdown doesn't have 'bottom-corners', it will use the config value
         }
         
         // Display model info

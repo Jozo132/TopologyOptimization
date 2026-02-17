@@ -517,7 +517,7 @@ class TopologyOptimizerWorker3D {
         const E = 1.0;
         const nu = this.nu;
         
-        // Constitutive matrix for 3D elasticity (plane strain approximation)
+        // Constitutive matrix for 3D elasticity (full 3D formulation)
         const C = [];
         const fact = E / ((1 + nu) * (1 - 2 * nu));
         C[0] = [fact * (1 - nu), fact * nu, fact * nu, 0, 0, 0];
