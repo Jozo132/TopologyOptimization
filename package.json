@@ -7,6 +7,7 @@
     "asbuild:debug": "asc assembly/index.ts --target debug --outFile build/optimized.debug.wasm --textFile build/optimized.debug.wat --sourceMap",
     "asbuild:release": "asc assembly/index.ts --target release --outFile build/optimized.release.wasm --textFile build/optimized.release.wat --sourceMap --optimize",
     "asbuild": "npm run asbuild:debug && npm run asbuild:release",
+    "benchmark": "node benchmark-wasm.js",
     "test": "node tests",
     "start": "npx serve ."
   },

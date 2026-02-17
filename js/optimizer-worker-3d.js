@@ -714,6 +714,50 @@ class TopologyOptimizerWorker3D {
     solveCG(K, F, freedofs, fixeddofs) {
         const n = freedofs.length;
         const Uf = new Float32Array(n);
+
+        // Try WASM accelerated CG solver
+        if (this.useWasm && wasmModule) {
+            try {
+                // Extract reduced K matrix and F vector for free DOFs
+                const Kf = new Float64Array(n * n);
+                const Ff = new Float64Array(n);
+                
+                for (let i = 0; i < n; i++) {
+                    Ff[i] = F[freedofs[i]];
+                    for (let j = 0; j < n; j++) {
+                        Kf[i * n + j] = K[freedofs[i]][freedofs[j]];
+                    }
+                }
+                
+                const Uf64 = new Float64Array(n);
+                const maxIter = Math.min(n, 1000);
+                
+                // Call WASM CG solver
+                const ptrK = this._copyToWasm(Kf);
+                const ptrF = this._copyToWasm(Ff);
+                const ptrU = this._copyToWasm(Uf64);
+                
+                wasmModule.exports.conjugateGradient(ptrK, ptrF, ptrU, n, maxIter, CG_TOLERANCE);
+                
+                // Read result back
+                const result = this._readFromWasm(ptrU, n);
+                for (let i = 0; i < n; i++) {
+                    Uf[i] = result[i];
+                }
+                
+                // Free WASM memory
+                this._freeWasm(ptrK);
+                this._freeWasm(ptrF);
+                this._freeWasm(ptrU);
+                
+                return Uf;
+            } catch (error) {
+                console.warn('WASM CG solver failed, falling back to JS:', error);
+                // Fall through to JS implementation
+            }
+        }
+
+        // Pure JavaScript CG solver fallback
         const r = new Float32Array(n);
         const p = new Float32Array(n);
 
@@ -1048,6 +1092,60 @@ class TopologyOptimizerWorker3D {
         }
 
         return F;
+    }
+
+    /**
+     * WASM Memory Management Helpers
+     * AssemblyScript uses a custom memory layout with headers for typed arrays
+     */
+    _copyToWasm(arr) {
+        if (!wasmModule) throw new Error('WASM not loaded');
+        
+        // AssemblyScript TypedArray layout:
+        // - Buffer: allocated with __new(byteLength, 1) for ArrayBuffer
+        // - Array header: __new(12, typeId) with pointers to buffer
+        // For Float64Array: typeId = 4, align = 3 (8 bytes per element)
+        
+        const byteLength = arr.length * 8; // 8 bytes per Float64
+        const buffer = wasmModule.exports.__pin(wasmModule.exports.__new(byteLength, 1));
+        const header = wasmModule.exports.__pin(wasmModule.exports.__new(12, 4)); // 4 = Float64Array type ID, also pinned
+        
+        // Set up the header (ArrayBufferView structure)
+        const memory = wasmModule.exports.memory;
+        const view = new DataView(memory.buffer);
+        view.setUint32(header, buffer, true);  // buffer pointer
+        view.setUint32(header + 4, buffer, true); // dataStart pointer  
+        view.setUint32(header + 8, byteLength, true); // byteLength
+        
+        // Copy data to buffer
+        new Float64Array(memory.buffer, buffer, arr.length).set(arr);
+        wasmModule.exports.__unpin(buffer);
+        
+        return header;
+    }
+
+    _readFromWasm(ptr, length) {
+        if (!wasmModule) throw new Error('WASM not loaded');
+        
+        const memory = wasmModule.exports.memory;
+        const view = new DataView(memory.buffer);
+        
+        // Read the buffer pointer from the array header
+        const buffer = view.getUint32(ptr, true);
+        
+        // Read data from buffer
+        const result = new Float64Array(length);
+        result.set(new Float64Array(memory.buffer, buffer, length));
+        
+        return result;
+    }
+
+    _freeWasm(ptr) {
+        // AssemblyScript uses reference counting via __pin/__unpin
+        // The GC will collect the memory when reference count reaches zero
+        if (wasmModule && wasmModule.exports.__unpin) {
+            wasmModule.exports.__unpin(ptr);
+        }
     }
 }
 
