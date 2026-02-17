@@ -6,6 +6,9 @@ import { DENSITY_THRESHOLD } from './constants.js';
 const DENSITY_COLOR_GREEN = 0.298;           // Fixed green channel for density coloring
 const DEFAULT_MESH_COLOR = [0.29, 0.565, 0.886]; // Default blue (no density data)
 const GRID_COLOR = [0.25, 0.25, 0.35];      // Ground grid line color
+const DEFAULT_TRIANGLE_DENSITY = 0.5;
+const WIREFRAME_EDGE_COLOR = 0.2;
+const EDGE_COLOR_COMPONENT_COUNT = 18;
 
 // ─── WebGL Shader Sources ───────────────────────────────────────────────────
 
@@ -572,6 +575,10 @@ export class Viewer3D {
         const gl = this.gl;
 
         const hasStrainFilter = this.strainMin > 0 || this.strainMax < 1;
+        if (!hasStrainFilter) {
+            this._buildDirectTriangleMeshBuffers(gl);
+            return;
+        }
 
         // Build per-element visibility map and metadata from mesh triangles
         const visibleElements = new Uint8Array(nx * ny * nz);
@@ -600,6 +607,38 @@ export class Viewer3D {
 
         // Generate closed mesh from visible elements
         this._generateClosedMeshBuffers(gl, nx, ny, nz, visibleElements, elementDensity, true);
+    }
+
+    _buildDirectTriangleMeshBuffers(gl) {
+        const positions = [];
+        const normals = [];
+        const colors = [];
+        const edgePositions = [];
+        const edgeColors = [];
+
+        this._boundaryFaces = [];
+
+        for (const tri of this.meshData) {
+            const density = tri.density !== undefined ? tri.density : DEFAULT_TRIANGLE_DENSITY;
+            const n = tri.normal || [0, 0, 1];
+            const r = density;
+            const g = DENSITY_COLOR_GREEN;
+            const b = 1 - density;
+
+            positions.push(...tri.vertices[0], ...tri.vertices[1], ...tri.vertices[2]);
+            normals.push(...n, ...n, ...n);
+            colors.push(r, g, b, r, g, b, r, g, b);
+
+            edgePositions.push(
+                ...tri.vertices[0], ...tri.vertices[1],
+                ...tri.vertices[1], ...tri.vertices[2],
+                ...tri.vertices[2], ...tri.vertices[0]
+            );
+            edgeColors.push(...Array(EDGE_COLOR_COMPONENT_COUNT).fill(WIREFRAME_EDGE_COLOR));
+        }
+
+        this._uploadMeshBuffers(gl, positions, normals, colors);
+        this._uploadEdgeBuffers(gl, edgePositions, edgeColors);
     }
 
     _buildVoxelBuffers(nx, ny, nz) {
