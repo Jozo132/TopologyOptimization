@@ -1108,7 +1108,7 @@ class TopologyOptimizerWorker3D {
         
         const byteLength = arr.length * 8; // 8 bytes per Float64
         const buffer = wasmModule.exports.__pin(wasmModule.exports.__new(byteLength, 1));
-        const header = wasmModule.exports.__new(12, 4); // 4 = Float64Array type ID
+        const header = wasmModule.exports.__pin(wasmModule.exports.__new(12, 4)); // 4 = Float64Array type ID, also pinned
         
         // Set up the header (ArrayBufferView structure)
         const memory = wasmModule.exports.memory;
@@ -1141,6 +1141,8 @@ class TopologyOptimizerWorker3D {
     }
 
     _freeWasm(ptr) {
+        // AssemblyScript uses reference counting via __pin/__unpin
+        // The GC will collect the memory when reference count reaches zero
         if (wasmModule && wasmModule.exports.__unpin) {
             wasmModule.exports.__unpin(ptr);
         }
