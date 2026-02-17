@@ -97,9 +97,21 @@ export class TopologyOptimizer {
             
             x = Float32Array.from(xnew);
             
+            // Convert 2D result to 3D for visualization (for progress updates)
+            const densities3D_progress = new Float32Array(nelx * nely * nelz);
+            for (let z = 0; z < nelz; z++) {
+                for (let y = 0; y < nely; y++) {
+                    for (let xpos = 0; xpos < nelx; xpos++) {
+                        const idx2D = y + xpos * nely;
+                        const idx3D = xpos + y * nelx + z * nelx * nely;
+                        densities3D_progress[idx3D] = x[idx2D];
+                    }
+                }
+            }
+            
             // Progress callback
             if (progressCallback) {
-                progressCallback(loop, c);
+                progressCallback(loop, c, densities3D_progress);
             }
             
             // Small delay to allow UI updates

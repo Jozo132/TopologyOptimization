@@ -211,7 +211,7 @@ class TopologyApp {
             const result = await this.optimizer.optimize(
                 this.currentModel,
                 this.config,
-                (iteration, compliance) => {
+                (iteration, compliance, densities) => {
                     // Progress callback
                     const progress = (iteration / this.config.maxIterations) * 100;
                     progressFill.style.width = `${progress}%`;
@@ -219,7 +219,9 @@ class TopologyApp {
                     complianceText.textContent = `Compliance: ${compliance.toFixed(2)}`;
                     
                     // Update visualization
-                    this.viewer.updateDensities(result.densities);
+                    if (densities) {
+                        this.viewer.updateDensities(densities);
+                    }
                 }
             );
             
