@@ -5,7 +5,7 @@ A minimalistic but fully functional web-based topology optimization application 
 ## Features
 
 - 🚀 **4-Step Workflow**: Import → Assign → Solve → Export
-- 🎨 **3D Visualization**: Real-time 3D rendering using Three.js
+- 🎨 **3D Visualization**: Real-time 3D rendering using Canvas 2D with interactive controls
 - 🔧 **SIMP Algorithm**: Solid Isotropic Material with Penalization
 - 📦 **STL Support**: Import and export STL files
 - 🎯 **Template Models**: Quick start with cantilever beam or bridge templates
@@ -55,7 +55,7 @@ xdg-open index.html  # Linux
 
 - **HTML5/CSS3**: Modern, responsive UI
 - **Vanilla JavaScript**: No frameworks, pure ES6 modules
-- **Three.js**: 3D visualization (loaded from CDN)
+- **Canvas 2D**: Interactive 3D visualization with no external dependencies
 - **SIMP Algorithm**: Industry-standard topology optimization
 
 ## Algorithm
