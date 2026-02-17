@@ -1,6 +1,12 @@
 // 3D Viewer using WebGL for professional CAD-like rendering
 import { DENSITY_THRESHOLD } from './constants.js';
 
+// ─── Color Constants ────────────────────────────────────────────────────────
+
+const DENSITY_COLOR_GREEN = 0.298;           // Fixed green channel for density coloring
+const DEFAULT_MESH_COLOR = [0.29, 0.565, 0.886]; // Default blue (no density data)
+const GRID_COLOR = [0.25, 0.25, 0.35];      // Ground grid line color
+
 // ─── WebGL Shader Sources ───────────────────────────────────────────────────
 
 const MESH_VERTEX_SHADER = `
@@ -208,6 +214,8 @@ export class Viewer3D {
         this._gridBuffers = null;
 
         this._needsRebuild = true;
+        this._lastMeshData = null;
+        this._lastDensities = null;
     }
 
     async init() {
@@ -494,7 +502,9 @@ export class Viewer3D {
         const modelView = this._buildModelView(nx, ny, nz);
         const normalMatrix = mat3NormalFromMat4(modelView);
 
-        if (this._needsRebuild) {
+        if (this._needsRebuild || this._lastMeshData !== this.meshData || this._lastDensities !== this.densities) {
+            this._lastMeshData = this.meshData;
+            this._lastDensities = this.densities;
             this._rebuildBuffers(nx, ny, nz);
             this._needsRebuild = false;
         }
@@ -523,8 +533,8 @@ export class Viewer3D {
             this.ctx.font = '14px Arial';
             this.ctx.textAlign = 'left';
             const label = this.paintMode === 'constraint'
-                ? '\u{1F58C} Painting Constraints (Shift+click to remove)'
-                : '\u{1F58C} Painting Forces (Shift+click to remove)';
+                ? '🖌 Painting Constraints (Shift+click to remove)'
+                : '🖌 Painting Forces (Shift+click to remove)';
             this.ctx.fillText(label, 10, height - 10);
         }
     }
@@ -659,12 +669,12 @@ export class Viewer3D {
                         let r, g, b;
                         if (hasDensityColors) {
                             r = density;
-                            g = 0.298;
+                            g = DENSITY_COLOR_GREEN;
                             b = 1 - density;
                         } else {
-                            r = 0.29;
-                            g = 0.565;
-                            b = 0.886;
+                            r = DEFAULT_MESH_COLOR[0];
+                            g = DEFAULT_MESH_COLOR[1];
+                            b = DEFAULT_MESH_COLOR[2];
                         }
 
                         const verts = face.verts.map(([vx, vy, vz]) => [x + vx, y + vy, z + vz]);
@@ -750,13 +760,12 @@ export class Viewer3D {
         const colors = [];
 
         const gridSize = Math.max(nx, nz);
-        const gridColor = [0.25, 0.25, 0.35];
 
         for (let i = 0; i <= gridSize; i++) {
             positions.push(i, 0, 0, i, 0, gridSize);
-            colors.push(...gridColor, ...gridColor);
+            colors.push(...GRID_COLOR, ...GRID_COLOR);
             positions.push(0, 0, i, gridSize, 0, i);
-            colors.push(...gridColor, ...gridColor);
+            colors.push(...GRID_COLOR, ...GRID_COLOR);
         }
 
         if (this._gridBuffers) {
