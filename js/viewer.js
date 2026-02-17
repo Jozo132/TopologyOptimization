@@ -572,6 +572,10 @@ export class Viewer3D {
         const gl = this.gl;
 
         const hasStrainFilter = this.strainMin > 0 || this.strainMax < 1;
+        if (!hasStrainFilter) {
+            this._buildDirectTriangleMeshBuffers(gl);
+            return;
+        }
 
         // Build per-element visibility map and metadata from mesh triangles
         const visibleElements = new Uint8Array(nx * ny * nz);
@@ -600,6 +604,42 @@ export class Viewer3D {
 
         // Generate closed mesh from visible elements
         this._generateClosedMeshBuffers(gl, nx, ny, nz, visibleElements, elementDensity, true);
+    }
+
+    _buildDirectTriangleMeshBuffers(gl) {
+        const positions = [];
+        const normals = [];
+        const colors = [];
+        const edgePositions = [];
+        const edgeColors = [];
+
+        this._boundaryFaces = [];
+
+        for (const tri of this.meshData) {
+            const density = tri.density ?? 0.5;
+            const n = tri.normal || [0, 0, 1];
+            const r = density;
+            const g = DENSITY_COLOR_GREEN;
+            const b = 1 - density;
+
+            positions.push(...tri.vertices[0], ...tri.vertices[1], ...tri.vertices[2]);
+            normals.push(...n, ...n, ...n);
+            colors.push(r, g, b, r, g, b, r, g, b);
+
+            edgePositions.push(
+                ...tri.vertices[0], ...tri.vertices[1],
+                ...tri.vertices[1], ...tri.vertices[2],
+                ...tri.vertices[2], ...tri.vertices[0]
+            );
+            edgeColors.push(
+                0.2, 0.2, 0.2, 0.2, 0.2, 0.2,
+                0.2, 0.2, 0.2, 0.2, 0.2, 0.2,
+                0.2, 0.2, 0.2, 0.2, 0.2, 0.2
+            );
+        }
+
+        this._uploadMeshBuffers(gl, positions, normals, colors);
+        this._uploadEdgeBuffers(gl, edgePositions, edgeColors);
     }
 
     _buildVoxelBuffers(nx, ny, nz) {
