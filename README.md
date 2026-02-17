@@ -118,7 +118,7 @@ The application includes a comprehensive benchmarking system to track and compar
   - Persists between sessions using localStorage
 
 ### Typical Performance (Cube Pyramid 5×5×5, 20 iterations)
-- **Pure JavaScript**: ~1,400-1,500ms per iteration
+- **Pure JavaScript**: ~1,466ms per iteration (baseline)
 - **With WASM** (future): Expected 30-50% improvement
 
 The cube pyramid test serves as the standard benchmark for comparing performance improvements.

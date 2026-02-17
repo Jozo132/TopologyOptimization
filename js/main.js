@@ -474,7 +474,9 @@ class TopologyApp {
         const recent = this.benchmarkHistory.slice(-5).reverse();
         for (const bench of recent) {
             const isBaseline = bench === baseline;
-            const improvement = ((baseline.avgIterationTime - bench.avgIterationTime) / baseline.avgIterationTime * 100);
+            const improvement = baseline.avgIterationTime > 0 
+                ? ((baseline.avgIterationTime - bench.avgIterationTime) / baseline.avgIterationTime * 100)
+                : 0;
             const rowClass = isBaseline ? ' class="benchmark-baseline"' : '';
             const engineBadge = bench.usingWasm ? '🚀 WASM' : 'JS';
             
