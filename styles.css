@@ -460,3 +460,55 @@ button {
 .workflow::-webkit-scrollbar-thumb:hover {
     background: var(--secondary-color);
 }
+
+/* Benchmark Info */
+.benchmark-info {
+    margin-top: 1rem;
+    padding: 1rem;
+    background: var(--bg-color);
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+}
+
+.benchmark-info h3 {
+    font-size: 0.875rem;
+    font-weight: 600;
+    margin-bottom: 0.75rem;
+    color: var(--text-primary);
+}
+
+.benchmark-info table {
+    width: 100%;
+    font-size: 0.75rem;
+    border-collapse: collapse;
+}
+
+.benchmark-info th,
+.benchmark-info td {
+    padding: 0.375rem;
+    text-align: left;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.benchmark-info th {
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+.benchmark-info tr:last-child td {
+    border-bottom: none;
+}
+
+.benchmark-baseline {
+    background: #fef3c7;
+}
+
+.benchmark-improvement {
+    color: var(--success-color);
+    font-weight: 600;
+}
+
+.benchmark-regression {
+    color: #dc2626;
+    font-weight: 600;
+}

@@ -30,7 +30,7 @@ export class TopologyOptimizer {
 
                 if (type === 'progress') {
                     if (progressCallback) {
-                        progressCallback(e.data.iteration, e.data.compliance, e.data.meshData);
+                        progressCallback(e.data.iteration, e.data.compliance, e.data.meshData, e.data.timing);
                     }
                 } else if (type === 'complete') {
                     this.worker.terminate();

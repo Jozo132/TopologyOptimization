@@ -92,6 +92,10 @@ class TopologyOptimizerWorker3D {
         let change = 1;
         let c = 0;
         let lastElementEnergies = null;
+        
+        // Benchmark timing
+        const iterationTimes = [];
+        const startTime = performance.now();
 
         while (change > 0.01 && loop < maxIterations) {
             if (this.cancelled) {
@@ -100,6 +104,7 @@ class TopologyOptimizerWorker3D {
             }
 
             loop++;
+            const iterStartTime = performance.now();
             xold = Float32Array.from(x);
 
             const { U, c: compliance } = this.FE(nelx, nely, nelz, x, this.penal, KE, F, freedofs, fixeddofs);
@@ -136,11 +141,25 @@ class TopologyOptimizerWorker3D {
             // Build adaptive mesh data for this iteration
             const meshData = this.buildAdaptiveMesh(nelx, nely, nelz, x, elementEnergies, elementForces);
 
+            // Track iteration timing
+            const iterEndTime = performance.now();
+            const iterTime = iterEndTime - iterStartTime;
+            iterationTimes.push(iterTime);
+            
+            // Calculate average time per iteration
+            const avgIterTime = iterationTimes.reduce((a, b) => a + b, 0) / iterationTimes.length;
+            const elapsedTime = iterEndTime - startTime;
+
             postMessage({
                 type: 'progress',
                 iteration: loop,
                 compliance: c,
-                meshData: meshData
+                meshData: meshData,
+                timing: {
+                    iterationTime: iterTime,
+                    avgIterationTime: avgIterTime,
+                    elapsedTime: elapsedTime
+                }
             });
         }
 
@@ -150,6 +169,12 @@ class TopologyOptimizerWorker3D {
         }
 
         const finalMesh = this.buildAdaptiveMesh(nelx, nely, nelz, x, lastElementEnergies, elementForces);
+        
+        // Final timing statistics
+        const totalTime = performance.now() - startTime;
+        const avgIterTime = iterationTimes.length > 0 
+            ? iterationTimes.reduce((a, b) => a + b, 0) / iterationTimes.length 
+            : 0;
 
         postMessage({
             type: 'complete',
@@ -161,7 +186,12 @@ class TopologyOptimizerWorker3D {
                 nx: nelx,
                 ny: nely,
                 nz: nelz,
-                meshData: finalMesh
+                meshData: finalMesh,
+                timing: {
+                    totalTime: totalTime,
+                    avgIterationTime: avgIterTime,
+                    iterationTimes: iterationTimes
+                }
             }
         });
     }
