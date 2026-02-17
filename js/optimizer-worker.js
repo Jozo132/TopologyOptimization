@@ -4,6 +4,33 @@
 const EPSILON = 1e-12;
 const CG_TOLERANCE = 1e-8;
 
+// WASM Module for high-performance operations
+let wasmModule = null;
+let wasmLoaded = false;
+
+async function loadWasmModule() {
+    try {
+        const response = await fetch('wasm/matrix-ops.wasm');
+        const buffer = await response.arrayBuffer();
+        const module = await WebAssembly.compile(buffer);
+        
+        wasmModule = await WebAssembly.instantiate(module, {
+            env: {
+                abort: () => console.error('WASM abort called'),
+                seed: () => Date.now()
+            }
+        });
+        
+        wasmLoaded = true;
+        console.log('WASM module loaded in worker');
+        return true;
+    } catch (error) {
+        console.warn('Failed to load WASM in worker, using pure JS:', error);
+        wasmLoaded = false;
+        return false;
+    }
+}
+
 class TopologyOptimizerWorker {
     constructor() {
         this.rmin = 1.5;
@@ -12,9 +39,17 @@ class TopologyOptimizerWorker {
         this.Emin = 1e-9;
         this.nu = 0.3;
         this.cancelled = false;
+        this.useWasm = false;
     }
 
-    optimize(model, config) {
+    async optimize(model, config) {
+        // Try to load WASM module if not already loaded
+        if (!wasmLoaded && !this.wasmLoadAttempted) {
+            this.wasmLoadAttempted = true;
+            await loadWasmModule();
+            this.useWasm = wasmLoaded;
+        }
+        
         const { nx, ny, nz } = model;
         const nelx = nx;
         const nely = ny;
@@ -90,6 +125,10 @@ class TopologyOptimizerWorker {
         let change = 1;
         let c = 0;
         let lastElementEnergies = null;
+        
+        // Benchmark timing
+        const iterationTimes = [];
+        const startTime = performance.now();
 
         while (change > 0.01 && loop < maxIterations) {
             if (this.cancelled) {
@@ -98,6 +137,7 @@ class TopologyOptimizerWorker {
             }
 
             loop++;
+            const iterStartTime = performance.now();
             xold = Float32Array.from(x);
 
             const { U, c: compliance } = this.FE(nelx, nely, x, this.penal, KE, F, freedofs, fixeddofs);
@@ -140,11 +180,26 @@ class TopologyOptimizerWorker {
             // Build adaptive mesh data for this iteration
             const meshData = this.buildAdaptiveMesh(nelx, nely, nelz, x, elementEnergies, elementForces);
 
+            // Track iteration timing
+            const iterEndTime = performance.now();
+            const iterTime = iterEndTime - iterStartTime;
+            iterationTimes.push(iterTime);
+            
+            // Calculate average time per iteration
+            const avgIterTime = iterationTimes.reduce((a, b) => a + b, 0) / iterationTimes.length;
+            const elapsedTime = iterEndTime - startTime;
+
             postMessage({
                 type: 'progress',
                 iteration: loop,
                 compliance: c,
-                meshData: meshData
+                meshData: meshData,
+                timing: {
+                    iterationTime: iterTime,
+                    avgIterationTime: avgIterTime,
+                    elapsedTime: elapsedTime,
+                    usingWasm: this.useWasm
+                }
             });
         }
 
@@ -166,6 +221,12 @@ class TopologyOptimizerWorker {
                 }
             }
         }
+        
+        // Final timing statistics
+        const totalTime = performance.now() - startTime;
+        const avgIterTime = iterationTimes.length > 0 
+            ? iterationTimes.reduce((a, b) => a + b, 0) / iterationTimes.length 
+            : 0;
 
         postMessage({
             type: 'complete',
@@ -177,7 +238,13 @@ class TopologyOptimizerWorker {
                 nx: nelx,
                 ny: nely,
                 nz: nelz,
-                meshData: finalMesh
+                meshData: finalMesh,
+                timing: {
+                    totalTime: totalTime,
+                    avgIterationTime: avgIterTime,
+                    iterationTimes: iterationTimes,
+                    usingWasm: this.useWasm
+                }
             }
         });
     }
@@ -791,12 +858,12 @@ class TopologyOptimizerWorker {
 // Worker message handler
 const optimizer = new TopologyOptimizerWorker();
 
-self.onmessage = function(e) {
+self.onmessage = async function(e) {
     const { type, model, config } = e.data;
 
     if (type === 'start') {
         optimizer.cancelled = false;
-        optimizer.optimize(model, config);
+        await optimizer.optimize(model, config);
     } else if (type === 'cancel') {
         optimizer.cancelled = true;
     }

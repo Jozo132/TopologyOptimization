@@ -26,6 +26,9 @@ class TopologyApp {
             granuleDensity: 20,
             minCrossSection: 0
         };
+        
+        // Benchmark tracking
+        this.benchmarkHistory = this.loadBenchmarkHistory();
     }
 
     async init() {
@@ -283,12 +286,21 @@ class TopologyApp {
             const result = await this.optimizer.optimize(
                 this.currentModel,
                 optimConfig,
-                (iteration, compliance, meshData) => {
+                (iteration, compliance, meshData, timing) => {
                     // Progress callback
                     const progress = (iteration / this.config.maxIterations) * 100;
                     progressFill.style.width = `${progress}%`;
                     progressText.textContent = `Iteration ${iteration} / ${this.config.maxIterations}`;
-                    complianceText.textContent = `Compliance: ${compliance.toFixed(2)}`;
+                    
+                    let complianceInfo = `Compliance: ${compliance.toFixed(2)}`;
+                    if (timing) {
+                        const wasmBadge = timing.usingWasm ? ' 🚀 WASM' : ' JS';
+                        complianceInfo += wasmBadge;
+                        complianceInfo += `<br>Time/Iter: ${timing.iterationTime.toFixed(1)}ms`;
+                        complianceInfo += ` | Avg: ${timing.avgIterationTime.toFixed(1)}ms`;
+                        complianceInfo += `<br>Elapsed: ${(timing.elapsedTime / 1000).toFixed(1)}s`;
+                    }
+                    complianceText.innerHTML = complianceInfo;
                     
                     // Update visualization with triangle mesh
                     if (meshData) {
@@ -305,12 +317,27 @@ class TopologyApp {
             }
             
             // Show results
-            document.getElementById('optimizationResults').innerHTML = `
+            let resultsHTML = `
                 <strong>Optimization Complete!</strong><br>
                 Final Compliance: ${result.finalCompliance.toFixed(2)}<br>
                 Iterations: ${result.iterations}<br>
                 Volume Fraction: ${(result.volumeFraction * 100).toFixed(1)}%
             `;
+            
+            if (result.timing) {
+                const wasmBadge = result.timing.usingWasm ? '🚀 WASM' : 'JS';
+                resultsHTML += `<br><br><strong>Performance (${wasmBadge}):</strong><br>`;
+                resultsHTML += `Total Time: ${(result.timing.totalTime / 1000).toFixed(2)}s<br>`;
+                resultsHTML += `Avg Time/Iteration: ${result.timing.avgIterationTime.toFixed(1)}ms<br>`;
+                resultsHTML += `Throughput: ${(result.iterations / (result.timing.totalTime / 1000)).toFixed(2)} iter/s`;
+            }
+            
+            document.getElementById('optimizationResults').innerHTML = resultsHTML;
+            
+            // Add to benchmark history
+            if (result.timing) {
+                this.addBenchmark(this.currentModel.type || 'custom', result);
+            }
             
             // Enable export step and navigate to it
             this.workflow.enableStep(4);
@@ -382,6 +409,97 @@ class TopologyApp {
         
         // Reset workflow
         this.workflow.reset();
+    }
+    
+    // Benchmark management methods
+    loadBenchmarkHistory() {
+        try {
+            const stored = localStorage.getItem('topologyBenchmarkHistory');
+            return stored ? JSON.parse(stored) : [];
+        } catch (e) {
+            console.warn('Failed to load benchmark history:', e);
+            return [];
+        }
+    }
+    
+    saveBenchmarkHistory() {
+        try {
+            localStorage.setItem('topologyBenchmarkHistory', JSON.stringify(this.benchmarkHistory));
+        } catch (e) {
+            console.warn('Failed to save benchmark history:', e);
+        }
+    }
+    
+    addBenchmark(modelType, result) {
+        const benchmark = {
+            timestamp: new Date().toISOString(),
+            modelType: modelType,
+            dimensions: `${result.nx}x${result.ny}x${result.nz}`,
+            iterations: result.iterations,
+            totalTime: result.timing.totalTime,
+            avgIterationTime: result.timing.avgIterationTime,
+            compliance: result.finalCompliance,
+            volumeFraction: result.volumeFraction,
+            usingWasm: result.timing.usingWasm || false
+        };
+        
+        this.benchmarkHistory.push(benchmark);
+        
+        // Keep only last 10 benchmarks
+        if (this.benchmarkHistory.length > 10) {
+            this.benchmarkHistory = this.benchmarkHistory.slice(-10);
+        }
+        
+        this.saveBenchmarkHistory();
+        this.displayBenchmarkHistory();
+    }
+    
+    displayBenchmarkHistory() {
+        const benchmarkInfo = document.getElementById('benchmarkInfo');
+        const benchmarkResults = document.getElementById('benchmarkResults');
+        
+        if (this.benchmarkHistory.length === 0) {
+            benchmarkInfo.classList.add('hidden');
+            return;
+        }
+        
+        benchmarkInfo.classList.remove('hidden');
+        
+        // Find baseline (first cube test or first entry)
+        const baseline = this.benchmarkHistory.find(b => b.modelType === 'cube') || this.benchmarkHistory[0];
+        
+        let html = '<table><thead><tr><th>Model</th><th>Engine</th><th>Avg Iter (ms)</th><th>Total (s)</th><th>vs Baseline</th></tr></thead><tbody>';
+        
+        // Show most recent benchmarks first
+        const recent = this.benchmarkHistory.slice(-5).reverse();
+        for (const bench of recent) {
+            const isBaseline = bench === baseline;
+            const improvement = baseline.avgIterationTime > 0 
+                ? ((baseline.avgIterationTime - bench.avgIterationTime) / baseline.avgIterationTime * 100)
+                : 0;
+            const rowClass = isBaseline ? ' class="benchmark-baseline"' : '';
+            const engineBadge = bench.usingWasm ? '🚀 WASM' : 'JS';
+            
+            let comparisonText = '';
+            if (!isBaseline) {
+                const compClass = improvement > 0 ? 'benchmark-improvement' : 'benchmark-regression';
+                const sign = improvement > 0 ? '↓' : '↑';
+                comparisonText = `<span class="${compClass}">${sign}${Math.abs(improvement).toFixed(1)}%</span>`;
+            } else {
+                comparisonText = '<strong>Baseline</strong>';
+            }
+            
+            html += `<tr${rowClass}>
+                <td>${bench.modelType} (${bench.dimensions})</td>
+                <td>${engineBadge}</td>
+                <td>${bench.avgIterationTime.toFixed(1)}</td>
+                <td>${(bench.totalTime / 1000).toFixed(1)}</td>
+                <td>${comparisonText}</td>
+            </tr>`;
+        }
+        
+        html += '</tbody></table>';
+        benchmarkResults.innerHTML = html;
     }
 }
 
