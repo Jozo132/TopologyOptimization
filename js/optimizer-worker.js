@@ -3,6 +3,7 @@
 
 const EPSILON = 1e-12;
 const CG_TOLERANCE = 1e-8;
+const MAX_CG_ITERATIONS = 2000;
 
 // WASM Module for high-performance operations
 let wasmModule = null;
@@ -410,8 +411,7 @@ class TopologyOptimizerWorker {
             for (let e = 0; e < nel; e++) {
                 const eOff = e * 8;
                 for (let i = 0; i < 8; i++) {
-                    const dof = edofArray[eOff + i];
-                    Ue[i] = dof < U.length ? U[dof] : 0;
+                    Ue[i] = U[edofArray[eOff + i]];
                 }
                 const energy = this._computeElementEnergyFlat(KEflat, Ue, 8);
                 elementEnergies[e] = energy;
@@ -973,7 +973,7 @@ class TopologyOptimizerWorker {
             rz += r[i] * z[i];
         }
 
-        const maxIter = Math.min(n, 2000);
+        const maxIter = Math.min(n, MAX_CG_ITERATIONS);
         const tolSq = CG_TOLERANCE * CG_TOLERANCE;
 
         for (let iter = 0; iter < maxIter; iter++) {
