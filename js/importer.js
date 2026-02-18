@@ -363,6 +363,15 @@ export class ModelImporter {
         }
     }
 
+    /**
+     * Return the longest base dimension for a template type.
+     * Used externally to convert voxel size in mm to a resolution value.
+     */
+    static getTemplateMaxDim(type) {
+        const dims = { beam: 30, bridge: 40, cube: 5 };
+        return dims[type] || 20;
+    }
+
     createBeamTemplate(granuleDensity = 20) {
         // Cantilever beam: scaled based on granuleDensity
         // Original: 30x10x10 at granuleDensity=20

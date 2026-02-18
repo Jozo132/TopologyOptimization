@@ -5,6 +5,12 @@ import { TopologyOptimizer } from './optimizer.js';
 import { ModelExporter } from './exporter.js';
 import { WorkflowManager } from './workflow.js';
 
+const MATERIAL_PRESETS = {
+    plastic: { youngsModulus: 2.3, poissonsRatio: 0.35 },
+    aluminum: { youngsModulus: 69, poissonsRatio: 0.33 },
+    steel: { youngsModulus: 200, poissonsRatio: 0.30 }
+};
+
 class TopologyApp {
     constructor() {
         this.viewer = null;
@@ -23,7 +29,6 @@ class TopologyApp {
             maxIterations: 100,
             penaltyFactor: 3,
             filterRadius: 1.5,
-            granuleDensity: 20,
             voxelSizeMM: 2,
             minCrossSection: 0,
             useAMR: true,
@@ -147,10 +152,10 @@ class TopologyApp {
         });
 
         // Voxel size slider (mm-based, 10mm to 0.1mm)
-        document.getElementById('granuleDensity').addEventListener('input', (e) => {
+        document.getElementById('voxelSize').addEventListener('input', (e) => {
             const voxelSizeMM = parseFloat(e.target.value);
             this.config.voxelSizeMM = voxelSizeMM;
-            document.getElementById('granuleDensityValue').textContent = voxelSizeMM + ' mm';
+            document.getElementById('voxelSizeValue').textContent = voxelSizeMM + ' mm';
             
             // Re-voxelize the current model if one exists
             if (this.currentModel) {
@@ -219,17 +224,11 @@ class TopologyApp {
         });
         
         // Step 2: Assign - Material selection
-        const materialPresets = {
-            plastic: { youngsModulus: 2.3, poissonsRatio: 0.35 },
-            aluminum: { youngsModulus: 69, poissonsRatio: 0.33 },
-            steel: { youngsModulus: 200, poissonsRatio: 0.30 }
-        };
-
         document.getElementById('materialSelect').addEventListener('change', (e) => {
             const material = e.target.value;
             this.config.material = material;
-            if (materialPresets[material]) {
-                const preset = materialPresets[material];
+            if (MATERIAL_PRESETS[material]) {
+                const preset = MATERIAL_PRESETS[material];
                 this.config.youngsModulus = preset.youngsModulus;
                 this.config.poissonsRatio = preset.poissonsRatio;
                 document.getElementById('youngsModulus').value = preset.youngsModulus;
@@ -459,10 +458,8 @@ class TopologyApp {
 
     loadTemplate(type) {
         console.log('Loading template:', type);
-        // Convert voxelSizeMM to granuleDensity for templates
-        // Templates use mm-based dimensions, so derive resolution from voxel size
-        const templateDims = { beam: 30, bridge: 40, cube: 5 };
-        const maxDim = templateDims[type] || 20;
+        // Convert voxelSizeMM to resolution for templates
+        const maxDim = ModelImporter.getTemplateMaxDim(type);
         const resolution = Math.max(3, Math.round(maxDim / this.config.voxelSizeMM));
         const model = this.importer.createTemplate(type, resolution);
         this.currentModel = model;
