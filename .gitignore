@@ -141,6 +141,3 @@ build/
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
-# AssemblyScript test folder
-tests/
-
