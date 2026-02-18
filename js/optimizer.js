@@ -53,7 +53,7 @@ export class TopologyOptimizer {
 
             this.worker.postMessage({
                 type: 'start',
-                model: { nx: model.nx, ny: model.ny, nz: model.nz, type: model.type },
+                model: { nx: model.nx, ny: model.ny, nz: model.nz, type: model.type, elements: Array.from(model.elements) },
                 config
             });
         });

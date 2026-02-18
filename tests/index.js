@@ -253,6 +253,85 @@ console.log('Test 10: Transform vertices - rotation Z 90°');
 }
 
 // ──────────────────────────────────────────────────
+// Test 11: Voxelization performance — spatial index produces same result
+//   Large cube with many triangles should still voxelize correctly
+// ──────────────────────────────────────────────────
+console.log('Test 11: Spatial-index voxelization consistency (large mesh)');
+{
+    function quad(a, b, c, d) {
+        return [a, b, c, a, c, d];
+    }
+    // Build subdivided cube faces for more triangles
+    const cubeVertices = [];
+    const subdivisions = 5; // 5x5 quads per face = 300 triangles total
+    const size = 20;
+    const step = size / subdivisions;
+
+    // Generate +Z and -Z faces with subdivision
+    for (let i = 0; i < subdivisions; i++) {
+        for (let j = 0; j < subdivisions; j++) {
+            const x0 = i * step, x1 = (i + 1) * step;
+            const y0 = j * step, y1 = (j + 1) * step;
+            // -Z face
+            cubeVertices.push(...quad(
+                { x: x0, y: y0, z: 0 }, { x: x1, y: y0, z: 0 },
+                { x: x1, y: y1, z: 0 }, { x: x0, y: y1, z: 0 }
+            ));
+            // +Z face
+            cubeVertices.push(...quad(
+                { x: x0, y: y0, z: size }, { x: x0, y: y1, z: size },
+                { x: x1, y: y1, z: size }, { x: x1, y: y0, z: size }
+            ));
+        }
+    }
+    // +X and -X faces
+    for (let i = 0; i < subdivisions; i++) {
+        for (let j = 0; j < subdivisions; j++) {
+            const y0 = i * step, y1 = (i + 1) * step;
+            const z0 = j * step, z1 = (j + 1) * step;
+            cubeVertices.push(...quad(
+                { x: 0, y: y0, z: z0 }, { x: 0, y: y1, z: z0 },
+                { x: 0, y: y1, z: z1 }, { x: 0, y: y0, z: z1 }
+            ));
+            cubeVertices.push(...quad(
+                { x: size, y: y0, z: z0 }, { x: size, y: y0, z: z1 },
+                { x: size, y: y1, z: z1 }, { x: size, y: y1, z: z0 }
+            ));
+        }
+    }
+    // +Y and -Y faces
+    for (let i = 0; i < subdivisions; i++) {
+        for (let j = 0; j < subdivisions; j++) {
+            const x0 = i * step, x1 = (i + 1) * step;
+            const z0 = j * step, z1 = (j + 1) * step;
+            cubeVertices.push(...quad(
+                { x: x0, y: 0, z: z0 }, { x: x0, y: 0, z: z1 },
+                { x: x1, y: 0, z: z1 }, { x: x1, y: 0, z: z0 }
+            ));
+            cubeVertices.push(...quad(
+                { x: x0, y: size, z: z0 }, { x: x1, y: size, z: z0 },
+                { x: x1, y: size, z: z1 }, { x: x0, y: size, z: z1 }
+            ));
+        }
+    }
+
+    const numTris = cubeVertices.length / 3;
+    assert(numTris === 300, `Should have 300 triangles from subdivided cube, got ${numTris}`);
+
+    const result = importer.voxelizeVertices(cubeVertices, null, 2);
+    const { nx, ny, nz, elements } = result;
+    assert(nx === 10, `Expected nx=10, got ${nx}`);
+    assert(ny === 10, `Expected ny=10, got ${ny}`);
+    assert(nz === 10, `Expected nz=10, got ${nz}`);
+
+    let solidCount = 0;
+    for (let i = 0; i < elements.length; i++) {
+        if (elements[i] > 0.5) solidCount++;
+    }
+    assert(solidCount === 1000, `All 1000 voxels should be solid for subdivided cube, got ${solidCount}`);
+}
+
+// ──────────────────────────────────────────────────
 // Summary
 // ──────────────────────────────────────────────────
 console.log(`\nResults: ${passed} passed, ${failed} failed`);

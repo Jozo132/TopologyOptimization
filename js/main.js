@@ -31,6 +31,7 @@ class TopologyApp {
             filterRadius: 1.5,
             voxelSizeMM: 2,
             minCrossSection: 0,
+            constrainToSolid: false,
             useAMR: true,
             amrInterval: 3,
             minGranuleSize: 0.5,
@@ -152,10 +153,13 @@ class TopologyApp {
         });
 
         // Voxel size slider (mm-based, 10mm to 0.1mm)
-        document.getElementById('voxelSize').addEventListener('input', (e) => {
-            const voxelSizeMM = parseFloat(e.target.value);
+        const voxelSizeSlider = document.getElementById('voxelSize');
+        const voxelSizeInput = document.getElementById('voxelSizeInput');
+
+        const handleVoxelSizeChange = (voxelSizeMM) => {
             this.config.voxelSizeMM = voxelSizeMM;
-            document.getElementById('voxelSizeValue').textContent = voxelSizeMM + ' mm';
+            voxelSizeSlider.value = voxelSizeMM;
+            voxelSizeInput.value = voxelSizeMM;
             
             // Re-voxelize the current model if one exists
             if (this.currentModel) {
@@ -221,6 +225,19 @@ class TopologyApp {
                     this.viewer.setModel(newModel);
                 }
             }
+        };
+
+        voxelSizeSlider.addEventListener('input', (e) => {
+            handleVoxelSizeChange(parseFloat(e.target.value));
+        });
+
+        voxelSizeInput.addEventListener('change', (e) => {
+            let val = parseFloat(e.target.value);
+            const min = parseFloat(voxelSizeInput.min);
+            const max = parseFloat(voxelSizeInput.max);
+            if (isNaN(val)) val = this.config.voxelSizeMM;
+            val = Math.max(min, Math.min(max, val));
+            handleVoxelSizeChange(val);
         });
         
         // Step 2: Assign - Material selection
@@ -302,6 +319,10 @@ class TopologyApp {
         
         document.getElementById('minCrossSection').addEventListener('input', (e) => {
             this.config.minCrossSection = parseFloat(e.target.value);
+        });
+
+        document.getElementById('constrainToSolid').addEventListener('change', (e) => {
+            this.config.constrainToSolid = e.target.checked;
         });
         
         // AMR controls

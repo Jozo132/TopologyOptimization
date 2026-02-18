@@ -302,6 +302,41 @@ button {
     margin-right: 0.5rem;
 }
 
+.slider-with-input {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.slider-with-input input[type="range"] {
+    flex: 1;
+    width: auto;
+    margin-right: 0;
+}
+
+.slider-with-input input[type="number"] {
+    width: 5rem;
+    padding: 0.3rem 0.5rem;
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    font-size: 0.875rem;
+    font-family: inherit;
+    background: var(--card-bg);
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.slider-with-input input[type="number"]:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+.slider-with-input span {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
 .control-group input[type="number"],
 .control-group select {
     width: 100%;

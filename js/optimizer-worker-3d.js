@@ -429,6 +429,17 @@ class TopologyOptimizerWorker3D {
             x[idx] = 1.0;
         }
 
+        // Build set of void element indices (elements outside initial solid space)
+        const voidElements = new Set();
+        if (config.constrainToSolid && model.elements) {
+            for (let i = 0; i < nel; i++) {
+                if (model.elements[i] < 0.5) {
+                    voidElements.add(i);
+                    x[i] = 0.0;
+                }
+            }
+        }
+
         const ndof = 3 * (nelx + 1) * (nely + 1) * (nelz + 1);
         const alldofs = Array.from({ length: ndof }, (_, i) => i);
         const fixedSet = new Set(fixeddofs);
@@ -505,7 +516,7 @@ class TopologyOptimizerWorker3D {
                 }
             }
             
-            xnew = this.OC(nelx, nely, nelz, x, volfrac, dcnWeighted, preservedElements);
+            xnew = this.OC(nelx, nely, nelz, x, volfrac, dcnWeighted, preservedElements, voidElements);
 
             change = 0;
             for (let i = 0; i < nel; i++) {
@@ -980,7 +991,7 @@ class TopologyOptimizerWorker3D {
         return dcn;
     }
 
-    OC(nelx, nely, nelz, x, volfrac, dc, preservedElements) {
+    OC(nelx, nely, nelz, x, volfrac, dc, preservedElements, voidElements) {
         const nel = nelx * nely * nelz;
         const xnew = new Float32Array(nel);
         const move = 0.2;
@@ -994,6 +1005,8 @@ class TopologyOptimizerWorker3D {
             for (let i = 0; i < nel; i++) {
                 if (preservedElements && preservedElements.has(i)) {
                     xnew[i] = 1.0;
+                } else if (voidElements && voidElements.has(i)) {
+                    xnew[i] = 0.0;
                 } else {
                     const Be = -dc[i] / lmid;
                     xnew[i] = Math.max(0.0,
