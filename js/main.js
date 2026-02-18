@@ -24,11 +24,15 @@ class TopologyApp {
             penaltyFactor: 3,
             filterRadius: 1.5,
             granuleDensity: 20,
+            voxelSizeMM: 2,
             minCrossSection: 0,
             useAMR: true,
             amrInterval: 3,
             minGranuleSize: 0.5,
-            maxGranuleSize: 2
+            maxGranuleSize: 2,
+            youngsModulus: 2.3,
+            poissonsRatio: 0.35,
+            material: 'plastic'
         };
         
         // Benchmark tracking
@@ -99,11 +103,54 @@ class TopologyApp {
             this.loadTemplate('cube');
         });
 
-        // Granule density slider
+        // Apply transform button (scale + rotate)
+        document.getElementById('applyTransform').addEventListener('click', () => {
+            if (!this.currentModel || !this.currentModel.originalVertices) return;
+            
+            const scale = parseFloat(document.getElementById('modelScale').value) || 1;
+            const rotX = parseFloat(document.getElementById('rotateX').value) || 0;
+            const rotY = parseFloat(document.getElementById('rotateY').value) || 0;
+            const rotZ = parseFloat(document.getElementById('rotateZ').value) || 0;
+            
+            const transformed = this.importer.transformVertices(
+                this.currentModel.originalVertices,
+                scale, rotX, rotY, rotZ
+            );
+            
+            const voxelSizeMM = this.config.voxelSizeMM;
+            const newModel = this.importer.voxelizeVertices(transformed, null, voxelSizeMM);
+            // Store the raw (untransformed) vertices so transform can be re-applied
+            newModel.originalVertices = transformed;
+            if (this.currentModel.type) newModel.type = this.currentModel.type;
+            
+            this.currentModel = newModel;
+            this.viewer.setModel(newModel);
+            
+            // Update info display
+            const info = document.getElementById('modelInfo');
+            if (!info.classList.contains('hidden')) {
+                const elementCount = newModel.nx * newModel.ny * newModel.nz;
+                let infoHTML = `<strong>Model transformed!</strong><br>`;
+                if (newModel.bounds) {
+                    const physX = (newModel.bounds.maxX - newModel.bounds.minX).toFixed(1);
+                    const physY = (newModel.bounds.maxY - newModel.bounds.minY).toFixed(1);
+                    const physZ = (newModel.bounds.maxZ - newModel.bounds.minZ).toFixed(1);
+                    infoHTML += `<strong>Size:</strong> ${physX} × ${physY} × ${physZ} mm<br>`;
+                }
+                if (newModel.voxelSize) {
+                    infoHTML += `<strong>Voxel size:</strong> ${newModel.voxelSize.toFixed(2)} mm<br>`;
+                }
+                infoHTML += `<strong>Elements:</strong> ${elementCount}<br>`;
+                infoHTML += `<strong>Grid:</strong> ${newModel.nx} × ${newModel.ny} × ${newModel.nz}`;
+                info.innerHTML = infoHTML;
+            }
+        });
+
+        // Voxel size slider (mm-based, 10mm to 0.1mm)
         document.getElementById('granuleDensity').addEventListener('input', (e) => {
-            const value = parseInt(e.target.value);
-            this.config.granuleDensity = value;
-            document.getElementById('granuleDensityValue').textContent = value;
+            const voxelSizeMM = parseFloat(e.target.value);
+            this.config.voxelSizeMM = voxelSizeMM;
+            document.getElementById('granuleDensityValue').textContent = voxelSizeMM + ' mm';
             
             // Re-voxelize the current model if one exists
             if (this.currentModel) {
@@ -113,7 +160,8 @@ class TopologyApp {
                 if (this.currentModel.originalVertices) {
                     newModel = this.importer.voxelizeVertices(
                         this.currentModel.originalVertices,
-                        value
+                        null,
+                        voxelSizeMM
                     );
                     // Preserve the model type if it was set
                     if (this.currentModel.type) {
@@ -122,9 +170,15 @@ class TopologyApp {
                 }
                 // Check if it's a template with scaling info
                 else if (this.currentModel.templateScale) {
+                    // For templates, convert mm size to resolution based on template dimensions
+                    const baseNx = this.currentModel.templateScale.baseNx;
+                    const baseNy = this.currentModel.templateScale.baseNy;
+                    const baseNz = this.currentModel.templateScale.baseNz;
+                    const maxDim = Math.max(baseNx, baseNy, baseNz);
+                    const resolution = Math.max(3, Math.round(maxDim / voxelSizeMM));
                     newModel = this.importer.createTemplate(
                         this.currentModel.type,
-                        value
+                        resolution
                     );
                     // Preserve any custom boundary conditions
                     if (this.currentModel.forcePosition) {
@@ -164,6 +218,37 @@ class TopologyApp {
             }
         });
         
+        // Step 2: Assign - Material selection
+        const materialPresets = {
+            plastic: { youngsModulus: 2.3, poissonsRatio: 0.35 },
+            aluminum: { youngsModulus: 69, poissonsRatio: 0.33 },
+            steel: { youngsModulus: 200, poissonsRatio: 0.30 }
+        };
+
+        document.getElementById('materialSelect').addEventListener('change', (e) => {
+            const material = e.target.value;
+            this.config.material = material;
+            if (materialPresets[material]) {
+                const preset = materialPresets[material];
+                this.config.youngsModulus = preset.youngsModulus;
+                this.config.poissonsRatio = preset.poissonsRatio;
+                document.getElementById('youngsModulus').value = preset.youngsModulus;
+                document.getElementById('poissonsRatio').value = preset.poissonsRatio;
+            }
+        });
+
+        document.getElementById('youngsModulus').addEventListener('input', (e) => {
+            this.config.youngsModulus = parseFloat(e.target.value);
+            document.getElementById('materialSelect').value = 'custom';
+            this.config.material = 'custom';
+        });
+
+        document.getElementById('poissonsRatio').addEventListener('input', (e) => {
+            this.config.poissonsRatio = parseFloat(e.target.value);
+            document.getElementById('materialSelect').value = 'custom';
+            this.config.material = 'custom';
+        });
+
         // Step 2: Assign
         document.getElementById('volumeFraction').addEventListener('input', (e) => {
             const value = parseFloat(e.target.value);
@@ -333,26 +418,34 @@ class TopologyApp {
     async handleFileImport(file) {
         try {
             console.log('Importing file:', file.name);
-            const model = await this.importer.importSTL(file, this.config.granuleDensity);
-            this.currentModel = model;
+            // Parse STL first, then voxelize with mm-based voxel size
+            const model = await this.importer.importSTL(file, null);
+            // Re-voxelize with the configured voxel size in mm
+            const voxelSizeMM = this.config.voxelSizeMM;
+            const revoxelized = this.importer.voxelizeVertices(model.originalVertices, null, voxelSizeMM);
+            revoxelized.originalVertices = model.originalVertices;
+            this.currentModel = revoxelized;
+            
+            // Show transform controls for imported STL models
+            document.getElementById('transformControls').classList.remove('hidden');
             
             // Display model info
             const info = document.getElementById('modelInfo');
             info.classList.remove('hidden');
-            const physX = model.bounds ? (model.bounds.maxX - model.bounds.minX).toFixed(1) : '?';
-            const physY = model.bounds ? (model.bounds.maxY - model.bounds.minY).toFixed(1) : '?';
-            const physZ = model.bounds ? (model.bounds.maxZ - model.bounds.minZ).toFixed(1) : '?';
-            const voxelSizeStr = model.voxelSize ? model.voxelSize.toFixed(2) : '?';
+            const physX = revoxelized.bounds ? (revoxelized.bounds.maxX - revoxelized.bounds.minX).toFixed(1) : '?';
+            const physY = revoxelized.bounds ? (revoxelized.bounds.maxY - revoxelized.bounds.minY).toFixed(1) : '?';
+            const physZ = revoxelized.bounds ? (revoxelized.bounds.maxZ - revoxelized.bounds.minZ).toFixed(1) : '?';
+            const voxelSizeStr = revoxelized.voxelSize ? revoxelized.voxelSize.toFixed(2) : '?';
             info.innerHTML = `
                 <strong>Model loaded:</strong> ${file.name}<br>
                 <strong>Size:</strong> ${physX} × ${physY} × ${physZ} mm<br>
                 <strong>Voxel size:</strong> ${voxelSizeStr} mm<br>
-                <strong>Elements:</strong> ${model.nx * model.ny * model.nz}<br>
-                <strong>Grid:</strong> ${model.nx} × ${model.ny} × ${model.nz}
+                <strong>Elements:</strong> ${revoxelized.nx * revoxelized.ny * revoxelized.nz}<br>
+                <strong>Grid:</strong> ${revoxelized.nx} × ${revoxelized.ny} × ${revoxelized.nz}
             `;
             
             // Visualize
-            this.viewer.setModel(model);
+            this.viewer.setModel(revoxelized);
             
             // Enable and navigate to step 2
             this.workflow.enableStep(2);
@@ -366,8 +459,16 @@ class TopologyApp {
 
     loadTemplate(type) {
         console.log('Loading template:', type);
-        const model = this.importer.createTemplate(type, this.config.granuleDensity);
+        // Convert voxelSizeMM to granuleDensity for templates
+        // Templates use mm-based dimensions, so derive resolution from voxel size
+        const templateDims = { beam: 30, bridge: 40, cube: 5 };
+        const maxDim = templateDims[type] || 20;
+        const resolution = Math.max(3, Math.round(maxDim / this.config.voxelSizeMM));
+        const model = this.importer.createTemplate(type, resolution);
         this.currentModel = model;
+        
+        // Hide transform controls for templates (no vertices to transform)
+        document.getElementById('transformControls').classList.add('hidden');
         
         // For cube template, set specific boundary conditions
         if (type === 'cube' && model.forcePosition && model.constraintPositions) {
@@ -563,6 +664,13 @@ class TopologyApp {
         document.getElementById('runOptimization').classList.remove('hidden');
         document.getElementById('cancelOptimization').classList.add('hidden');
         document.getElementById('strainSliderContainer').classList.add('hidden');
+        document.getElementById('transformControls').classList.add('hidden');
+        
+        // Reset transform inputs
+        document.getElementById('modelScale').value = 1;
+        document.getElementById('rotateX').value = 0;
+        document.getElementById('rotateY').value = 0;
+        document.getElementById('rotateZ').value = 0;
         
         // Reset strain slider values
         document.getElementById('strainMin').value = 0;

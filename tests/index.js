@@ -186,6 +186,73 @@ console.log('Test 6: Templates remain all-solid');
 }
 
 // ──────────────────────────────────────────────────
+// Test 7: Voxelize with mm-based voxel size
+// ──────────────────────────────────────────────────
+console.log('Test 7: Voxelize with mm-based voxel size');
+{
+    // Cube from (0,0,0) to (10,10,10), voxel size = 2mm → should get 5x5x5
+    function quad(a, b, c, d) {
+        return [a, b, c, a, c, d];
+    }
+    const cubeVertices = [
+        ...quad({ x: 0, y: 0, z: 0 }, { x: 10, y: 0, z: 0 }, { x: 10, y: 10, z: 0 }, { x: 0, y: 10, z: 0 }),
+        ...quad({ x: 0, y: 0, z: 10 }, { x: 0, y: 10, z: 10 }, { x: 10, y: 10, z: 10 }, { x: 10, y: 0, z: 10 }),
+        ...quad({ x: 0, y: 0, z: 0 }, { x: 0, y: 10, z: 0 }, { x: 0, y: 10, z: 10 }, { x: 0, y: 0, z: 10 }),
+        ...quad({ x: 10, y: 0, z: 0 }, { x: 10, y: 0, z: 10 }, { x: 10, y: 10, z: 10 }, { x: 10, y: 10, z: 0 }),
+        ...quad({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 10 }, { x: 10, y: 0, z: 10 }, { x: 10, y: 0, z: 0 }),
+        ...quad({ x: 0, y: 10, z: 0 }, { x: 10, y: 10, z: 0 }, { x: 10, y: 10, z: 10 }, { x: 0, y: 10, z: 10 }),
+    ];
+
+    const result = importer.voxelizeVertices(cubeVertices, null, 2);
+    assert(result.nx === 5, `Expected nx=5 with 2mm voxels on 10mm cube, got ${result.nx}`);
+    assert(result.ny === 5, `Expected ny=5 with 2mm voxels on 10mm cube, got ${result.ny}`);
+    assert(result.nz === 5, `Expected nz=5 with 2mm voxels on 10mm cube, got ${result.nz}`);
+    assert(Math.abs(result.voxelSize - 2) < 0.001, `Voxel size should be 2mm, got ${result.voxelSize}`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 8: Transform vertices - scale
+// ──────────────────────────────────────────────────
+console.log('Test 8: Transform vertices - scale');
+{
+    const vertices = [
+        { x: 1, y: 2, z: 3 },
+        { x: 4, y: 5, z: 6 }
+    ];
+    const scaled = importer.transformVertices(vertices, 2, 0, 0, 0);
+    assert(Math.abs(scaled[0].x - 2) < 1e-6, `Scaled x should be 2, got ${scaled[0].x}`);
+    assert(Math.abs(scaled[0].y - 4) < 1e-6, `Scaled y should be 4, got ${scaled[0].y}`);
+    assert(Math.abs(scaled[0].z - 6) < 1e-6, `Scaled z should be 6, got ${scaled[0].z}`);
+    assert(Math.abs(scaled[1].x - 8) < 1e-6, `Scaled x should be 8, got ${scaled[1].x}`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 9: Transform vertices - identity (no change)
+// ──────────────────────────────────────────────────
+console.log('Test 9: Transform vertices - identity');
+{
+    const vertices = [
+        { x: 1, y: 2, z: 3 }
+    ];
+    const result = importer.transformVertices(vertices, 1, 0, 0, 0);
+    assert(result === vertices, 'Identity transform should return same array reference');
+}
+
+// ──────────────────────────────────────────────────
+// Test 10: Transform vertices - rotation Z 90°
+// ──────────────────────────────────────────────────
+console.log('Test 10: Transform vertices - rotation Z 90°');
+{
+    const vertices = [
+        { x: 1, y: 0, z: 0 }
+    ];
+    const rotated = importer.transformVertices(vertices, 1, 0, 0, 90);
+    assert(Math.abs(rotated[0].x - 0) < 1e-6, `Rotated x should be ~0, got ${rotated[0].x}`);
+    assert(Math.abs(rotated[0].y - 1) < 1e-6, `Rotated y should be ~1, got ${rotated[0].y}`);
+    assert(Math.abs(rotated[0].z - 0) < 1e-6, `Rotated z should be ~0, got ${rotated[0].z}`);
+}
+
+// ──────────────────────────────────────────────────
 // Summary
 // ──────────────────────────────────────────────────
 console.log(`\nResults: ${passed} passed, ${failed} failed`);

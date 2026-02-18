@@ -3,6 +3,7 @@ export class ModelImporter {
     constructor() {
         this.reader = new FileReader();
         this.resolution = 20;
+        this.voxelSizeMM = 2; // default voxel size in mm
     }
 
     async importSTL(file, resolution) {
@@ -23,6 +24,62 @@ export class ModelImporter {
             };
             
             this.reader.readAsArrayBuffer(file);
+        });
+    }
+
+    /**
+     * Transform vertices by applying scale and rotation.
+     * @param {Array} vertices - Array of {x, y, z} objects
+     * @param {number} scale - Uniform scale factor
+     * @param {number} rotX - Rotation around X axis in degrees
+     * @param {number} rotY - Rotation around Y axis in degrees
+     * @param {number} rotZ - Rotation around Z axis in degrees
+     * @returns {Array} Transformed vertices
+     */
+    transformVertices(vertices, scale = 1, rotX = 0, rotY = 0, rotZ = 0) {
+        if (scale === 1 && rotX === 0 && rotY === 0 && rotZ === 0) {
+            return vertices;
+        }
+
+        const degToRad = Math.PI / 180;
+        const rx = rotX * degToRad;
+        const ry = rotY * degToRad;
+        const rz = rotZ * degToRad;
+
+        const cosX = Math.cos(rx), sinX = Math.sin(rx);
+        const cosY = Math.cos(ry), sinY = Math.sin(ry);
+        const cosZ = Math.cos(rz), sinZ = Math.sin(rz);
+
+        return vertices.map(v => {
+            let x = v.x * scale;
+            let y = v.y * scale;
+            let z = v.z * scale;
+
+            // Rotate around X axis
+            if (rotX !== 0) {
+                const y1 = y * cosX - z * sinX;
+                const z1 = y * sinX + z * cosX;
+                y = y1;
+                z = z1;
+            }
+
+            // Rotate around Y axis
+            if (rotY !== 0) {
+                const x1 = x * cosY + z * sinY;
+                const z1 = -x * sinY + z * cosY;
+                x = x1;
+                z = z1;
+            }
+
+            // Rotate around Z axis
+            if (rotZ !== 0) {
+                const x1 = x * cosZ - y * sinZ;
+                const y1 = x * sinZ + y * cosZ;
+                x = x1;
+                y = y1;
+            }
+
+            return { x, y, z };
         });
     }
 
@@ -132,7 +189,7 @@ export class ModelImporter {
         return this.voxelizeVertices(vertices);
     }
 
-    voxelizeVertices(vertices, resolution = null) {
+    voxelizeVertices(vertices, resolution = null, voxelSizeMM = null) {
         // Find bounding box
         let minX = Infinity, minY = Infinity, minZ = Infinity;
         let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
@@ -151,17 +208,17 @@ export class ModelImporter {
         const sizeY = maxY - minY || 1;
         const sizeZ = maxZ - minZ || 1;
 
-        // Use provided resolution or fall back to instance resolution.
-        // The resolution parameter defines the voxel size: 1 voxel = 1mm at
-        // base density 20.  Higher density gives smaller voxels so sub-1mm
-        // features can be captured.
-        const res = resolution !== null ? resolution : (this.resolution || 20);
-
-        // Voxel size in mm – at base density 20 the longest axis gets 20 voxels.
-        // Increasing density shrinks the voxel size proportionally so that thin
-        // features (even sub-1mm) produce enough voxels to be resolved.
+        let voxelSize;
         const maxDim = Math.max(sizeX, sizeY, sizeZ);
-        const voxelSize = maxDim / res;
+
+        if (voxelSizeMM !== null && voxelSizeMM > 0) {
+            // New mm-based voxel size: directly use the specified size
+            voxelSize = voxelSizeMM;
+        } else {
+            // Legacy resolution-based: number of voxels on longest axis
+            const res = resolution !== null ? resolution : (this.resolution || 20);
+            voxelSize = maxDim / res;
+        }
 
         const nx = Math.max(1, Math.ceil(sizeX / voxelSize));
         const ny = Math.max(1, Math.ceil(sizeY / voxelSize));
