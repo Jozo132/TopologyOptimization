@@ -327,6 +327,153 @@ function FE_new(nelx, nely, x, penal, KEflat, edofArray, F, freedofs) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// OPTIMIZED SOLVER: Precomputed stiffness + void skipping + cached arrays
+// ═══════════════════════════════════════════════════════════════════════
+let _opt_p_full, _opt_Ap_full;
+let _opt_Uf, _opt_r, _opt_z, _opt_p, _opt_Ap;
+
+function precomputeStiffness(x, penal, nel) {
+    const E_vals = new Float64Array(nel);
+    const dE = E0 - Emin;
+    const activeElements = [];
+    const skipThreshold = Emin * 1000;
+    for (let e = 0; e < nel; e++) {
+        const E = Emin + Math.pow(x[e], penal) * dE;
+        E_vals[e] = E;
+        if (E > skipThreshold) {
+            activeElements.push(e);
+        }
+    }
+    return { E_vals, activeElements };
+}
+
+function ebeMatVec_opt(E_vals, activeElements, KEflat, edofArray, p_reduced, Ap_reduced, freedofs, ndof) {
+    _opt_p_full.fill(0);
+    for (let i = 0, len = freedofs.length; i < len; i++) _opt_p_full[freedofs[i]] = p_reduced[i];
+    _opt_Ap_full.fill(0);
+    for (let ae = 0, aeLen = activeElements.length; ae < aeLen; ae++) {
+        const e = activeElements[ae];
+        const E = E_vals[e];
+        const eOff = e * 8;
+        for (let i = 0; i < 8; i++) {
+            const gi = edofArray[eOff + i];
+            let sum = 0;
+            const keRow = i * 8;
+            for (let j = 0; j < 8; j++) {
+                sum += KEflat[keRow + j] * _opt_p_full[edofArray[eOff + j]];
+            }
+            _opt_Ap_full[gi] += E * sum;
+        }
+    }
+    for (let i = 0, len = freedofs.length; i < len; i++) Ap_reduced[i] = _opt_Ap_full[freedofs[i]];
+}
+
+function computeDiag_opt(E_vals, activeElements, KEflat, edofArray, freedofs, ndof) {
+    const diag = new Float64Array(ndof);
+    for (let ae = 0, aeLen = activeElements.length; ae < aeLen; ae++) {
+        const e = activeElements[ae];
+        const E = E_vals[e];
+        const eOff = e * 8;
+        for (let i = 0; i < 8; i++) {
+            diag[edofArray[eOff + i]] += E * KEflat[i * 8 + i];
+        }
+    }
+    const invDiag = new Float64Array(freedofs.length);
+    for (let i = 0, len = freedofs.length; i < len; i++) {
+        const d = diag[freedofs[i]];
+        invDiag[i] = d > 1e-30 ? 1.0 / d : 0.0;
+    }
+    return invDiag;
+}
+
+function solvePCG_opt(x, penal, KEflat, edofArray, nel, F, freedofs, ndof) {
+    const n = freedofs.length;
+
+    if (!_opt_p_full || _opt_p_full.length !== ndof) {
+        _opt_p_full = new Float64Array(ndof);
+        _opt_Ap_full = new Float64Array(ndof);
+    }
+
+    const t0 = performance.now();
+    const { E_vals, activeElements } = precomputeStiffness(x, penal, nel);
+    const invDiag = computeDiag_opt(E_vals, activeElements, KEflat, edofArray, freedofs, ndof);
+    const tPrecomp = performance.now();
+
+    // Reuse CG arrays
+    if (!_opt_Uf || _opt_Uf.length !== n) {
+        _opt_Uf = new Float64Array(n);
+        _opt_r  = new Float64Array(n);
+        _opt_z  = new Float64Array(n);
+        _opt_p  = new Float64Array(n);
+        _opt_Ap = new Float64Array(n);
+    }
+    const Uf = _opt_Uf; Uf.fill(0);
+    const r = _opt_r;
+    const z = _opt_z;
+    const p = _opt_p;
+    const Ap = _opt_Ap;
+
+    for (let i = 0; i < n; i++) r[i] = F[freedofs[i]];
+    let rz = 0;
+    for (let i = 0; i < n; i++) { z[i] = invDiag[i]*r[i]; p[i] = z[i]; rz += r[i]*z[i]; }
+
+    const maxIter = Math.min(n, MAX_CG_ITERATIONS);
+    const tolSq = CG_TOLERANCE * CG_TOLERANCE;
+    let iterations = 0;
+
+    for (let iter = 0; iter < maxIter; iter++) {
+        let rnorm2 = 0;
+        for (let i = 0; i < n; i++) rnorm2 += r[i] * r[i];
+        if (rnorm2 < tolSq) break;
+        iterations++;
+
+        ebeMatVec_opt(E_vals, activeElements, KEflat, edofArray, p, Ap, freedofs, ndof);
+
+        let pAp = 0;
+        for (let i = 0; i < n; i++) pAp += p[i] * Ap[i];
+        const alpha = rz / (pAp + EPSILON);
+
+        let rz_new = 0;
+        for (let i = 0; i < n; i++) {
+            Uf[i] += alpha * p[i];
+            r[i]  -= alpha * Ap[i];
+            z[i]   = invDiag[i] * r[i];
+            rz_new += r[i] * z[i];
+        }
+        const beta = rz_new / (rz + EPSILON);
+        for (let i = 0; i < n; i++) p[i] = z[i] + beta * p[i];
+        rz = rz_new;
+    }
+
+    const tSolve = performance.now();
+
+    return { Uf, iterations, precompTime: tPrecomp - t0, solveTime: tSolve - tPrecomp, totalTime: tSolve - t0, activeCount: activeElements.length };
+}
+
+function FE_opt(nelx, nely, x, penal, KEflat, edofArray, F, freedofs) {
+    const ndof = 2 * (nelx + 1) * (nely + 1);
+    const nel = nelx * nely;
+    const t0 = performance.now();
+    const result = solvePCG_opt(x, penal, KEflat, edofArray, nel, F, freedofs, ndof);
+    const t1 = performance.now();
+
+    const U = new Float64Array(ndof);
+    for (let i = 0; i < freedofs.length; i++) U[freedofs[i]] = result.Uf[i];
+    let c = 0;
+    for (let i = 0; i < ndof; i++) c += F[i] * U[i];
+
+    return {
+        compliance: c,
+        precompTime: result.precompTime,
+        solveTime: result.solveTime,
+        totalTime: t1 - t0,
+        cgIterations: result.iterations,
+        memoryBytes: 0,
+        activeCount: result.activeCount
+    };
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // BENCHMARK RUNNER
 // ═══════════════════════════════════════════════════════════════════════
 function runBenchmark(nelx, nely, runs) {
@@ -337,14 +484,17 @@ function runBenchmark(nelx, nely, runs) {
 
     const oldResults = [];
     const newResults = [];
+    const optResults = [];
 
     // Warm-up
     FE_old(nelx, nely, x, PENAL, KE, F, freedofs);
     FE_new(nelx, nely, x, PENAL, KEflat, edofArray, F, freedofs);
+    FE_opt(nelx, nely, x, PENAL, KEflat, edofArray, F, freedofs);
 
     for (let r = 0; r < runs; r++) {
         oldResults.push(FE_old(nelx, nely, x, PENAL, KE, F, freedofs));
         newResults.push(FE_new(nelx, nely, x, PENAL, KEflat, edofArray, F, freedofs));
+        optResults.push(FE_opt(nelx, nely, x, PENAL, KEflat, edofArray, F, freedofs));
     }
 
     const avg = arr => arr.reduce((a,b)=>a+b,0)/arr.length;
@@ -362,42 +512,52 @@ function runBenchmark(nelx, nely, runs) {
     const newIter = avg(newResults.map(r=>r.cgIterations));
     const newComp = newResults[0].compliance;
 
+    const optTotal = avg(optResults.map(r=>r.totalTime));
+    const optPrecomp = avg(optResults.map(r=>r.precompTime));
+    const optSolve = avg(optResults.map(r=>r.solveTime));
+    const optIter = avg(optResults.map(r=>r.cgIterations));
+    const optComp = optResults[0].compliance;
+    const optActive = optResults[0].activeCount;
+
     return {
         nelx, nely, nel, ndof, nfree: freedofs.length, runs,
         old: { total: oldTotal, assembly: oldAssembly, solve: oldSolve, iters: oldIter, compliance: oldComp, memKB: oldMem/1024 },
         new_: { total: newTotal, diag: newDiag, solve: newSolve, iters: newIter, compliance: newComp },
-        speedup: oldTotal / newTotal,
-        complianceDiff: Math.abs(oldComp - newComp) / Math.abs(oldComp)
+        opt: { total: optTotal, precomp: optPrecomp, solve: optSolve, iters: optIter, compliance: optComp, activeCount: optActive },
+        speedup_new: oldTotal / newTotal,
+        speedup_opt: oldTotal / optTotal,
+        speedup_opt_vs_new: newTotal / optTotal,
+        complianceDiff: Math.abs(oldComp - optComp) / Math.abs(oldComp)
     };
 }
 
 // ═══════════════════════════════════════════════════════════════════════
 // MAIN
 // ═══════════════════════════════════════════════════════════════════════
-console.log('╔════════════════════════════════════════════════════════════════════════╗');
-console.log('║  Solver Benchmark: Old (CSR + CG) vs New (EbE + Jacobi PCG)          ║');
-console.log('╚════════════════════════════════════════════════════════════════════════╝');
+console.log('╔══════════════════════════════════════════════════════════════════════════════╗');
+console.log('║  Solver Benchmark: Old (CSR+CG) vs EbE (Jacobi PCG) vs Optimized (EbE+OPT) ║');
+console.log('╚══════════════════════════════════════════════════════════════════════════════╝');
 
 const testCases = [
-    { nelx: 10,  nely: 6,   runs: 10, label: '10×6    (60 elems)' },
     { nelx: 20,  nely: 10,  runs: 5,  label: '20×10   (200 elems)' },
     { nelx: 40,  nely: 20,  runs: 3,  label: '40×20   (800 elems)' },
     { nelx: 60,  nely: 20,  runs: 3,  label: '60×20   (1,200 elems)' },
     { nelx: 80,  nely: 40,  runs: 2,  label: '80×40   (3,200 elems)' },
     { nelx: 120, nely: 40,  runs: 2,  label: '120×40  (4,800 elems)' },
+    { nelx: 150, nely: 50,  runs: 2,  label: '150×50  (7,500 elems)' },
 ];
 
 const allResults = [];
 
 for (const tc of testCases) {
-    console.log(`\n${'─'.repeat(72)}`);
+    console.log(`\n${'─'.repeat(80)}`);
     console.log(`  Mesh: ${tc.label}  (${tc.runs} runs)`);
-    console.log('─'.repeat(72));
+    console.log('─'.repeat(80));
 
     const r = runBenchmark(tc.nelx, tc.nely, tc.runs);
     allResults.push({ label: tc.label, ...r });
 
-    console.log(`  Free DOFs: ${r.nfree}`);
+    console.log(`  Free DOFs: ${r.nfree}  |  Active elements: ${r.opt.activeCount}/${r.nel}`);
     console.log('');
     console.log(`  OLD (CSR assembly + unpreconditioned CG, Float32):`);
     console.log(`    Assembly:   ${r.old.assembly.toFixed(2)} ms`);
@@ -405,59 +565,71 @@ for (const tc of testCases) {
     console.log(`    Total:      ${r.old.total.toFixed(2)} ms`);
     console.log(`    Matrix mem: ${r.old.memKB.toFixed(0)} KB`);
     console.log('');
-    console.log(`  NEW (EbE + Jacobi PCG, Float64):`);
+    console.log(`  EbE (EbE + Jacobi PCG, Float64):`);
     console.log(`    Diagonal:   ${r.new_.diag.toFixed(2)} ms`);
     console.log(`    PCG solve:  ${r.new_.solve.toFixed(2)} ms  (${Math.round(r.new_.iters)} iters)`);
     console.log(`    Total:      ${r.new_.total.toFixed(2)} ms`);
-    console.log(`    Matrix mem: 0 KB (matrix-free)`);
     console.log('');
-    console.log(`  Speedup:       ${r.speedup.toFixed(2)}×`);
-    console.log(`  Compliance:    old=${r.old.compliance.toFixed(4)}  new=${r.new_.compliance.toFixed(4)}  diff=${(r.complianceDiff*100).toExponential(2)}%`);
+    console.log(`  OPTIMIZED (precomputed stiffness + void skip + cached arrays):`);
+    console.log(`    Precompute: ${r.opt.precomp.toFixed(2)} ms`);
+    console.log(`    PCG solve:  ${r.opt.solve.toFixed(2)} ms  (${Math.round(r.opt.iters)} iters)`);
+    console.log(`    Total:      ${r.opt.total.toFixed(2)} ms`);
+    console.log('');
+    console.log(`  Speedup vs Old:   EbE=${r.speedup_new.toFixed(2)}×  OPT=${r.speedup_opt.toFixed(2)}×`);
+    console.log(`  OPT vs EbE:       ${r.speedup_opt_vs_new.toFixed(2)}×`);
+    console.log(`  Compliance:    old=${r.old.compliance.toFixed(4)}  opt=${r.opt.compliance.toFixed(4)}  diff=${(r.complianceDiff*100).toExponential(2)}%`);
 }
 
-console.log(`\n\n${'═'.repeat(80)}`);
+console.log(`\n\n${'═'.repeat(100)}`);
 console.log('  SUMMARY — Total FE Solve Time');
-console.log('═'.repeat(80));
-console.log('Mesh            | Free DOFs | Old (ms) | New (ms) | Speedup | CG Iters (old→new)');
-console.log('─'.repeat(80));
+console.log('═'.repeat(100));
+console.log('Mesh            | Free DOFs | Old (ms) | EbE (ms) | OPT (ms) | OPT vs Old | OPT vs EbE | CG Iters (old→EbE→OPT)');
+console.log('─'.repeat(100));
 for (const r of allResults) {
     const label = r.label.padEnd(15);
     const dofs = String(r.nfree).padStart(9);
     const oldT = r.old.total.toFixed(1).padStart(8);
     const newT = r.new_.total.toFixed(1).padStart(8);
-    const sp = (r.speedup.toFixed(2) + '×').padStart(7);
-    const iters = `${Math.round(r.old.iters)}→${Math.round(r.new_.iters)}`;
-    console.log(`${label} | ${dofs} | ${oldT} | ${newT} | ${sp} | ${iters}`);
+    const optT = r.opt.total.toFixed(1).padStart(8);
+    const sp1 = (r.speedup_opt.toFixed(2) + '×').padStart(10);
+    const sp2 = (r.speedup_opt_vs_new.toFixed(2) + '×').padStart(10);
+    const iters = `${Math.round(r.old.iters)}→${Math.round(r.new_.iters)}→${Math.round(r.opt.iters)}`;
+    console.log(`${label} | ${dofs} | ${oldT} | ${newT} | ${optT} | ${sp1} | ${sp2} | ${iters}`);
 }
-console.log('═'.repeat(80));
+console.log('═'.repeat(100));
 
-console.log(`\n${'═'.repeat(80)}`);
+console.log(`\n${'═'.repeat(100)}`);
 console.log('  PER-ITERATION COST (fair comparison — isolates matvec speed)');
-console.log('═'.repeat(80));
-console.log('Mesh            | Old ms/iter | New ms/iter | Per-Iter Speedup | Mem Saved');
-console.log('─'.repeat(80));
+console.log('═'.repeat(100));
+console.log('Mesh            | Old ms/iter | EbE ms/iter | OPT ms/iter | OPT Per-Iter Speedup | Mem Saved');
+console.log('─'.repeat(100));
 for (const r of allResults) {
     const label = r.label.padEnd(15);
     const oldPerIter = r.old.iters > 0 ? r.old.solve / r.old.iters : 0;
     const newPerIter = r.new_.iters > 0 ? r.new_.solve / r.new_.iters : 0;
-    const perIterSpeedup = newPerIter > 0 ? oldPerIter / newPerIter : 0;
+    const optPerIter = r.opt.iters > 0 ? r.opt.solve / r.opt.iters : 0;
+    const perIterSpeedup = optPerIter > 0 ? newPerIter / optPerIter : 0;
     const memSaved = r.old.memKB;
-    console.log(`${label} | ${oldPerIter.toFixed(4).padStart(11)} | ${newPerIter.toFixed(4).padStart(11)} | ${(perIterSpeedup.toFixed(2) + '×').padStart(16)} | ${memSaved.toFixed(0)} KB`);
+    console.log(`${label} | ${oldPerIter.toFixed(4).padStart(11)} | ${newPerIter.toFixed(4).padStart(11)} | ${optPerIter.toFixed(4).padStart(11)} | ${(perIterSpeedup.toFixed(2) + '×').padStart(20)} | ${memSaved.toFixed(0)} KB`);
 }
-console.log('═'.repeat(80));
+console.log('═'.repeat(100));
 
-const avgSpeedup = allResults.reduce((s,r)=>s+r.speedup,0)/allResults.length;
+const avgSpeedupOpt = allResults.reduce((s,r)=>s+r.speedup_opt,0)/allResults.length;
+const avgSpeedupOptVsNew = allResults.reduce((s,r)=>s+r.speedup_opt_vs_new,0)/allResults.length;
 const avgPerIterSpeedup = allResults.reduce((s,r) => {
-    const oldPI = r.old.iters > 0 ? r.old.solve / r.old.iters : 0;
     const newPI = r.new_.iters > 0 ? r.new_.solve / r.new_.iters : 0;
-    return s + (newPI > 0 ? oldPI / newPI : 0);
+    const optPI = r.opt.iters > 0 ? r.opt.solve / r.opt.iters : 0;
+    return s + (optPI > 0 ? newPI / optPI : 0);
 }, 0) / allResults.length;
 const totalMemSaved = allResults.reduce((s,r)=>s+r.old.memKB,0);
 
-console.log(`\n  Average total speedup:      ${avgSpeedup.toFixed(2)}×`);
-console.log(`  Average per-iter speedup:   ${avgPerIterSpeedup.toFixed(2)}×  (EbE matvec vs CSR sparse matvec)`);
-console.log(`  Total memory saved:         ${totalMemSaved.toFixed(0)} KB  (no global matrix assembled)`);
-console.log(`  Precision upgrade:          Float32 → Float64  (eliminates convergence stalling)`);
-console.log(`  Max CG iterations:          1000 → 2000  (allows proper convergence)`);
+console.log(`\n  Average OPT vs Old speedup:     ${avgSpeedupOpt.toFixed(2)}×`);
+console.log(`  Average OPT vs EbE speedup:     ${avgSpeedupOptVsNew.toFixed(2)}×`);
+console.log(`  Average per-iter OPT vs EbE:    ${avgPerIterSpeedup.toFixed(2)}×`);
+console.log(`  Total memory saved:             ${totalMemSaved.toFixed(0)} KB  (no global matrix assembled)`);
+console.log(`  Optimizations applied:`);
+console.log(`    - Precomputed element stiffness (avoids Math.pow per CG iteration)`);
+console.log(`    - Void element skipping (skips elements with negligible stiffness)`);
+console.log(`    - Cached CG work arrays (avoids allocation per solve call)`);
 console.log(`  All compliance values match within tolerance.`);
 console.log('');
