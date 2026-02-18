@@ -379,6 +379,23 @@ class TopologyOptimizerWorker {
             x[idx] = 1.0;
         }
 
+        // Build set of void element indices (elements outside initial solid space)
+        // 2D worker uses column-major indexing (ey + ex * nely), while
+        // the importer uses row-major (ix + iy * nx) where nelx = nx.
+        const voidElements = new Set();
+        if (config.constrainToSolid && model.elements) {
+            for (let ex = 0; ex < nelx; ex++) {
+                for (let ey = 0; ey < nely; ey++) {
+                    const idx2D = ey + ex * nely; // 2D worker indexing
+                    const idxImporter = ex + ey * nelx; // importer row-major indexing (z=0)
+                    if (model.elements[idxImporter] < 0.5) {
+                        voidElements.add(idx2D);
+                        x[idx2D] = 0.0;
+                    }
+                }
+            }
+        }
+
         const ndof = 2 * (nelx + 1) * (nely + 1);
         const alldofs = Array.from({ length: ndof }, (_, i) => i);
         const fixedSet = new Set(fixeddofs);
@@ -455,7 +472,7 @@ class TopologyOptimizerWorker {
                 }
             }
             
-            xnew = this.OC(nelx, nely, x, volfrac, dcnWeighted, preservedElements);
+            xnew = this.OC(nelx, nely, x, volfrac, dcnWeighted, preservedElements, voidElements);
 
             change = 0;
             for (let i = 0; i < nel; i++) {
@@ -864,7 +881,7 @@ class TopologyOptimizerWorker {
         return dcn;
     }
 
-    OC(nelx, nely, x, volfrac, dc, preservedElements) {
+    OC(nelx, nely, x, volfrac, dc, preservedElements, voidElements) {
         const nel = nelx * nely;
         const xnew = new Float32Array(nel);
         const move = 0.2;
@@ -878,6 +895,8 @@ class TopologyOptimizerWorker {
             for (let i = 0; i < nel; i++) {
                 if (preservedElements && preservedElements.has(i)) {
                     xnew[i] = 1.0;
+                } else if (voidElements && voidElements.has(i)) {
+                    xnew[i] = 0.0;
                 } else {
                     const Be = -dc[i] / lmid;
                     xnew[i] = Math.max(0.0,

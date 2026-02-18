@@ -194,14 +194,15 @@ export class ModelImporter {
         let minX = Infinity, minY = Infinity, minZ = Infinity;
         let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
         
-        vertices.forEach(v => {
-            minX = Math.min(minX, v.x);
-            minY = Math.min(minY, v.y);
-            minZ = Math.min(minZ, v.z);
-            maxX = Math.max(maxX, v.x);
-            maxY = Math.max(maxY, v.y);
-            maxZ = Math.max(maxZ, v.z);
-        });
+        for (let i = 0, len = vertices.length; i < len; i++) {
+            const v = vertices[i];
+            if (v.x < minX) minX = v.x;
+            if (v.y < minY) minY = v.y;
+            if (v.z < minZ) minZ = v.z;
+            if (v.x > maxX) maxX = v.x;
+            if (v.y > maxY) maxY = v.y;
+            if (v.z > maxZ) maxZ = v.z;
+        }
         
         // Physical dimensions in mm (STL coordinates are treated as mm)
         const sizeX = maxX - minX || 1;
@@ -232,17 +233,48 @@ export class ModelImporter {
         const elements = new Float32Array(nx * ny * nz);
         
         if (numTriangles > 0) {
+            // Build a spatial grid index: bucket triangles by their X-Y bounding box
+            // so each (ix, iy) column only tests triangles that overlap with it.
+            const grid = new Array(nx * ny);
+            for (let i = 0; i < nx * ny; i++) grid[i] = [];
+
+            for (let t = 0; t < numTriangles; t++) {
+                const v0 = vertices[t * 3];
+                const v1 = vertices[t * 3 + 1];
+                const v2 = vertices[t * 3 + 2];
+
+                // Triangle X-Y bounding box mapped to grid cells
+                const tMinX = Math.min(v0.x, v1.x, v2.x);
+                const tMaxX = Math.max(v0.x, v1.x, v2.x);
+                const tMinY = Math.min(v0.y, v1.y, v2.y);
+                const tMaxY = Math.max(v0.y, v1.y, v2.y);
+
+                const ixStart = Math.max(0, Math.floor((tMinX - minX) / voxelSize));
+                const ixEnd   = Math.min(nx - 1, Math.floor((tMaxX - minX) / voxelSize));
+                const iyStart = Math.max(0, Math.floor((tMinY - minY) / voxelSize));
+                const iyEnd   = Math.min(ny - 1, Math.floor((tMaxY - minY) / voxelSize));
+
+                for (let ix = ixStart; ix <= ixEnd; ix++) {
+                    for (let iy = iyStart; iy <= iyEnd; iy++) {
+                        grid[ix + iy * nx].push(t);
+                    }
+                }
+            }
+
             // Ray-casting voxelization: for each (ix, iy) column cast a ray along Z,
-            // find intersections with mesh triangles, then fill voxels between
+            // find intersections with overlapping triangles, then fill voxels between
             // intersection pairs (inside the mesh via the Jordan curve theorem).
             for (let ix = 0; ix < nx; ix++) {
                 const cx = minX + (ix + 0.5) * voxelSize;
                 for (let iy = 0; iy < ny; iy++) {
                     const cy = minY + (iy + 0.5) * voxelSize;
+                    const bucket = grid[ix + iy * nx];
+                    if (bucket.length === 0) continue;
                     
-                    // Collect Z-axis intersections with all triangles
+                    // Collect Z-axis intersections with overlapping triangles
                     const intersections = [];
-                    for (let t = 0; t < numTriangles; t++) {
+                    for (let b = 0, bLen = bucket.length; b < bLen; b++) {
+                        const t = bucket[b];
                         const v0 = vertices[t * 3];
                         const v1 = vertices[t * 3 + 1];
                         const v2 = vertices[t * 3 + 2];
