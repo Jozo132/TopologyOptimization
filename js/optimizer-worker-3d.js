@@ -3,6 +3,7 @@
 
 const EPSILON = 1e-12;
 const CG_TOLERANCE = 1e-8;
+const CG_TOLERANCE_COARSE = 1e-2;
 const MAX_CG_ITERATIONS = 2000;
 
 // WASM Module for high-performance operations
@@ -475,7 +476,17 @@ class TopologyOptimizerWorker3D {
         let change = 1;
         let c = 0;
         let lastElementEnergies = null;
-        
+
+        // Penalization continuation: ramp penal from penalStart to penalTarget
+        const penalTarget = this.penal;
+        const penalStart = config.penalStart != null ? config.penalStart : Math.min(penalTarget, 1.5);
+        const continuationIters = config.continuationIters != null ? config.continuationIters : Math.max(20, Math.floor(maxIterations / 3));
+
+        // Heaviside projection parameters
+        const useProjection = config.useProjection !== false;
+        const betaMax = config.betaMax != null ? config.betaMax : 64;
+        const betaInterval = config.betaInterval != null ? config.betaInterval : 5;
+
         // Benchmark timing
         const iterationTimes = [];
         const startTime = performance.now();
@@ -490,12 +501,25 @@ class TopologyOptimizerWorker3D {
             const iterStartTime = performance.now();
             xold = Float32Array.from(x);
 
-            const { U, c: compliance } = this.FE(nelx, nely, nelz, x, this.penal, KEflat, edofArray, F, freedofs);
+            // Accuracy scheduling: loosen CG tolerance when change is large (early iterations)
+            const iterTolerance = Math.max(CG_TOLERANCE, change * CG_TOLERANCE_COARSE);
+
+            // Penalization continuation: ramp penal from penalStart → penalTarget
+            const currentPenal = penalStart + (penalTarget - penalStart) * Math.min(1.0, (loop - 1) / continuationIters);
+
+            // Heaviside projection with beta-continuation (beta doubles every betaInterval iterations)
+            const beta = useProjection ? Math.min(betaMax, Math.pow(2, Math.floor((loop - 1) / betaInterval))) : 1;
+            const xPhys = useProjection ? this._heavisideProject(x, beta) : x;
+
+            const { U, c: compliance } = this.FE(nelx, nely, nelz, xPhys, currentPenal, KEflat, edofArray, F, freedofs, iterTolerance);
             c = compliance;
 
             const dc = new Float32Array(nel);
             const elementEnergies = new Float32Array(nel);
             const Ue = new Float64Array(24);
+            // Precompute Heaviside chain-rule denominator for this iteration
+            const tanhBeta = Math.tanh(beta * 0.5);
+            const heavisideDenom = 2 * tanhBeta; // tanh(b*0.5) + tanh(b*0.5)
             for (let e = 0; e < nel; e++) {
                 const eOff = e * 24;
                 for (let i = 0; i < 24; i++) {
@@ -503,7 +527,12 @@ class TopologyOptimizerWorker3D {
                 }
                 const energy = this._computeElementEnergyFlat(KEflat, Ue, 24);
                 elementEnergies[e] = energy;
-                dc[e] = -this.penal * Math.pow(x[e], this.penal - 1) * this.E0 * energy;
+                // Sensitivity w.r.t. xPhys
+                const dc_phys = -currentPenal * Math.pow(xPhys[e], currentPenal - 1) * this.E0 * energy;
+                // Chain rule: d(xPhys)/d(x) via Heaviside (1.0 when projection disabled)
+                const th = Math.tanh(beta * (x[e] - 0.5));
+                const dPhys_dx = useProjection ? beta * (1 - th * th) / heavisideDenom : 1.0;
+                dc[e] = dc_phys * dPhys_dx;
             }
 
             const dcn = this.filterSensitivities(dc, x, H, Hs, nelx, nely, nelz);
@@ -567,6 +596,8 @@ class TopologyOptimizerWorker3D {
                 iteration: loop,
                 compliance: c,
                 meshData: meshData,
+                penal: currentPenal,
+                beta: beta,
                 timing: {
                     iterationTime: iterTime,
                     avgIterationTime: avgIterTime,
@@ -1141,12 +1172,30 @@ class TopologyOptimizerWorker3D {
         return KE;
     }
 
-    FE(nelx, nely, nelz, x, penal, KEflat, edofArray, F, freedofs) {
+    /**
+     * Heaviside projection: maps design variable x → physical density xPhys.
+     * @param {Float32Array} x - design variables
+     * @param {number} beta - projection sharpness
+     * @param {number} [eta=0.5] - threshold level
+     * @returns {Float32Array} projected physical densities
+     */
+    _heavisideProject(x, beta, eta = 0.5) {
+        const tanhBeta = Math.tanh(beta * eta);
+        const tanhB1Eta = Math.tanh(beta * (1 - eta));
+        const denom = tanhBeta + tanhB1Eta;
+        const xPhys = new Float32Array(x.length);
+        for (let i = 0; i < x.length; i++) {
+            xPhys[i] = (tanhBeta + Math.tanh(beta * (x[i] - eta))) / denom;
+        }
+        return xPhys;
+    }
+
+    FE(nelx, nely, nelz, x, penal, KEflat, edofArray, F, freedofs, tolerance = CG_TOLERANCE) {
         const ndof = 3 * (nelx + 1) * (nely + 1) * (nelz + 1);
         const nel = nelx * nely * nelz;
         const U = new Float64Array(ndof);
 
-        const Uf = this.solveCG(x, penal, KEflat, edofArray, nel, 24, F, freedofs, ndof);
+        const Uf = this.solveCG(x, penal, KEflat, edofArray, nel, 24, F, freedofs, ndof, tolerance);
 
         for (let i = 0; i < freedofs.length; i++) {
             U[freedofs[i]] = Uf[i];
@@ -1160,7 +1209,7 @@ class TopologyOptimizerWorker3D {
         return { U, c };
     }
 
-    solveCG(x, penal, KEflat, edofArray, nel, edofSize, F, freedofs, ndof) {
+    solveCG(x, penal, KEflat, edofArray, nel, edofSize, F, freedofs, ndof, tolerance = CG_TOLERANCE) {
         const n = freedofs.length;
 
         // Allocate full-space work buffers for EbE matvec
@@ -1203,7 +1252,7 @@ class TopologyOptimizerWorker3D {
         }
 
         const maxIter = Math.min(n, MAX_CG_ITERATIONS);
-        const tolSq = CG_TOLERANCE * CG_TOLERANCE;
+        const tolSq = tolerance * tolerance;
 
         for (let iter = 0; iter < maxIter; iter++) {
             let rnorm2 = 0;

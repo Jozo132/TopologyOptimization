@@ -38,7 +38,15 @@ class TopologyApp {
             maxGranuleSize: 2,
             youngsModulus: 2.3,
             poissonsRatio: 0.35,
-            material: 'plastic'
+            material: 'plastic',
+            // Accuracy scheduling: adaptive CG tolerance (auto-enabled)
+            // Penalization continuation: ramp penal from penalStart → penaltyFactor
+            penalStart: 1.5,
+            continuationIters: 20,
+            // Heaviside projection with beta-continuation
+            useProjection: true,
+            betaMax: 64,
+            betaInterval: 5
         };
         
         // Benchmark tracking
