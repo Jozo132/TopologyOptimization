@@ -33,19 +33,54 @@ export class ModelImporter {
         // Check if binary or ASCII
         const isBinary = this.isBinarySTL(arrayBuffer);
         
+        let result;
         if (isBinary) {
-            return this.parseBinarySTL(dataView);
+            result = this.parseBinarySTL(dataView);
         } else {
-            return this.parseASCIISTL(arrayBuffer);
+            result = this.parseASCIISTL(arrayBuffer);
         }
+
+        // Fallback: if no triangles were found, try the other format
+        if (result && result.originalVertices && result.originalVertices.length === 0) {
+            if (isBinary) {
+                result = this.parseASCIISTL(arrayBuffer);
+            } else {
+                result = this.parseBinarySTL(dataView);
+            }
+        }
+
+        return result;
     }
 
     isBinarySTL(arrayBuffer) {
         // Binary STL files start with 80-byte header, followed by triangle count
         if (arrayBuffer.byteLength < 84) return false;
         
-        const text = new TextDecoder().decode(arrayBuffer.slice(0, 5));
-        return !text.toLowerCase().startsWith('solid');
+        // Read the expected triangle count from the header
+        const dataView = new DataView(arrayBuffer);
+        const triangleCount = dataView.getUint32(80, true);
+        
+        // Expected binary size: 80 (header) + 4 (count) + 50 per triangle
+        const expectedSize = 84 + triangleCount * 50;
+        
+        // If the file size matches the expected binary layout, it is binary
+        if (arrayBuffer.byteLength === expectedSize) return true;
+        
+        // Check whether the header starts with "solid" (ASCII STL marker).
+        // Many binary exporters also write "solid" into the 80-byte header, so
+        // we additionally look for ASCII keywords ("facet", "vertex") in the
+        // first portion of the file to confirm it really is ASCII.
+        const headerText = new TextDecoder().decode(arrayBuffer.slice(0, 5));
+        if (headerText.toLowerCase().startsWith('solid')) {
+            const probeSize = Math.min(1000, arrayBuffer.byteLength);
+            const probe = new TextDecoder().decode(arrayBuffer.slice(0, probeSize)).toLowerCase();
+            if (probe.includes('facet') && probe.includes('vertex')) {
+                return false; // Looks like genuine ASCII STL
+            }
+            return true; // Starts with "solid" but no ASCII keywords → binary
+        }
+        
+        return true; // Does not start with "solid" → binary
     }
 
     parseBinarySTL(dataView) {
