@@ -200,7 +200,8 @@ export class ModelImporter {
                     intersections.sort((a, b) => a - b);
                     
                     // Deduplicate intersections caused by rays hitting shared edges/vertices
-                    const eps = voxelSize * 1e-6;
+                    const DEDUP_FACTOR = 1e-6;
+                    const eps = voxelSize * DEDUP_FACTOR;
                     const unique = [intersections[0]];
                     for (let i = 1; i < intersections.length; i++) {
                         if (intersections[i] - unique[unique.length - 1] > eps) {
@@ -264,7 +265,8 @@ export class ModelImporter {
         // a = dot(edge1, h)
         const a = edge1x * hx + edge1y * hy;
 
-        if (a > -1e-10 && a < 1e-10) return null; // Ray parallel to triangle
+        const RAY_PARALLEL_EPS = 1e-10;
+        if (a > -RAY_PARALLEL_EPS && a < RAY_PARALLEL_EPS) return null; // Ray parallel to triangle
 
         const f = 1.0 / a;
         const sx = rx - v0.x;
