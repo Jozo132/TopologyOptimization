@@ -273,7 +273,7 @@ class TopologyApp {
             const newMode = this.viewer.viewMode === 'auto' ? 'voxel' : 'auto';
             this.viewer.setViewMode(newMode);
             const btn = document.getElementById('toggleViewMode');
-            btn.title = newMode === 'auto' ? 'Toggle View Mode (Auto / Voxel)' : 'Toggle View Mode (Voxel / Auto)';
+            btn.title = newMode === 'voxel' ? 'Switch to Auto View' : 'Switch to Voxel View';
             btn.classList.toggle('active-tool', newMode === 'voxel');
         });
 
