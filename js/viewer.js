@@ -180,6 +180,11 @@ export class Viewer3D {
         this.model = null;
         this.wireframe = false;
 
+        // View mode: 'auto' uses mesh when available, 'voxel' forces voxel display
+        this.viewMode = 'auto';
+        // Whether the mesh (and edges) should be drawn
+        this.meshVisible = true;
+
         // Camera (orbit) settings
         this.rotation = { x: 0.5, y: 0.5 };
         this.pan = { x: 0, y: 0 };
@@ -516,12 +521,12 @@ export class Viewer3D {
         this._drawGrid(gl, projection, modelView);
 
         // Draw mesh
-        if (this._meshBuffers && this._meshBuffers.count > 0) {
+        if (this.meshVisible && this._meshBuffers && this._meshBuffers.count > 0) {
             this._drawMesh(gl, projection, modelView, normalMatrix);
         }
 
         // Draw edges: always for AMR triangle mesh (to show block boundaries), wireframe-only otherwise
-        if (this._edgeBuffers && this._edgeBuffers.count > 0 && (this.wireframe || this.meshData)) {
+        if (this.meshVisible && this._edgeBuffers && this._edgeBuffers.count > 0 && (this.wireframe || this.meshData)) {
             this._drawEdges(gl, projection, modelView);
         }
 
@@ -558,7 +563,7 @@ export class Viewer3D {
     // ─── Buffer building ────────────────────────────────────────────────────
 
     _rebuildBuffers(nx, ny, nz) {
-        if (this.meshData && this.meshData.length > 0) {
+        if (this.viewMode !== 'voxel' && this.meshData && this.meshData.length > 0) {
             this._buildTriangleMeshBuffers(nx, ny, nz);
         } else {
             this._buildVoxelBuffers(nx, ny, nz);
@@ -1116,6 +1121,18 @@ export class Viewer3D {
         this.draw();
     }
 
+    setViewMode(mode) {
+        if (mode !== 'auto' && mode !== 'voxel') return;
+        this.viewMode = mode;
+        this._needsRebuild = true;
+        this.draw();
+    }
+
+    toggleMeshVisibility() {
+        this.meshVisible = !this.meshVisible;
+        this.draw();
+    }
+
     resetCamera() {
         this.rotation = { x: 0.5, y: 0.5 };
         this.pan = { x: 0, y: 0 };
@@ -1129,6 +1146,8 @@ export class Viewer3D {
         this.meshData = null;
         this.strainMin = 0;
         this.strainMax = 1;
+        this.viewMode = 'auto';
+        this.meshVisible = true;
         this.paintedConstraintFaces = new Set();
         this.paintedForceFaces = new Set();
         this.paintMode = null;
