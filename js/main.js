@@ -1,7 +1,6 @@
 // Main application entry point
 import { Viewer3D } from './viewer.js';
 import { ModelImporter } from './importer.js';
-import { TopologyOptimizer } from './optimizer.js';
 import { TopologySolver } from '../lib/topology-solver.js';
 import { ModelExporter } from './exporter.js';
 import { WorkflowManager } from './workflow.js';

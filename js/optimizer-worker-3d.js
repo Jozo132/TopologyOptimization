@@ -1069,6 +1069,7 @@ class TopologyOptimizerWorker3D {
         const nelx = nx;
         const nely = ny;
         const nelz = nz;
+        // Declared as `let` so updateConfig() can mutate them during optimization
         let volfrac = config.volumeFraction;
         let maxIterations = config.maxIterations;
 

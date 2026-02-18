@@ -11,6 +11,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const { ModelImporter } = await import(join(__dirname, '..', 'js', 'importer.js'));
+const { TopologySolver } = await import(join(__dirname, '..', 'lib', 'topology-solver.js'));
 
 const importer = new ModelImporter();
 
@@ -375,8 +376,6 @@ console.log('Test 12: Template scaling responds to voxel size');
 // ──────────────────────────────────────────────────
 console.log('Test 13: TopologySolver library – environment detection');
 {
-    const { TopologySolver } = await import(join(__dirname, '..', 'lib', 'topology-solver.js'));
-
     const info = TopologySolver.debug.detectEnvironment();
     assert(info.env === 'node', `env should be 'node', got '${info.env}'`);
     assert(info.workerType === 'worker_threads', `workerType should be 'worker_threads', got '${info.workerType}'`);
@@ -392,8 +391,6 @@ console.log('Test 13: TopologySolver library – environment detection');
 // ──────────────────────────────────────────────────
 console.log('Test 14: TopologySolver library – 2D optimization via Node.js worker_threads');
 {
-    const { TopologySolver } = await import(join(__dirname, '..', 'lib', 'topology-solver.js'));
-
     const solver = new TopologySolver();
     const nx = 8, ny = 4, nz = 1;
     const model = { nx, ny, nz, type: 'beam', elements: new Float32Array(nx * ny).fill(1) };
@@ -428,8 +425,6 @@ console.log('Test 14: TopologySolver library – 2D optimization via Node.js wor
 // ──────────────────────────────────────────────────
 console.log('Test 15: TopologySolver library – solver selection auto/2d/3d');
 {
-    const { TopologySolver } = await import(join(__dirname, '..', 'lib', 'topology-solver.js'));
-
     // 'auto' with nz>1 should pick 3D worker
     const url3d = TopologySolver.debug.workerUrl('3d');
     const url2d = TopologySolver.debug.workerUrl('2d');
@@ -455,8 +450,6 @@ console.log('Test 15: TopologySolver library – solver selection auto/2d/3d');
 // ──────────────────────────────────────────────────
 console.log('Test 16: TopologySolver library – cancel');
 {
-    const { TopologySolver } = await import(join(__dirname, '..', 'lib', 'topology-solver.js'));
-
     const solver = new TopologySolver();
     const nx = 10, ny = 5, nz = 1;
     const model = { nx, ny, nz, elements: new Float32Array(nx * ny).fill(1) };
