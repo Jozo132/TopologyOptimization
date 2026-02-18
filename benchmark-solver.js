@@ -129,7 +129,7 @@ function solveCG_old(K, F, freedofs) {
     let rho = 0;
     for (let i = 0; i < n; i++) rho += r[i] * r[i];
 
-    const maxIter = Math.min(n, 1000);
+    const maxIter = Math.min(n, 1000); // Original code limit (lower than new solver's 2000)
     const tolSq = CG_TOLERANCE * CG_TOLERANCE;
     let iterations = 0;
 
