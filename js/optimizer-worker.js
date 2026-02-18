@@ -380,14 +380,14 @@ class TopologyOptimizerWorker {
         }
 
         // Build set of void element indices (elements outside initial solid space)
-        // 2D worker uses column-major indexing (vy + vx * nely), while
-        // the importer uses row-major (ix + iy * nx). Remap accordingly.
+        // 2D worker uses column-major indexing (ey + ex * nely), while
+        // the importer uses row-major (ix + iy * nx) where nelx = nx.
         const voidElements = new Set();
         if (config.constrainToSolid && model.elements) {
             for (let ex = 0; ex < nelx; ex++) {
                 for (let ey = 0; ey < nely; ey++) {
-                    const idx2D = ey + ex * nely;
-                    const idxImporter = ex + ey * nelx; // row-major, z=0
+                    const idx2D = ey + ex * nely; // 2D worker indexing
+                    const idxImporter = ex + ey * nelx; // importer row-major indexing (z=0)
                     if (model.elements[idxImporter] < 0.5) {
                         voidElements.add(idx2D);
                         x[idx2D] = 0.0;
