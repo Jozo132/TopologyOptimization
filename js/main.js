@@ -29,7 +29,7 @@ class TopologyApp {
             maxIterations: 100,
             penaltyFactor: 3,
             filterRadius: 1.5,
-            voxelSizeMM: 2,
+            voxelSizeMM: 1,
             minCrossSection: 0,
             constrainToSolid: false,
             useAMR: true,

@@ -287,18 +287,36 @@ class TopologyOptimizerWorker3D {
         return edofArray;
     }
 
-    _ebeMatVec(x, penal, KEflat, edofArray, nel, edofSize, p_reduced, Ap_reduced, freedofs, ndof) {
+    _precomputeStiffness(x, penal, nel) {
+        const E_vals = new Float64Array(nel);
+        const E0 = this.E0;
+        const Emin = this.Emin;
+        const dE = E0 - Emin;
+        const activeElements = [];
+        const skipThreshold = Emin * 1000;
+        for (let e = 0; e < nel; e++) {
+            const E = Emin + Math.pow(x[e], penal) * dE;
+            E_vals[e] = E;
+            if (E > skipThreshold) {
+                activeElements.push(e);
+            }
+        }
+        return { E_vals, activeElements };
+    }
+
+    _ebeMatVec(E_vals, activeElements, KEflat, edofArray, nel, edofSize, p_reduced, Ap_reduced, freedofs, ndof) {
         const p_full = this._p_full;
         const Ap_full = this._Ap_full;
 
         p_full.fill(0);
-        for (let i = 0; i < freedofs.length; i++) {
+        for (let i = 0, len = freedofs.length; i < len; i++) {
             p_full[freedofs[i]] = p_reduced[i];
         }
 
         Ap_full.fill(0);
-        for (let e = 0; e < nel; e++) {
-            const E = this.Emin + Math.pow(x[e], penal) * (this.E0 - this.Emin);
+        for (let ae = 0, aeLen = activeElements.length; ae < aeLen; ae++) {
+            const e = activeElements[ae];
+            const E = E_vals[e];
             const eOff = e * edofSize;
             for (let i = 0; i < edofSize; i++) {
                 const gi = edofArray[eOff + i];
@@ -311,22 +329,23 @@ class TopologyOptimizerWorker3D {
             }
         }
 
-        for (let i = 0; i < freedofs.length; i++) {
+        for (let i = 0, len = freedofs.length; i < len; i++) {
             Ap_reduced[i] = Ap_full[freedofs[i]];
         }
     }
 
-    _computeDiagonal(x, penal, KEflat, edofArray, nel, edofSize, freedofs, ndof) {
+    _computeDiagonal(E_vals, activeElements, KEflat, edofArray, nel, edofSize, freedofs, ndof) {
         const diag = new Float64Array(ndof);
-        for (let e = 0; e < nel; e++) {
-            const E = this.Emin + Math.pow(x[e], penal) * (this.E0 - this.Emin);
+        for (let ae = 0, aeLen = activeElements.length; ae < aeLen; ae++) {
+            const e = activeElements[ae];
+            const E = E_vals[e];
             const eOff = e * edofSize;
             for (let i = 0; i < edofSize; i++) {
                 diag[edofArray[eOff + i]] += E * KEflat[i * edofSize + i];
             }
         }
         const invDiag = new Float64Array(freedofs.length);
-        for (let i = 0; i < freedofs.length; i++) {
+        for (let i = 0, len = freedofs.length; i < len; i++) {
             const d = diag[freedofs[i]];
             invDiag[i] = d > 1e-30 ? 1.0 / d : 0.0;
         }
@@ -1150,14 +1169,25 @@ class TopologyOptimizerWorker3D {
             this._Ap_full = new Float64Array(ndof);
         }
 
-        // Compute Jacobi preconditioner (inverse diagonal of K)
-        const invDiag = this._computeDiagonal(x, penal, KEflat, edofArray, nel, edofSize, freedofs, ndof);
+        // Precompute element stiffnesses once per solve (avoids Math.pow per CG iteration)
+        const { E_vals, activeElements } = this._precomputeStiffness(x, penal, nel);
 
-        const Uf = new Float64Array(n);
-        const r = new Float64Array(n);
-        const z = new Float64Array(n);
-        const p = new Float64Array(n);
-        const Ap = new Float64Array(n);
+        // Compute Jacobi preconditioner (inverse diagonal of K)
+        const invDiag = this._computeDiagonal(E_vals, activeElements, KEflat, edofArray, nel, edofSize, freedofs, ndof);
+
+        // Reuse CG work arrays across calls when dimensions match
+        if (!this._cgUf || this._cgUf.length !== n) {
+            this._cgUf = new Float64Array(n);
+            this._cgR = new Float64Array(n);
+            this._cgZ = new Float64Array(n);
+            this._cgP = new Float64Array(n);
+            this._cgAp = new Float64Array(n);
+        }
+        const Uf = this._cgUf; Uf.fill(0);
+        const r = this._cgR;
+        const z = this._cgZ;
+        const p = this._cgP;
+        const Ap = this._cgAp;
 
         // r = F_free (initial residual since U_0 = 0)
         for (let i = 0; i < n; i++) {
@@ -1180,8 +1210,8 @@ class TopologyOptimizerWorker3D {
             for (let i = 0; i < n; i++) rnorm2 += r[i] * r[i];
             if (rnorm2 < tolSq) break;
 
-            // Ap = K * p (element-by-element)
-            this._ebeMatVec(x, penal, KEflat, edofArray, nel, edofSize, p, Ap, freedofs, ndof);
+            // Ap = K * p (element-by-element, using precomputed stiffness)
+            this._ebeMatVec(E_vals, activeElements, KEflat, edofArray, nel, edofSize, p, Ap, freedofs, ndof);
 
             let pAp = 0;
             for (let i = 0; i < n; i++) pAp += p[i] * Ap[i];

@@ -170,19 +170,22 @@ console.log('Test 5: Fallback with empty vertices');
 // ──────────────────────────────────────────────────
 console.log('Test 6: Templates remain all-solid');
 {
-    const beam = importer.createBeamTemplate(20);
+    const beam = importer.createBeamTemplate(30);
     let solidCount = 0;
     for (let i = 0; i < beam.elements.length; i++) {
         if (beam.elements[i] > 0.5) solidCount++;
     }
     assert(solidCount === beam.elements.length, `Beam template should be all solid (${solidCount}/${beam.elements.length})`);
 
-    const cube = importer.createCubeTemplate(20);
+    const cube = importer.createCubeTemplate(50);
     solidCount = 0;
     for (let i = 0; i < cube.elements.length; i++) {
         if (cube.elements[i] > 0.5) solidCount++;
     }
     assert(solidCount === cube.elements.length, `Cube template should be all solid (${solidCount}/${cube.elements.length})`);
+    assert(cube.nx === 50, `Cube template at resolution 50 should have nx=50, got ${cube.nx}`);
+    assert(cube.ny === 50, `Cube template at resolution 50 should have ny=50, got ${cube.ny}`);
+    assert(cube.nz === 50, `Cube template at resolution 50 should have nz=50, got ${cube.nz}`);
 }
 
 // ──────────────────────────────────────────────────
@@ -329,6 +332,42 @@ console.log('Test 11: Spatial-index voxelization consistency (large mesh)');
         if (elements[i] > 0.5) solidCount++;
     }
     assert(solidCount === 1000, `All 1000 voxels should be solid for subdivided cube, got ${solidCount}`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 12: Template scaling responds correctly to voxel size
+//   Changing voxel size should change template dimensions proportionally
+// ──────────────────────────────────────────────────
+console.log('Test 12: Template scaling responds to voxel size');
+{
+    // Cube template: 50×50×50mm base, with 1mm voxels → 50×50×50
+    const cube1mm = importer.createCubeTemplate(50);
+    assert(cube1mm.nx === 50, `Cube at 1mm voxels (res=50) should be 50, got ${cube1mm.nx}`);
+
+    // Cube template: 50×50×50mm base, with 2mm voxels → resolution=25 → 25×25×25
+    const cube2mm = importer.createCubeTemplate(25);
+    assert(cube2mm.nx === 25, `Cube at 2mm voxels (res=25) should be 25, got ${cube2mm.nx}`);
+
+    // Cube template: 50×50×50mm base, with 5mm voxels → resolution=10 → 10×10×10
+    const cube5mm = importer.createCubeTemplate(10);
+    assert(cube5mm.nx === 10, `Cube at 5mm voxels (res=10) should be 10, got ${cube5mm.nx}`);
+
+    // Beam template: 30×10×10mm base, with 1mm voxels → resolution=30 → 30×10×10
+    const beam1mm = importer.createBeamTemplate(30);
+    assert(beam1mm.nx === 30, `Beam at 1mm voxels (res=30) should have nx=30, got ${beam1mm.nx}`);
+    assert(beam1mm.ny === 10, `Beam at 1mm voxels (res=30) should have ny=10, got ${beam1mm.ny}`);
+    assert(beam1mm.nz === 10, `Beam at 1mm voxels (res=30) should have nz=10, got ${beam1mm.nz}`);
+
+    // Beam template: 30×10×10mm base, with 2mm voxels → resolution=15 → 15×5×5
+    const beam2mm = importer.createBeamTemplate(15);
+    assert(beam2mm.nx === 15, `Beam at 2mm voxels (res=15) should have nx=15, got ${beam2mm.nx}`);
+    assert(beam2mm.ny === 5, `Beam at 2mm voxels (res=15) should have ny=5, got ${beam2mm.ny}`);
+
+    // Bridge template: 40×15×8mm base, with 2mm voxels → resolution=20 → 20×8×4
+    const bridge2mm = importer.createBridgeTemplate(20);
+    assert(bridge2mm.nx === 20, `Bridge at 2mm voxels (res=20) should have nx=20, got ${bridge2mm.nx}`);
+    assert(bridge2mm.ny === 8, `Bridge at 2mm voxels (res=20) should have ny=8, got ${bridge2mm.ny}`);
+    assert(bridge2mm.nz === 4, `Bridge at 2mm voxels (res=20) should have nz=4, got ${bridge2mm.nz}`);
 }
 
 // ──────────────────────────────────────────────────
