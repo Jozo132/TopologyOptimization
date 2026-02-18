@@ -111,16 +111,26 @@ export class ModelImporter {
             maxZ = Math.max(maxZ, v.z);
         });
         
-        // Create voxel grid using granule density parameter
-        // Use provided resolution or fall back to instance resolution
-        const res = resolution !== null ? resolution : (this.resolution || 20);
+        // Physical dimensions in mm (STL coordinates are treated as mm)
         const sizeX = maxX - minX || 1;
         const sizeY = maxY - minY || 1;
         const sizeZ = maxZ - minZ || 1;
-        
-        const nx = Math.min(res, Math.ceil(sizeX / Math.max(sizeX, sizeY, sizeZ) * res));
-        const ny = Math.min(res, Math.ceil(sizeY / Math.max(sizeX, sizeY, sizeZ) * res));
-        const nz = Math.min(res, Math.ceil(sizeZ / Math.max(sizeX, sizeY, sizeZ) * res));
+
+        // Use provided resolution or fall back to instance resolution.
+        // The resolution parameter defines the voxel size: 1 voxel = 1mm at
+        // base density 20.  Higher density gives smaller voxels so sub-1mm
+        // features can be captured.
+        const res = resolution !== null ? resolution : (this.resolution || 20);
+
+        // Voxel size in mm – at base density 20 the longest axis gets 20 voxels.
+        // Increasing density shrinks the voxel size proportionally so that thin
+        // features (even sub-1mm) produce enough voxels to be resolved.
+        const maxDim = Math.max(sizeX, sizeY, sizeZ);
+        const voxelSize = maxDim / res;
+
+        const nx = Math.max(1, Math.ceil(sizeX / voxelSize));
+        const ny = Math.max(1, Math.ceil(sizeY / voxelSize));
+        const nz = Math.max(1, Math.ceil(sizeZ / voxelSize));
         
         // Initialize voxel grid with all solid
         const elements = new Float32Array(nx * ny * nz).fill(1);
@@ -130,6 +140,7 @@ export class ModelImporter {
             ny,
             nz,
             elements,
+            voxelSize,
             bounds: { minX, minY, minZ, maxX, maxY, maxZ },
             originalVertices: vertices  // Store vertices for re-voxelization
         };

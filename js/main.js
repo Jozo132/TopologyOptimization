@@ -143,11 +143,19 @@ class TopologyApp {
                     if (!info.classList.contains('hidden')) {
                         const modelName = newModel.type ? `${newModel.type} template` : 'Model';
                         const elementCount = newModel.nx * newModel.ny * newModel.nz;
-                        info.innerHTML = `
-                            <strong>${modelName} updated!</strong><br>
-                            <strong>Elements:</strong> ${elementCount}<br>
-                            <strong>Dimensions:</strong> ${newModel.nx} x ${newModel.ny} x ${newModel.nz}
-                        `;
+                        let infoHTML = `<strong>${modelName} updated!</strong><br>`;
+                        if (newModel.bounds) {
+                            const physX = (newModel.bounds.maxX - newModel.bounds.minX).toFixed(1);
+                            const physY = (newModel.bounds.maxY - newModel.bounds.minY).toFixed(1);
+                            const physZ = (newModel.bounds.maxZ - newModel.bounds.minZ).toFixed(1);
+                            infoHTML += `<strong>Size:</strong> ${physX} × ${physY} × ${physZ} mm<br>`;
+                        }
+                        if (newModel.voxelSize) {
+                            infoHTML += `<strong>Voxel size:</strong> ${newModel.voxelSize.toFixed(2)} mm<br>`;
+                        }
+                        infoHTML += `<strong>Elements:</strong> ${elementCount}<br>`;
+                        infoHTML += `<strong>Grid:</strong> ${newModel.nx} × ${newModel.ny} × ${newModel.nz}`;
+                        info.innerHTML = infoHTML;
                     }
                     
                     // Update viewer with new voxel grid
@@ -261,6 +269,21 @@ class TopologyApp {
         });
         
         // Viewer controls
+        document.getElementById('toggleViewMode').addEventListener('click', () => {
+            const newMode = this.viewer.viewMode === 'auto' ? 'voxel' : 'auto';
+            this.viewer.setViewMode(newMode);
+            const btn = document.getElementById('toggleViewMode');
+            btn.title = newMode === 'auto' ? 'Toggle View Mode (Auto / Voxel)' : 'Toggle View Mode (Voxel / Auto)';
+            btn.classList.toggle('active-tool', newMode === 'voxel');
+        });
+
+        document.getElementById('toggleMeshVisibility').addEventListener('click', () => {
+            this.viewer.toggleMeshVisibility();
+            const btn = document.getElementById('toggleMeshVisibility');
+            btn.classList.toggle('active-tool', !this.viewer.meshVisible);
+            btn.title = this.viewer.meshVisible ? 'Hide Mesh' : 'Show Mesh';
+        });
+
         document.getElementById('toggleWireframe').addEventListener('click', () => {
             this.viewer.toggleWireframe();
         });
@@ -316,10 +339,16 @@ class TopologyApp {
             // Display model info
             const info = document.getElementById('modelInfo');
             info.classList.remove('hidden');
+            const physX = model.bounds ? (model.bounds.maxX - model.bounds.minX).toFixed(1) : '?';
+            const physY = model.bounds ? (model.bounds.maxY - model.bounds.minY).toFixed(1) : '?';
+            const physZ = model.bounds ? (model.bounds.maxZ - model.bounds.minZ).toFixed(1) : '?';
+            const voxelSizeStr = model.voxelSize ? model.voxelSize.toFixed(2) : '?';
             info.innerHTML = `
                 <strong>Model loaded:</strong> ${file.name}<br>
+                <strong>Size:</strong> ${physX} × ${physY} × ${physZ} mm<br>
+                <strong>Voxel size:</strong> ${voxelSizeStr} mm<br>
                 <strong>Elements:</strong> ${model.nx * model.ny * model.nz}<br>
-                <strong>Dimensions:</strong> ${model.nx} x ${model.ny} x ${model.nz}
+                <strong>Grid:</strong> ${model.nx} × ${model.ny} × ${model.nz}
             `;
             
             // Visualize
@@ -542,6 +571,10 @@ class TopologyApp {
         document.getElementById('strainMaxValue').textContent = '100%';
         document.getElementById('strainSliderFill').style.left = '0%';
         document.getElementById('strainSliderFill').style.width = '100%';
+        
+        // Reset viewer control button states
+        document.getElementById('toggleViewMode').classList.remove('active-tool');
+        document.getElementById('toggleMeshVisibility').classList.remove('active-tool');
         
         // Reset viewer
         this.viewer.clear();
