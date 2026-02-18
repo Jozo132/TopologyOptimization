@@ -31,9 +31,28 @@
                         <input type="file" id="fileInput" accept=".stl" hidden>
                     </div>
                     <div class="control-group" style="margin-top: 1rem;">
-                        <label>Granule Density (voxel resolution)</label>
-                        <input type="range" id="granuleDensity" min="5" max="50" step="1" value="20">
-                        <span id="granuleDensityValue">20</span>
+                        <label>Voxel Size (mm)</label>
+                        <input type="range" id="voxelSize" min="0.1" max="10" step="0.1" value="2">
+                        <span id="voxelSizeValue">2 mm</span>
+                    </div>
+                    <div class="transform-controls hidden" id="transformControls">
+                        <div class="control-group">
+                            <label>Scale</label>
+                            <input type="number" id="modelScale" value="1" min="0.01" max="1000" step="0.1">
+                        </div>
+                        <div class="control-group">
+                            <label>Rotate X (°)</label>
+                            <input type="number" id="rotateX" value="0" min="-360" max="360" step="15">
+                        </div>
+                        <div class="control-group">
+                            <label>Rotate Y (°)</label>
+                            <input type="number" id="rotateY" value="0" min="-360" max="360" step="15">
+                        </div>
+                        <div class="control-group">
+                            <label>Rotate Z (°)</label>
+                            <input type="number" id="rotateZ" value="0" min="-360" max="360" step="15">
+                        </div>
+                        <button id="applyTransform" class="btn-secondary">Apply Transform</button>
                     </div>
                     <div class="quick-start">
                         <p>Or start with a template:</p>
@@ -53,6 +72,23 @@
                 </div>
                 <div class="step-content">
                     <div class="assignment-controls">
+                        <div class="control-group">
+                            <label>Material</label>
+                            <select id="materialSelect">
+                                <option value="custom">Custom</option>
+                                <option value="plastic" selected>Plastic (ABS)</option>
+                                <option value="aluminum">Aluminum</option>
+                                <option value="steel">Steel</option>
+                            </select>
+                        </div>
+                        <div class="control-group">
+                            <label>Young's Modulus (GPa)</label>
+                            <input type="number" id="youngsModulus" value="2.3" min="0.001" step="0.1">
+                        </div>
+                        <div class="control-group">
+                            <label>Poisson's Ratio</label>
+                            <input type="number" id="poissonsRatio" value="0.35" min="0.01" max="0.49" step="0.01">
+                        </div>
                         <div class="control-group">
                             <label>Volume Fraction (target material %)</label>
                             <input type="range" id="volumeFraction" min="0.1" max="0.9" step="0.05" value="0.4">

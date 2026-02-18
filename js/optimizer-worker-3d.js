@@ -364,6 +364,14 @@ class TopologyOptimizerWorker3D {
         this.rmin = config.filterRadius;
         this.cancelled = false;
 
+        // Apply material properties from config if provided
+        if (config.youngsModulus) {
+            this.E0 = config.youngsModulus;
+        }
+        if (config.poissonsRatio !== undefined) {
+            this.nu = config.poissonsRatio;
+        }
+
         const nel = nelx * nely * nelz;
         
         // Initialize AMR manager if enabled
