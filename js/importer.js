@@ -167,8 +167,71 @@ export class ModelImporter {
         const ny = Math.max(1, Math.ceil(sizeY / voxelSize));
         const nz = Math.max(1, Math.ceil(sizeZ / voxelSize));
         
-        // Initialize voxel grid with all solid
-        const elements = new Float32Array(nx * ny * nz).fill(1);
+        // Build triangle list from vertices (every 3 consecutive vertices form a triangle)
+        const numTriangles = Math.floor(vertices.length / 3);
+        
+        // If we have valid triangles, use ray-casting to determine interior voxels;
+        // otherwise fall back to filling the entire bounding box.
+        const elements = new Float32Array(nx * ny * nz);
+        
+        if (numTriangles > 0) {
+            // Ray-casting voxelization: for each (ix, iy) column cast a ray along Z,
+            // find intersections with mesh triangles, then fill voxels between
+            // intersection pairs (inside the mesh via the Jordan curve theorem).
+            for (let ix = 0; ix < nx; ix++) {
+                const cx = minX + (ix + 0.5) * voxelSize;
+                for (let iy = 0; iy < ny; iy++) {
+                    const cy = minY + (iy + 0.5) * voxelSize;
+                    
+                    // Collect Z-axis intersections with all triangles
+                    const intersections = [];
+                    for (let t = 0; t < numTriangles; t++) {
+                        const v0 = vertices[t * 3];
+                        const v1 = vertices[t * 3 + 1];
+                        const v2 = vertices[t * 3 + 2];
+                        const zHit = this._rayTriangleIntersectZ(cx, cy, v0, v1, v2);
+                        if (zHit !== null) {
+                            intersections.push(zHit);
+                        }
+                    }
+                    
+                    if (intersections.length < 2) continue;
+                    
+                    intersections.sort((a, b) => a - b);
+                    
+                    // Deduplicate intersections caused by rays hitting shared edges/vertices
+                    const DEDUP_FACTOR = 1e-6;
+                    const eps = voxelSize * DEDUP_FACTOR;
+                    const unique = [intersections[0]];
+                    for (let i = 1; i < intersections.length; i++) {
+                        if (intersections[i] - unique[unique.length - 1] > eps) {
+                            unique.push(intersections[i]);
+                        }
+                    }
+                    // Need an even number of crossings; drop the last unpaired one
+                    const crossings = unique.length % 2 === 0 ? unique : unique.slice(0, -1);
+                    if (crossings.length < 2) continue;
+                    
+                    // Fill voxels between pairs of intersections (inside the surface)
+                    for (let p = 0; p + 1 < crossings.length; p += 2) {
+                        const zStart = crossings[p];
+                        const zEnd = crossings[p + 1];
+                        
+                        const izStart = Math.max(0, Math.floor((zStart - minZ) / voxelSize));
+                        const izEnd = Math.min(nz - 1, Math.floor((zEnd - minZ) / voxelSize));
+                        
+                        for (let iz = izStart; iz <= izEnd; iz++) {
+                            const voxelCenterZ = minZ + (iz + 0.5) * voxelSize;
+                            if (voxelCenterZ >= zStart && voxelCenterZ <= zEnd) {
+                                elements[ix + iy * nx + iz * nx * ny] = 1;
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            elements.fill(1);
+        }
         
         return {
             nx,
@@ -179,6 +242,55 @@ export class ModelImporter {
             bounds: { minX, minY, minZ, maxX, maxY, maxZ },
             originalVertices: vertices  // Store vertices for re-voxelization
         };
+    }
+
+    /**
+     * Möller–Trumbore ray-triangle intersection for a Z-axis ray at (rx, ry).
+     * Returns the Z coordinate of the intersection, or null if the ray misses.
+     */
+    _rayTriangleIntersectZ(rx, ry, v0, v1, v2) {
+        // Ray: origin = (rx, ry, 0), direction = (0, 0, 1)
+        const edge1x = v1.x - v0.x;
+        const edge1y = v1.y - v0.y;
+        const edge1z = v1.z - v0.z;
+        const edge2x = v2.x - v0.x;
+        const edge2y = v2.y - v0.y;
+        const edge2z = v2.z - v0.z;
+
+        // h = cross(direction, edge2) = cross((0,0,1), edge2)
+        const hx = -edge2y;
+        const hy = edge2x;
+        // hz = 0
+
+        // a = dot(edge1, h)
+        const a = edge1x * hx + edge1y * hy;
+
+        const RAY_PARALLEL_EPS = 1e-10;
+        if (a > -RAY_PARALLEL_EPS && a < RAY_PARALLEL_EPS) return null; // Ray parallel to triangle
+
+        const f = 1.0 / a;
+        const sx = rx - v0.x;
+        const sy = ry - v0.y;
+
+        // u = f * dot(s, h)
+        const u = f * (sx * hx + sy * hy);
+        if (u < 0.0 || u > 1.0) return null;
+
+        // q = cross(s, edge1);  s = (sx, sy, -v0.z) but sz not needed for u
+        // For the cross product we need the full s vector
+        const sz = -v0.z; // ray origin z is 0
+        const qx = sy * edge1z - sz * edge1y;
+        const qy = sz * edge1x - sx * edge1z;
+        const qz = sx * edge1y - sy * edge1x;
+
+        // v = f * dot(direction, q) = f * qz  (direction = (0,0,1))
+        const v = f * qz;
+        if (v < 0.0 || u + v > 1.0) return null;
+
+        // t = f * dot(edge2, q)
+        const t = f * (edge2x * qx + edge2y * qy + edge2z * qz);
+
+        return t; // Z coordinate of intersection (ray origin z=0, direction z=1, so hit z = t)
     }
 
     createTemplate(type, granuleDensity = 20) {
