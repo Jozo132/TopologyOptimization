@@ -2,9 +2,26 @@
 // This runs in a separate thread so the UI stays responsive.
 
 const EPSILON = 1e-12;
-const CG_TOLERANCE = 1e-8;
-const CG_TOLERANCE_COARSE = 1e-2;
-const MAX_CG_ITERATIONS = 2000;
+
+// Linear solver settings
+// Default solver for large 3D problems: multigrid-preconditioned CG (MGPCG).
+const DEFAULT_LINEAR_SOLVER = 'mgpcg';
+
+// CG tolerance is scheduled during the optimization (looser early, tighter late)
+const CG_TOL_START = 1e-3;
+const CG_TOL_END = 1e-8;
+const CG_TOLERANCE = CG_TOL_END; // backward-compat alias
+
+// With MGPCG, hundreds (not thousands) of iterations should be enough.
+const MAX_CG_ITERATIONS = 400;
+
+// Geometric multigrid parameters (V-cycle)
+const MG_MAX_LEVELS = 6;
+const MG_NU1 = 2;           // pre-smoothing steps
+const MG_NU2 = 2;           // post-smoothing steps
+const MG_OMEGA = 0.5;       // damped Jacobi relaxation – must be < 2/ρ(D⁻¹A) ≈ 0.645 for 3D hex ν=0.3
+const MG_COARSE_ITERS = 30;  // extra smoothing at coarsest level
+const GALERKIN_MAX_NDOF = 3000;  // Use dense Galerkin P^T A P for coarse levels with ndof ≤ this
 
 // WASM Module for high-performance operations
 let wasmModule = null;
@@ -221,6 +238,643 @@ class SimpleAMRManager3D {
     }
 }
 
+
+/**
+ * Fast integer-power helper for SIMP penalization.
+ * Falls back to Math.pow for non-integers / uncommon exponents.
+ */
+function _powDensity(x, p) {
+    if (!Number.isFinite(p)) return Math.pow(x, p);
+    if (!Number.isInteger(p)) return Math.pow(x, p);
+    switch (p) {
+        case 0: return 1.0;
+        case 1: return x;
+        case 2: return x * x;
+        case 3: return x * x * x;
+        case 4: { const x2 = x * x; return x2 * x2; }
+        case 5: { const x2 = x * x; return x2 * x2 * x; }
+        case 6: { const x2 = x * x; return x2 * x2 * x2; }
+        default: return Math.pow(x, p);
+    }
+}
+
+/**
+ * A lightweight geometric multigrid (GMG) preconditioner for 3D voxel-grid elasticity.
+ * Intended as a practical MGPCG speed-up for large structured grids.
+ *
+ * Notes:
+ *  - This uses rediscretization on coarser grids via restricted densities (2x coarsening),
+ *    which is simple and effective as a preconditioner for compliance-minimization TO.
+ *  - Restriction uses injection; prolongation uses trilinear interpolation.
+ */
+class MGPrecond3D {
+    constructor(KEflat) {
+        this.KEflat = KEflat;
+        this.levels = [];
+        this._tmpLocal = new Float64Array(24);
+    }
+
+    static _precomputeEdofs3D(nelx, nely, nelz) {
+        const nel = nelx * nely * nelz;
+        const nny = nely + 1;
+        const nnz = nelz + 1;
+        const edofArray = new Int32Array(nel * 24);
+        for (let elz = 0; elz < nelz; elz++) {
+            for (let ely = 0; ely < nely; ely++) {
+                for (let elx = 0; elx < nelx; elx++) {
+                    const idx = elx + ely * nelx + elz * nelx * nely;
+                    const offset = idx * 24;
+                    const n0 = elx * nny * nnz + ely * nnz + elz;
+                    const n1 = (elx + 1) * nny * nnz + ely * nnz + elz;
+                    const n2 = (elx + 1) * nny * nnz + (ely + 1) * nnz + elz;
+                    const n3 = elx * nny * nnz + (ely + 1) * nnz + elz;
+                    const n4 = elx * nny * nnz + ely * nnz + (elz + 1);
+                    const n5 = (elx + 1) * nny * nnz + ely * nnz + (elz + 1);
+                    const n6 = (elx + 1) * nny * nnz + (ely + 1) * nnz + (elz + 1);
+                    const n7 = elx * nny * nnz + (ely + 1) * nnz + (elz + 1);
+                    edofArray[offset]      = 3 * n0;
+                    edofArray[offset + 1]  = 3 * n0 + 1;
+                    edofArray[offset + 2]  = 3 * n0 + 2;
+                    edofArray[offset + 3]  = 3 * n1;
+                    edofArray[offset + 4]  = 3 * n1 + 1;
+                    edofArray[offset + 5]  = 3 * n1 + 2;
+                    edofArray[offset + 6]  = 3 * n2;
+                    edofArray[offset + 7]  = 3 * n2 + 1;
+                    edofArray[offset + 8]  = 3 * n2 + 2;
+                    edofArray[offset + 9]  = 3 * n3;
+                    edofArray[offset + 10] = 3 * n3 + 1;
+                    edofArray[offset + 11] = 3 * n3 + 2;
+                    edofArray[offset + 12] = 3 * n4;
+                    edofArray[offset + 13] = 3 * n4 + 1;
+                    edofArray[offset + 14] = 3 * n4 + 2;
+                    edofArray[offset + 15] = 3 * n5;
+                    edofArray[offset + 16] = 3 * n5 + 1;
+                    edofArray[offset + 17] = 3 * n5 + 2;
+                    edofArray[offset + 18] = 3 * n6;
+                    edofArray[offset + 19] = 3 * n6 + 1;
+                    edofArray[offset + 20] = 3 * n6 + 2;
+                    edofArray[offset + 21] = 3 * n7;
+                    edofArray[offset + 22] = 3 * n7 + 1;
+                    edofArray[offset + 23] = 3 * n7 + 2;
+                }
+            }
+        }
+        return edofArray;
+    }
+
+    static _buildFreeDofsFromFixedMask(fixedMask) {
+        let nFree = 0;
+        for (let i = 0; i < fixedMask.length; i++) if (!fixedMask[i]) nFree++;
+        const free = new Int32Array(nFree);
+        let p = 0;
+        for (let i = 0; i < fixedMask.length; i++) if (!fixedMask[i]) free[p++] = i;
+        return free;
+    }
+
+    static _downsampleFixedMaskBy2(fixedFine, nelxFine, nelyFine, nelzFine, nelxCoarse, nelyCoarse, nelzCoarse) {
+        const nxF = nelxFine + 1, nyF = nelyFine + 1, nzF = nelzFine + 1;
+        const nxC = nelxCoarse + 1, nyC = nelyCoarse + 1, nzC = nelzCoarse + 1;
+        const fixedC = new Uint8Array(3 * nxC * nyC * nzC);
+
+        for (let cz = 0; cz < nzC; cz++) {
+            const fz = Math.min(cz * 2, nzF - 1);
+            for (let cy = 0; cy < nyC; cy++) {
+                const fy = Math.min(cy * 2, nyF - 1);
+                for (let cx = 0; cx < nxC; cx++) {
+                    const fx = Math.min(cx * 2, nxF - 1);
+                    const nF = fx * nyF * nzF + fy * nzF + fz;
+                    const nC = cx * nyC * nzC + cy * nzC + cz;
+                    const baseF = 3 * nF;
+                    const baseC = 3 * nC;
+                    fixedC[baseC]     = fixedFine[baseF];
+                    fixedC[baseC + 1] = fixedFine[baseF + 1];
+                    fixedC[baseC + 2] = fixedFine[baseF + 2];
+                }
+            }
+        }
+        return fixedC;
+    }
+
+    ensure(nelx, nely, nelz, edofArrayFine, fixedMaskFine, freeDofsFine) {
+        if (this.levels.length > 0) {
+            const L0 = this.levels[0];
+            if (L0.nelx === nelx && L0.nely === nely && L0.nelz === nelz) return;
+        }
+
+        this.levels = [];
+
+        // Level 0 (fine)
+        const level0 = this._makeLevel(nelx, nely, nelz, edofArrayFine, fixedMaskFine, freeDofsFine);
+        this.levels.push(level0);
+
+        // Coarser levels via factor-2 coarsening
+        let cx = nelx, cy = nely, cz = nelz;
+        let fixedMask = fixedMaskFine;
+
+        for (let li = 1; li < MG_MAX_LEVELS; li++) {
+            const nx = Math.floor(cx / 2);
+            const ny = Math.floor(cy / 2);
+            const nz = Math.floor(cz / 2);
+            if (nx < 2 || ny < 2 || nz < 2) break;
+
+            const edof = MGPrecond3D._precomputeEdofs3D(nx, ny, nz);
+            const fixedC = MGPrecond3D._downsampleFixedMaskBy2(fixedMask, cx, cy, cz, nx, ny, nz);
+            const freeC = MGPrecond3D._buildFreeDofsFromFixedMask(fixedC);
+
+            const level = this._makeLevel(nx, ny, nz, edof, fixedC, freeC);
+            this.levels.push(level);
+
+            cx = nx; cy = ny; cz = nz;
+            fixedMask = fixedC;
+        }
+    }
+
+    _makeLevel(nelx, nely, nelz, edofArray, fixedMask, freeDofs) {
+        const nel = nelx * nely * nelz;
+        const ndof = 3 * (nelx + 1) * (nely + 1) * (nelz + 1);
+
+        return {
+            nelx, nely, nelz,
+            nel, ndof,
+            edofArray,
+            fixedMask,
+            freeDofs,
+
+            // Densities live in Float32 arrays
+            dens: new Float32Array(nel),
+
+            // Element stiffness scalars and active list
+            E_vals: new Float64Array(nel),
+            active: new Int32Array(nel),
+            activeCount: 0,
+
+            // Jacobi inverse diagonal (for smoothing)
+            diag: new Float64Array(ndof),
+            invDiag: new Float64Array(ndof),
+
+            // Work vectors
+            Au: new Float64Array(ndof),
+            res: new Float64Array(ndof),
+            b: new Float64Array(ndof),
+            x: new Float64Array(ndof),
+            denseK: null  // dense Galerkin matrix (if assembled)
+        };
+    }
+
+    /**
+     * Update densities and build per-level operators.
+     * Level 0: element-by-element. Coarse levels: Galerkin P^T A P or E-val avg fallback.
+     */
+    updateFromFine(xFine, penal, E0, Emin) {
+        if (this.levels.length === 0) return;
+
+        // Level 0: E_vals from densities
+        const L0 = this.levels[0];
+        L0.dens.set(xFine);
+        this._updateOperatorLevel(L0, penal, E0, Emin);
+
+        // Coarse levels: Galerkin or E-val averaging fallback
+        for (let li = 1; li < this.levels.length; li++) {
+            const coarse = this.levels[li];
+            if (coarse.ndof <= GALERKIN_MAX_NDOF) {
+                const parentHasDense = this.levels[li - 1].denseK;
+                if (parentHasDense) {
+                    this._assembleGalerkinFromMatrix(li);
+                } else {
+                    this._assembleGalerkinFromElements(li, E0, Emin);
+                }
+            } else {
+                this._restrictEvalAvg(this.levels[li - 1], this.levels[li], E0, Emin);
+            }
+        }
+    }
+
+    // ─── Prolongation map: fine node → (coarse nodes, weights) ───
+    _buildProlongMap(fine, coarse) {
+        const nxF = fine.nelx + 1, nyF = fine.nely + 1, nzF = fine.nelz + 1;
+        const nxC = coarse.nelx + 1, nyC = coarse.nely + 1, nzC = coarse.nelz + 1;
+        const nnodesF = nxF * nyF * nzF;
+        const pNodes = new Int32Array(nnodesF * 8);
+        const pWeights = new Float64Array(nnodesF * 8);
+        const pCount = new Uint8Array(nnodesF);
+        for (let fz = 0; fz < nzF; fz++) {
+            const cz0 = Math.min(fz >> 1, nzC - 1), cz1 = Math.min(cz0 + 1, nzC - 1);
+            const tz = (cz0 !== cz1 && (fz & 1)) ? 0.5 : 0.0;
+            const czs0 = cz0, czs1 = cz1, wz0 = 1 - tz, wz1 = tz;
+            for (let fy = 0; fy < nyF; fy++) {
+                const cy0 = Math.min(fy >> 1, nyC - 1), cy1 = Math.min(cy0 + 1, nyC - 1);
+                const ty = (cy0 !== cy1 && (fy & 1)) ? 0.5 : 0.0;
+                const cys0 = cy0, cys1 = cy1, wy0 = 1 - ty, wy1 = ty;
+                for (let fx = 0; fx < nxF; fx++) {
+                    const cx0 = Math.min(fx >> 1, nxC - 1), cx1 = Math.min(cx0 + 1, nxC - 1);
+                    const tx = (cx0 !== cx1 && (fx & 1)) ? 0.5 : 0.0;
+                    const cxs0 = cx0, cxs1 = cx1, wx0 = 1 - tx, wx1 = tx;
+                    const nF = fx * nyF * nzF + fy * nzF + fz;
+                    const off = nF * 8;
+                    let cnt = 0;
+                    const cxArr = [cxs0, cxs1], wxArr = [wx0, wx1];
+                    const cyArr = [cys0, cys1], wyArr = [wy0, wy1];
+                    const czArr = [czs0, czs1], wzArr = [wz0, wz1];
+                    for (let dz = 0; dz < 2; dz++)
+                        for (let dy = 0; dy < 2; dy++)
+                            for (let dx = 0; dx < 2; dx++) {
+                                const w = wxArr[dx] * wyArr[dy] * wzArr[dz];
+                                if (w > 0) {
+                                    pNodes[off + cnt] = cxArr[dx] * nyC * nzC + cyArr[dy] * nzC + czArr[dz];
+                                    pWeights[off + cnt] = w;
+                                    cnt++;
+                                }
+                            }
+                    pCount[nF] = cnt;
+                }
+            }
+        }
+        return { pNodes, pWeights, pCount };
+    }
+
+    // ─── Assemble dense Galerkin matrix from fine-level elements ───
+    _assembleGalerkinFromElements(li, E0, Emin) {
+        const fine = this.levels[li - 1], coarse = this.levels[li];
+        const ndofC = coarse.ndof;
+        const K = new Float64Array(ndofC * ndofC);
+        const pMap = this._buildProlongMap(fine, coarse);
+        const { pNodes, pWeights, pCount } = pMap;
+        const KEflat = this.KEflat, edof = fine.edofArray;
+        for (let ai = 0; ai < fine.activeCount; ai++) {
+            const e = fine.active[ai], E = fine.E_vals[e], eO = e * 24;
+            for (let i = 0; i < 24; i++) {
+                const fDofI = edof[eO + i];
+                const fNodeI = (fDofI / 3) | 0, dI = fDofI % 3;
+                const offI = fNodeI * 8, cntI = pCount[fNodeI];
+                for (let j = i; j < 24; j++) {
+                    const kij = E * KEflat[i * 24 + j];
+                    if (kij === 0) continue;
+                    const fDofJ = edof[eO + j];
+                    const fNodeJ = (fDofJ / 3) | 0, dJ = fDofJ % 3;
+                    const offJ = fNodeJ * 8, cntJ = pCount[fNodeJ];
+                    for (let pi = 0; pi < cntI; pi++) {
+                        const cr = 3 * pNodes[offI + pi] + dI;
+                        const wi = pWeights[offI + pi];
+                        for (let pj = 0; pj < cntJ; pj++) {
+                            const cc = 3 * pNodes[offJ + pj] + dJ;
+                            const val = wi * kij * pWeights[offJ + pj];
+                            K[cr * ndofC + cc] += val;
+                            if (i !== j) K[cc * ndofC + cr] += val;
+                        }
+                    }
+                }
+            }
+        }
+        coarse.denseK = K;
+        this._diagFromDense(coarse);
+    }
+
+    // ─── Assemble dense Galerkin from parent's dense matrix ───
+    _assembleGalerkinFromMatrix(li) {
+        const fine = this.levels[li - 1], coarse = this.levels[li];
+        const ndofF = fine.ndof, ndofC = coarse.ndof;
+        const pMap = this._buildProlongMap(fine, coarse);
+        const { pNodes, pWeights, pCount } = pMap;
+        const nnodesF = (fine.nelx + 1) * (fine.nely + 1) * (fine.nelz + 1);
+        const P = new Float64Array(ndofF * ndofC);
+        for (let nF = 0; nF < nnodesF; nF++) {
+            const off = nF * 8, cnt = pCount[nF];
+            for (let pi = 0; pi < cnt; pi++) {
+                const nC = pNodes[off + pi], w = pWeights[off + pi];
+                for (let d = 0; d < 3; d++) P[(3 * nF + d) * ndofC + (3 * nC + d)] = w;
+            }
+        }
+        const Kf = fine.denseK;
+        const Temp = new Float64Array(ndofF * ndofC);
+        for (let i = 0; i < ndofF; i++) {
+            const rowF = i * ndofF, rowT = i * ndofC;
+            for (let j = 0; j < ndofC; j++) {
+                let s = 0;
+                for (let k = 0; k < ndofF; k++) s += Kf[rowF + k] * P[k * ndofC + j];
+                Temp[rowT + j] = s;
+            }
+        }
+        const K = new Float64Array(ndofC * ndofC);
+        for (let i = 0; i < ndofC; i++) {
+            for (let j = 0; j < ndofC; j++) {
+                let s = 0;
+                for (let k = 0; k < ndofF; k++) s += P[k * ndofC + i] * Temp[k * ndofC + j];
+                K[i * ndofC + j] = s;
+            }
+        }
+        coarse.denseK = K;
+        this._diagFromDense(coarse);
+    }
+
+    // ─── E-val averaging fallback for large coarse levels ───
+    _restrictEvalAvg(fine, coarse, E0, Emin) {
+        const nxF = fine.nelx, nyF = fine.nely, nzF = fine.nelz;
+        const nxC = coarse.nelx, nyC = coarse.nely, nzC = coarse.nelz;
+        const EF = fine.E_vals, EC = coarse.E_vals;
+        const skipT = Emin * 1000;
+        let ac = 0, idxC = 0;
+        for (let cz = 0; cz < nzC; cz++) {
+            const fz0 = cz * 2;
+            for (let cy = 0; cy < nyC; cy++) {
+                const fy0 = cy * 2;
+                for (let cx = 0; cx < nxC; cx++, idxC++) {
+                    const fx0 = cx * 2;
+                    let sum = 0, count = 0;
+                    for (let dz = 0; dz < 2; dz++) { const fz = fz0 + dz; if (fz >= nzF) continue;
+                        for (let dy = 0; dy < 2; dy++) { const fy = fy0 + dy; if (fy >= nyF) continue;
+                            for (let dx = 0; dx < 2; dx++) { const fx = fx0 + dx; if (fx >= nxF) continue;
+                                sum += EF[fx + fy * nxF + fz * nxF * nyF]; count++;
+                    }}}
+                    const E = count > 0 ? (sum / count) * 2.0 : 0;
+                    EC[idxC] = E;
+                    if (E > skipT) coarse.active[ac++] = idxC;
+                }
+            }
+        }
+        coarse.activeCount = ac;
+        coarse.diag.fill(0);
+        const KEflat = this.KEflat, edof = coarse.edofArray;
+        for (let ai = 0; ai < ac; ai++) {
+            const e = coarse.active[ai], E = EC[e], eO = e * 24;
+            for (let i = 0; i < 24; i++) coarse.diag[edof[eO + i]] += E * KEflat[i * 24 + i];
+        }
+        coarse.invDiag.fill(0);
+        for (let i = 0; i < coarse.freeDofs.length; i++) {
+            const d = coarse.freeDofs[i]; const v = coarse.diag[d];
+            coarse.invDiag[d] = v > 1e-30 ? 1.0 / v : 0.0;
+        }
+        coarse.denseK = null;
+    }
+
+    // ─── Extract diagonal from dense K ───
+    _diagFromDense(level) {
+        const K = level.denseK, n = level.ndof;
+        level.diag.fill(0);
+        for (let i = 0; i < n; i++) level.diag[i] = K[i * n + i];
+        level.invDiag.fill(0);
+        for (let ii = 0; ii < level.freeDofs.length; ii++) {
+            const d = level.freeDofs[ii];
+            level.invDiag[d] = level.diag[d] > 1e-30 ? 1.0 / level.diag[d] : 0;
+        }
+    }
+
+    _updateOperatorLevel(level, penal, E0, Emin) {
+        const nel = level.nel;
+        const E_vals = level.E_vals;
+        const active = level.active;
+
+        const dE = E0 - Emin;
+        const skipThreshold = Emin * 1000;
+
+        // Active elements + stiffness
+        let aCount = 0;
+        const dens = level.dens;
+        for (let e = 0; e < nel; e++) {
+            const rho = dens[e];
+            const rhoP = _powDensity(rho, penal);
+            const E = Emin + rhoP * dE;
+            E_vals[e] = E;
+            if (E > skipThreshold) active[aCount++] = e;
+        }
+        level.activeCount = aCount;
+
+        // Diagonal for Jacobi smoother / preconditioner
+        const diag = level.diag;
+        diag.fill(0);
+        const edofArray = level.edofArray;
+        const KEflat = this.KEflat;
+
+        for (let ai = 0; ai < aCount; ai++) {
+            const e = active[ai];
+            const E = E_vals[e];
+            const eOff = e * 24;
+            for (let i = 0; i < 24; i++) {
+                diag[edofArray[eOff + i]] += E * KEflat[i * 24 + i];
+            }
+        }
+
+        const invDiag = level.invDiag;
+        invDiag.fill(0);
+        const free = level.freeDofs;
+        for (let i = 0; i < free.length; i++) {
+            const dof = free[i];
+            const d = diag[dof];
+            invDiag[dof] = d > 1e-30 ? 1.0 / d : 0.0;
+        }
+    }
+
+    /**
+     * Apply A = K(x) to vector p (full-space, fixed dofs are expected to be zero).
+     */
+    applyA(levelIdx, p, Ap) {
+        const level = this.levels[levelIdx];
+        // Dense Galerkin matvec for coarse levels with assembled operator
+        if (level.denseK) {
+            const K = level.denseK, n = level.ndof;
+            Ap.fill(0);
+            for (let i = 0; i < n; i++) {
+                let s = 0; const off = i * n;
+                for (let j = 0; j < n; j++) s += K[off + j] * p[j];
+                Ap[i] = s;
+            }
+            return;
+        }
+        // Element-by-element matvec
+        Ap.fill(0);
+
+        const KEflat = this.KEflat;
+        const edofArray = level.edofArray;
+        const E_vals = level.E_vals;
+        const active = level.active;
+        const aCount = level.activeCount;
+
+        const loc = this._tmpLocal;
+
+        for (let ai = 0; ai < aCount; ai++) {
+            const e = active[ai];
+            const E = E_vals[e];
+            const eOff = e * 24;
+
+            // Gather local dofs once (reduces global memory traffic)
+            for (let j = 0; j < 24; j++) {
+                loc[j] = p[edofArray[eOff + j]];
+            }
+
+            for (let i = 0; i < 24; i++) {
+                const gi = edofArray[eOff + i];
+                let sum = 0.0;
+                const row = i * 24;
+                for (let j = 0; j < 24; j++) {
+                    sum += KEflat[row + j] * loc[j];
+                }
+                Ap[gi] += E * sum;
+            }
+        }
+    }
+
+    /**
+     * V-cycle: approximately solve A x = b.
+     */
+    vcycle(levelIdx, b, x) {
+        const level = this.levels[levelIdx];
+        const Au = level.Au;
+        const invDiag = level.invDiag;
+        const free = level.freeDofs;
+
+        // Pre-smoothing: damped Jacobi
+        for (let s = 0; s < MG_NU1; s++) {
+            this.applyA(levelIdx, x, Au);
+            for (let ii = 0; ii < free.length; ii++) {
+                const dof = free[ii];
+                const r = b[dof] - Au[dof];
+                x[dof] += MG_OMEGA * invDiag[dof] * r;
+            }
+        }
+
+        // Residual r = b - A x
+        this.applyA(levelIdx, x, Au);
+        const res = level.res;
+        res.fill(0);
+        for (let ii = 0; ii < free.length; ii++) {
+            const dof = free[ii];
+            res[dof] = b[dof] - Au[dof];
+        }
+
+        // Coarsest level: extra smoothing iterations
+        if (levelIdx === this.levels.length - 1) {
+            for (let s = 0; s < MG_COARSE_ITERS; s++) {
+                this.applyA(levelIdx, x, Au);
+                for (let ii = 0; ii < free.length; ii++) {
+                    const dof = free[ii];
+                    const r = b[dof] - Au[dof];
+                    x[dof] += MG_OMEGA * invDiag[dof] * r;
+                }
+            }
+            return;
+        }
+
+        // Restrict residual to coarse RHS (full-weighting = P^T)
+        const coarse = this.levels[levelIdx + 1];
+        const bC = coarse.b;
+        bC.fill(0);
+
+        const nxF = level.nelx + 1, nyF = level.nely + 1, nzF = level.nelz + 1;
+        const nxC = coarse.nelx + 1, nyC = coarse.nely + 1, nzC = coarse.nelz + 1;
+
+        for (let fz = 0; fz < nzF; fz++) {
+            const cz0 = Math.min(fz >> 1, nzC - 1), cz1 = Math.min(cz0 + 1, nzC - 1);
+            const tz = (cz0 !== cz1 && (fz & 1)) ? 0.5 : 0.0;
+            const wz0 = 1 - tz, wz1 = tz;
+            for (let fy = 0; fy < nyF; fy++) {
+                const cy0 = Math.min(fy >> 1, nyC - 1), cy1 = Math.min(cy0 + 1, nyC - 1);
+                const ty = (cy0 !== cy1 && (fy & 1)) ? 0.5 : 0.0;
+                const wy0 = 1 - ty, wy1 = ty;
+                for (let fx = 0; fx < nxF; fx++) {
+                    const cx0 = Math.min(fx >> 1, nxC - 1), cx1 = Math.min(cx0 + 1, nxC - 1);
+                    const tx = (cx0 !== cx1 && (fx & 1)) ? 0.5 : 0.0;
+                    const wx0 = 1 - tx, wx1 = tx;
+                    const nF = fx * nyF * nzF + fy * nzF + fz;
+                    const r0 = res[3*nF], r1 = res[3*nF+1], r2 = res[3*nF+2];
+                    const w000 = wx0*wy0*wz0; if (w000) { const c3 = 3*(cx0*nyC*nzC+cy0*nzC+cz0); bC[c3]+=w000*r0; bC[c3+1]+=w000*r1; bC[c3+2]+=w000*r2; }
+                    const w100 = wx1*wy0*wz0; if (w100) { const c3 = 3*(cx1*nyC*nzC+cy0*nzC+cz0); bC[c3]+=w100*r0; bC[c3+1]+=w100*r1; bC[c3+2]+=w100*r2; }
+                    const w010 = wx0*wy1*wz0; if (w010) { const c3 = 3*(cx0*nyC*nzC+cy1*nzC+cz0); bC[c3]+=w010*r0; bC[c3+1]+=w010*r1; bC[c3+2]+=w010*r2; }
+                    const w110 = wx1*wy1*wz0; if (w110) { const c3 = 3*(cx1*nyC*nzC+cy1*nzC+cz0); bC[c3]+=w110*r0; bC[c3+1]+=w110*r1; bC[c3+2]+=w110*r2; }
+                    const w001 = wx0*wy0*wz1; if (w001) { const c3 = 3*(cx0*nyC*nzC+cy0*nzC+cz1); bC[c3]+=w001*r0; bC[c3+1]+=w001*r1; bC[c3+2]+=w001*r2; }
+                    const w101 = wx1*wy0*wz1; if (w101) { const c3 = 3*(cx1*nyC*nzC+cy0*nzC+cz1); bC[c3]+=w101*r0; bC[c3+1]+=w101*r1; bC[c3+2]+=w101*r2; }
+                    const w011 = wx0*wy1*wz1; if (w011) { const c3 = 3*(cx0*nyC*nzC+cy1*nzC+cz1); bC[c3]+=w011*r0; bC[c3+1]+=w011*r1; bC[c3+2]+=w011*r2; }
+                    const w111 = wx1*wy1*wz1; if (w111) { const c3 = 3*(cx1*nyC*nzC+cy1*nzC+cz1); bC[c3]+=w111*r0; bC[c3+1]+=w111*r1; bC[c3+2]+=w111*r2; }
+                }
+            }
+        }
+        // Zero fixed DOFs on coarse grid
+        const fixedC = coarse.fixedMask;
+        for (let i = 0; i < coarse.ndof; i++) if (fixedC[i]) bC[i] = 0;
+
+        // Solve on coarse: recurse
+        const xC = coarse.x;
+        xC.fill(0);
+        this.vcycle(levelIdx + 1, bC, xC);
+
+        // Prolongate and correct fine solution (trilinear interpolation)
+        const fixedF = level.fixedMask;
+        for (let fz = 0; fz < nzF; fz++) {
+            const cz0 = Math.min(fz >> 1, nzC - 1);
+            const cz1 = Math.min(cz0 + 1, nzC - 1);
+            const tz = (cz0 !== cz1 && (fz & 1)) ? 0.5 : 0.0;
+            const wz0 = 1.0 - tz, wz1 = tz;
+
+            for (let fy = 0; fy < nyF; fy++) {
+                const cy0 = Math.min(fy >> 1, nyC - 1);
+                const cy1 = Math.min(cy0 + 1, nyC - 1);
+                const ty = (cy0 !== cy1 && (fy & 1)) ? 0.5 : 0.0;
+                const wy0 = 1.0 - ty, wy1 = ty;
+
+                for (let fx = 0; fx < nxF; fx++) {
+                    const cx0 = Math.min(fx >> 1, nxC - 1);
+                    const cx1 = Math.min(cx0 + 1, nxC - 1);
+                    const tx = (cx0 !== cx1 && (fx & 1)) ? 0.5 : 0.0;
+                    const wx0 = 1.0 - tx, wx1 = tx;
+
+                    const nF = fx * nyF * nzF + fy * nzF + fz;
+
+                    const n000 = cx0 * nyC * nzC + cy0 * nzC + cz0;
+                    const n100 = cx1 * nyC * nzC + cy0 * nzC + cz0;
+                    const n010 = cx0 * nyC * nzC + cy1 * nzC + cz0;
+                    const n110 = cx1 * nyC * nzC + cy1 * nzC + cz0;
+                    const n001 = cx0 * nyC * nzC + cy0 * nzC + cz1;
+                    const n101 = cx1 * nyC * nzC + cy0 * nzC + cz1;
+                    const n011 = cx0 * nyC * nzC + cy1 * nzC + cz1;
+                    const n111 = cx1 * nyC * nzC + cy1 * nzC + cz1;
+
+                    const w000 = wx0 * wy0 * wz0;
+                    const w100 = wx1 * wy0 * wz0;
+                    const w010 = wx0 * wy1 * wz0;
+                    const w110 = wx1 * wy1 * wz0;
+                    const w001 = wx0 * wy0 * wz1;
+                    const w101 = wx1 * wy0 * wz1;
+                    const w011 = wx0 * wy1 * wz1;
+                    const w111 = wx1 * wy1 * wz1;
+
+                    const baseF = 3 * nF;
+                    if (!fixedF[baseF]) {
+                        x[baseF] +=
+                            xC[3 * n000] * w000 + xC[3 * n100] * w100 + xC[3 * n010] * w010 + xC[3 * n110] * w110 +
+                            xC[3 * n001] * w001 + xC[3 * n101] * w101 + xC[3 * n011] * w011 + xC[3 * n111] * w111;
+                    }
+                    if (!fixedF[baseF + 1]) {
+                        x[baseF + 1] +=
+                            xC[3 * n000 + 1] * w000 + xC[3 * n100 + 1] * w100 + xC[3 * n010 + 1] * w010 + xC[3 * n110 + 1] * w110 +
+                            xC[3 * n001 + 1] * w001 + xC[3 * n101 + 1] * w101 + xC[3 * n011 + 1] * w011 + xC[3 * n111 + 1] * w111;
+                    }
+                    if (!fixedF[baseF + 2]) {
+                        x[baseF + 2] +=
+                            xC[3 * n000 + 2] * w000 + xC[3 * n100 + 2] * w100 + xC[3 * n010 + 2] * w010 + xC[3 * n110 + 2] * w110 +
+                            xC[3 * n001 + 2] * w001 + xC[3 * n101 + 2] * w101 + xC[3 * n011 + 2] * w011 + xC[3 * n111 + 2] * w111;
+                    }
+                }
+            }
+        }
+
+        // Post-smoothing
+        for (let s = 0; s < MG_NU2; s++) {
+            this.applyA(levelIdx, x, Au);
+            for (let ii = 0; ii < free.length; ii++) {
+                const dof = free[ii];
+                const r = b[dof] - Au[dof];
+                x[dof] += MG_OMEGA * invDiag[dof] * r;
+            }
+        }
+    }
+
+    /**
+     * Apply the multigrid preconditioner: z = A^{-1} r (approximately)
+     */
+    apply(r, z) {
+        z.fill(0);
+        this.vcycle(0, r, z);
+    }
+}
+
 class TopologyOptimizerWorker3D {
     constructor() {
         this.rmin = 1.5;
@@ -230,6 +884,17 @@ class TopologyOptimizerWorker3D {
         this.nu = 0.3;
         this.cancelled = false;
         this.useWasm = false;
+
+        // Linear solve state (warm-start + reusable buffers)
+        this.linearSolver = DEFAULT_LINEAR_SOLVER;
+        this._mg = null;           // MGPrecond3D instance (built lazily)
+        this._U_prev = null;       // previous displacement (warm start)
+        this._pcg_r = null;
+        this._pcg_z = null;
+        this._pcg_p = null;
+        this._pcg_Ap = null;
+        this._pcg_Au = null;
+        this._U = null;
     }
 
     _flattenKE(KE, size) {
@@ -399,9 +1064,10 @@ class TopologyOptimizerWorker3D {
             new SimpleAMRManager3D(nelx, nely, nelz, true, config.minGranuleSize, config.maxGranuleSize, config.amrInterval) : 
             null;
 
-        let x = new Float32Array(nel).fill(volfrac);
+        let x = new Float32Array(nel);
+        x.fill(volfrac);
         let xnew = new Float32Array(nel);
-        let xold = new Float32Array(nel).fill(1);
+        let xold = new Float32Array(nel);
 
         const { H, Hs } = this.prepareFilter(nelx, nely, nelz, this.rmin);
         let fixeddofs = this.getFixedDOFs(nelx, nely, nelz, config.constraintPosition);
@@ -461,9 +1127,27 @@ class TopologyOptimizerWorker3D {
         }
 
         const ndof = 3 * (nelx + 1) * (nely + 1) * (nelz + 1);
-        const alldofs = Array.from({ length: ndof }, (_, i) => i);
-        const fixedSet = new Set(fixeddofs);
-        const freedofs = alldofs.filter(dof => !fixedSet.has(dof));
+
+        // Fixed / free DOF masks (TypedArrays to avoid huge JS arrays + Sets)
+        const fixedMask = new Uint8Array(ndof);
+        for (let i = 0; i < fixeddofs.length; i++) {
+            const dof = fixeddofs[i];
+            if (dof >= 0 && dof < ndof) fixedMask[dof] = 1;
+        }
+
+        // Build free DOF list (Int32Array)
+        let nFree = 0;
+        for (let i = 0; i < ndof; i++) if (!fixedMask[i]) nFree++;
+        const freedofs = new Int32Array(nFree);
+        let fp = 0;
+        for (let i = 0; i < ndof; i++) if (!fixedMask[i]) freedofs[fp++] = i;
+
+        // Convert Sets to fast masks for hot inner loops (OC + constraints)
+        const preservedMask = new Uint8Array(nel);
+        for (const idx of preservedElements) preservedMask[idx] = 1;
+
+        const voidMask = new Uint8Array(nel);
+        for (const idx of voidElements) voidMask[idx] = 1;
 
         const KE = this.lk();
         const KEflat = this._flattenKE(KE, 24);
@@ -489,7 +1173,11 @@ class TopologyOptimizerWorker3D {
 
         // Benchmark timing
         const iterationTimes = [];
+        let iterTimeSum = 0;
         const startTime = performance.now();
+
+        // UI update cadence (building & transferring mesh data can dominate runtime for large 3D grids)
+        const uiUpdateInterval = (config && config.uiUpdateInterval) ? config.uiUpdateInterval : (nel >= 100000 ? 5 : 1);
 
         while (change > 0.01 && loop < maxIterations) {
             if (this.cancelled) {
@@ -499,10 +1187,7 @@ class TopologyOptimizerWorker3D {
 
             loop++;
             const iterStartTime = performance.now();
-            xold = Float32Array.from(x);
-
-            // Accuracy scheduling: loosen CG tolerance when change is large (early iterations)
-            const iterTolerance = Math.max(CG_TOLERANCE, change * CG_TOLERANCE_COARSE);
+            xold.set(x);
 
             // Penalization continuation: ramp penal from penalStart → penalTarget
             const currentPenal = penalStart + (penalTarget - penalStart) * Math.min(1.0, (loop - 1) / continuationIters);
@@ -511,7 +1196,7 @@ class TopologyOptimizerWorker3D {
             const beta = useProjection ? Math.min(betaMax, Math.pow(2, Math.floor((loop - 1) / betaInterval))) : 1;
             const xPhys = useProjection ? this._heavisideProject(x, beta) : x;
 
-            const { U, c: compliance } = this.FE(nelx, nely, nelz, xPhys, currentPenal, KEflat, edofArray, F, freedofs, iterTolerance);
+            const { U, c: compliance, solverStats } = this.FE(nelx, nely, nelz, xPhys, currentPenal, KEflat, edofArray, F, freedofs, fixedMask, config, loop, maxIterations, fixeddofs);
             c = compliance;
 
             const dc = new Float32Array(nel);
@@ -564,14 +1249,17 @@ class TopologyOptimizerWorker3D {
                 }
             }
             
-            xnew = this.OC(nelx, nely, nelz, x, volfrac, dcnWeighted, preservedElements, voidElements);
+            this.OC(nelx, nely, nelz, x, volfrac, dcnWeighted, preservedMask, voidMask, xnew);
 
             change = 0;
             for (let i = 0; i < nel; i++) {
                 change = Math.max(change, Math.abs(xnew[i] - xold[i]));
             }
 
-            x = Float32Array.from(xnew);
+            // Swap buffers (avoid per-iteration allocations)
+            const tmpX = x;
+            x = xnew;
+            xnew = tmpX;
             lastElementEnergies = elementEnergies;
             
             // Perform AMR refinement if enabled
@@ -579,32 +1267,38 @@ class TopologyOptimizerWorker3D {
                 amrManager.updateAndRefine(elementEnergies, x, loop);
             }
 
-            // Build adaptive mesh data for this iteration
-            const meshData = this.buildAdaptiveMesh(nelx, nely, nelz, x, elementEnergies, elementForces, amrManager);
+            // Build adaptive mesh data only on UI update iterations (large 3D grids get expensive)
+            const shouldUpdateUI = (uiUpdateInterval <= 1) || (loop === 1) || (loop % uiUpdateInterval === 0) || (change <= 0.01) || (loop === maxIterations);
+            const meshData = shouldUpdateUI
+                ? this.buildAdaptiveMesh(nelx, nely, nelz, x, elementEnergies, elementForces, amrManager)
+                : null;
 
             // Track iteration timing
             const iterEndTime = performance.now();
             const iterTime = iterEndTime - iterStartTime;
             iterationTimes.push(iterTime);
-            
+            iterTimeSum += iterTime;
+
             // Calculate average time per iteration
-            const avgIterTime = iterationTimes.reduce((a, b) => a + b, 0) / iterationTimes.length;
+            const avgIterTime = iterTimeSum / iterationTimes.length;
             const elapsedTime = iterEndTime - startTime;
 
-            postMessage({
-                type: 'progress',
-                iteration: loop,
-                compliance: c,
-                meshData: meshData,
-                penal: currentPenal,
-                beta: beta,
-                timing: {
-                    iterationTime: iterTime,
-                    avgIterationTime: avgIterTime,
-                    elapsedTime: elapsedTime,
-                    usingWasm: this.useWasm
-                }
-            });
+            if (shouldUpdateUI) {
+                postMessage({
+                    type: 'progress',
+                    iteration: loop,
+                    compliance: c,
+                    meshData: meshData,
+                    penal: currentPenal,
+                    beta: beta,
+                    timing: {
+                        iterationTime: iterTime,
+                        avgIterationTime: avgIterTime,
+                        elapsedTime: elapsedTime,
+                        usingWasm: this.useWasm
+                    }
+                });
+            }
         }
 
         if (this.cancelled) {
@@ -1041,9 +1735,8 @@ class TopologyOptimizerWorker3D {
         return dcn;
     }
 
-    OC(nelx, nely, nelz, x, volfrac, dc, preservedElements, voidElements) {
+    OC(nelx, nely, nelz, x, volfrac, dc, preservedMask, voidMask, xnew) {
         const nel = nelx * nely * nelz;
-        const xnew = new Float32Array(nel);
         const move = 0.2;
 
         let l1 = 0;
@@ -1053,9 +1746,9 @@ class TopologyOptimizerWorker3D {
             const lmid = 0.5 * (l2 + l1);
 
             for (let i = 0; i < nel; i++) {
-                if (preservedElements && preservedElements.has(i)) {
+                if (preservedMask && preservedMask[i]) {
                     xnew[i] = 1.0;
-                } else if (voidElements && voidElements.has(i)) {
+                } else if (voidMask && voidMask[i]) {
                     xnew[i] = 0.0;
                 } else {
                     const Be = -dc[i] / lmid;
@@ -1077,8 +1770,6 @@ class TopologyOptimizerWorker3D {
                 l2 = lmid;
             }
         }
-
-        return xnew;
     }
 
     // 3D element stiffness matrix for 8-node hexahedral element
@@ -1190,99 +1881,220 @@ class TopologyOptimizerWorker3D {
         return xPhys;
     }
 
-    FE(nelx, nely, nelz, x, penal, KEflat, edofArray, F, freedofs, tolerance = CG_TOLERANCE) {
+    FE(nelx, nely, nelz, x, penal, KEflat, edofArray, F, freedofs, fixedMask, config, iteration, maxIterations, fixeddofs) {
         const ndof = 3 * (nelx + 1) * (nely + 1) * (nelz + 1);
         const nel = nelx * nely * nelz;
-        const U = new Float64Array(ndof);
 
-        const Uf = this.solveCG(x, penal, KEflat, edofArray, nel, 24, F, freedofs, ndof, tolerance);
+        // Schedule CG tolerance: looser early, tighter late
+        const progress = maxIterations > 1 ? (iteration - 1) / (maxIterations - 1) : 1;
+        const logStart = Math.log(CG_TOL_START);
+        const logEnd = Math.log(CG_TOL_END);
+        const tolerance = Math.exp(logStart + progress * (logEnd - logStart));
 
-        for (let i = 0; i < freedofs.length; i++) {
-            U[freedofs[i]] = Uf[i];
+        // Lazily build / update multigrid preconditioner
+        if (this.linearSolver === 'mgpcg') {
+            if (!this._mg) {
+                this._mg = new MGPrecond3D(KEflat);
+            }
+            this._mg.ensure(nelx, nely, nelz, edofArray, fixedMask, freedofs);
+            this._mg.updateFromFine(x, penal, this.E0, this.Emin);
         }
 
+        // Allocate / reuse solver buffers
+        if (!this._U || this._U.length !== ndof) {
+            this._U = new Float64Array(ndof);
+            this._U_prev = new Float64Array(ndof);
+            this._pcg_r = new Float64Array(ndof);
+            this._pcg_z = new Float64Array(ndof);
+            this._pcg_p = new Float64Array(ndof);
+            this._pcg_Ap = new Float64Array(ndof);
+        }
+
+        const U = this._U;
+
+        // Warm-start: copy previous solution
+        if (iteration > 1 && this._U_prev) {
+            U.set(this._U_prev);
+        } else {
+            U.fill(0);
+        }
+
+        // Zero out fixed DOFs
+        if (fixeddofs) {
+            for (let i = 0; i < fixeddofs.length; i++) {
+                const dof = fixeddofs[i];
+                if (dof >= 0 && dof < ndof) U[dof] = 0;
+            }
+        }
+
+        // Precompute element stiffnesses
+        const { E_vals, activeElements } = this._precomputeStiffness(x, penal, nel);
+
+        const r = this._pcg_r;
+        const z = this._pcg_z;
+        const p = this._pcg_p;
+        const Ap = this._pcg_Ap;
+
+        // Compute initial residual: r = F - K*U
+        if (this.linearSolver === 'mgpcg' && this._mg) {
+            this._mg.applyA(0, U, r);
+        } else {
+            this._fullSpaceMatVec(E_vals, activeElements, KEflat, edofArray, nel, U, r, ndof);
+        }
+
+        for (let i = 0; i < ndof; i++) {
+            r[i] = F[i] - r[i];
+        }
+
+        // Zero fixed DOFs in residual
+        if (fixedMask) {
+            for (let i = 0; i < ndof; i++) {
+                if (fixedMask[i]) r[i] = 0;
+            }
+        }
+
+        // Apply preconditioner: z = M^{-1} r
+        if (this.linearSolver === 'mgpcg' && this._mg) {
+            this._mg.apply(r, z);
+        } else {
+            // Jacobi preconditioner fallback
+            if (!this._fullInvDiag || this._fullInvDiag.length !== ndof) {
+                this._fullInvDiag = new Float64Array(ndof);
+            }
+            this._computeFullDiagonal(E_vals, activeElements, KEflat, edofArray, nel, ndof, fixedMask, this._fullInvDiag);
+            for (let i = 0; i < ndof; i++) z[i] = this._fullInvDiag[i] * r[i];
+        }
+
+        // Zero fixed DOFs
+        if (fixedMask) {
+            for (let i = 0; i < ndof; i++) {
+                if (fixedMask[i]) z[i] = 0;
+            }
+        }
+
+        // p = z
+        p.set(z);
+
+        // rz = r^T z
+        let rz = 0;
+        for (let i = 0; i < ndof; i++) rz += r[i] * z[i];
+
+        // Initial residual norm for relative convergence check
+        let r0norm2 = 0;
+        for (let i = 0; i < ndof; i++) r0norm2 += r[i] * r[i];
+        const tolSq = tolerance * tolerance * Math.max(r0norm2, 1e-30);
+
+        let cgIters = 0;
+        const maxIter = Math.min(freedofs.length, MAX_CG_ITERATIONS);
+
+        for (let iter = 0; iter < maxIter; iter++) {
+            // Check convergence
+            let rnorm2 = 0;
+            for (let i = 0; i < ndof; i++) rnorm2 += r[i] * r[i];
+            if (rnorm2 < tolSq) break;
+            cgIters = iter + 1;
+
+            // Ap = K * p
+            if (this.linearSolver === 'mgpcg' && this._mg) {
+                this._mg.applyA(0, p, Ap);
+            } else {
+                this._fullSpaceMatVec(E_vals, activeElements, KEflat, edofArray, nel, p, Ap, ndof);
+            }
+            // Zero fixed DOFs
+            if (fixedMask) {
+                for (let i = 0; i < ndof; i++) {
+                    if (fixedMask[i]) Ap[i] = 0;
+                }
+            }
+
+            let pAp = 0;
+            for (let i = 0; i < ndof; i++) pAp += p[i] * Ap[i];
+            const alpha = rz / (pAp + EPSILON);
+
+            for (let i = 0; i < ndof; i++) {
+                U[i] += alpha * p[i];
+                r[i] -= alpha * Ap[i];
+            }
+
+            // Apply preconditioner
+            if (this.linearSolver === 'mgpcg' && this._mg) {
+                this._mg.apply(r, z);
+            } else {
+                for (let i = 0; i < ndof; i++) z[i] = this._fullInvDiag[i] * r[i];
+            }
+            // Zero fixed DOFs
+            if (fixedMask) {
+                for (let i = 0; i < ndof; i++) {
+                    if (fixedMask[i]) z[i] = 0;
+                }
+            }
+
+            let rz_new = 0;
+            for (let i = 0; i < ndof; i++) rz_new += r[i] * z[i];
+
+            const beta = rz_new / (rz + EPSILON);
+            for (let i = 0; i < ndof; i++) {
+                p[i] = z[i] + beta * p[i];
+            }
+            rz = rz_new;
+        }
+
+        // Save for warm-start
+        this._U_prev.set(U);
+
+        // Compute compliance
         let c = 0;
         for (let i = 0; i < ndof; i++) {
             c += F[i] * U[i];
         }
 
-        return { U, c };
+        return { U, c, solverStats: { cgIterations: cgIters, tolerance } };
     }
 
-    solveCG(x, penal, KEflat, edofArray, nel, edofSize, F, freedofs, ndof, tolerance = CG_TOLERANCE) {
-        const n = freedofs.length;
-
-        // Allocate full-space work buffers for EbE matvec
-        if (!this._p_full || this._p_full.length !== ndof) {
-            this._p_full = new Float64Array(ndof);
-            this._Ap_full = new Float64Array(ndof);
-        }
-
-        // Precompute element stiffnesses once per solve (avoids Math.pow per CG iteration)
-        const { E_vals, activeElements } = this._precomputeStiffness(x, penal, nel);
-
-        // Compute Jacobi preconditioner (inverse diagonal of K)
-        const invDiag = this._computeDiagonal(E_vals, activeElements, KEflat, edofArray, nel, edofSize, freedofs, ndof);
-
-        // Reuse CG work arrays across calls when dimensions match
-        if (!this._cgUf || this._cgUf.length !== n) {
-            this._cgUf = new Float64Array(n);
-            this._cgR = new Float64Array(n);
-            this._cgZ = new Float64Array(n);
-            this._cgP = new Float64Array(n);
-            this._cgAp = new Float64Array(n);
-        }
-        const Uf = this._cgUf; Uf.fill(0);
-        const r = this._cgR;
-        const z = this._cgZ;
-        const p = this._cgP;
-        const Ap = this._cgAp;
-
-        // r = F_free (initial residual since U_0 = 0)
-        for (let i = 0; i < n; i++) {
-            r[i] = F[freedofs[i]];
-        }
-
-        // z = M^{-1} r; p = z; rz = r^T z
-        let rz = 0;
-        for (let i = 0; i < n; i++) {
-            z[i] = invDiag[i] * r[i];
-            p[i] = z[i];
-            rz += r[i] * z[i];
-        }
-
-        const maxIter = Math.min(n, MAX_CG_ITERATIONS);
-        const tolSq = tolerance * tolerance;
-
-        for (let iter = 0; iter < maxIter; iter++) {
-            let rnorm2 = 0;
-            for (let i = 0; i < n; i++) rnorm2 += r[i] * r[i];
-            if (rnorm2 < tolSq) break;
-
-            // Ap = K * p (element-by-element, using precomputed stiffness)
-            this._ebeMatVec(E_vals, activeElements, KEflat, edofArray, nel, edofSize, p, Ap, freedofs, ndof);
-
-            let pAp = 0;
-            for (let i = 0; i < n; i++) pAp += p[i] * Ap[i];
-            const alpha = rz / (pAp + EPSILON);
-
-            let rz_new = 0;
-            for (let i = 0; i < n; i++) {
-                Uf[i] += alpha * p[i];
-                r[i] -= alpha * Ap[i];
-                z[i] = invDiag[i] * r[i];
-                rz_new += r[i] * z[i];
+    /**
+     * Full-space element-by-element matrix-vector product (fallback for non-MGPCG path).
+     */
+    _fullSpaceMatVec(E_vals, activeElements, KEflat, edofArray, nel, p, Ap, ndof) {
+        Ap.fill(0);
+        const loc = new Float64Array(24);
+        for (let ae = 0, aeLen = activeElements.length; ae < aeLen; ae++) {
+            const e = activeElements[ae];
+            const E = E_vals[e];
+            const eOff = e * 24;
+            for (let j = 0; j < 24; j++) {
+                loc[j] = p[edofArray[eOff + j]];
             }
-
-            const beta = rz_new / (rz + EPSILON);
-            for (let i = 0; i < n; i++) {
-                p[i] = z[i] + beta * p[i];
+            for (let i = 0; i < 24; i++) {
+                const gi = edofArray[eOff + i];
+                let sum = 0;
+                const keRow = i * 24;
+                for (let j = 0; j < 24; j++) {
+                    sum += KEflat[keRow + j] * loc[j];
+                }
+                Ap[gi] += E * sum;
             }
-
-            rz = rz_new;
         }
+    }
 
-        return Uf;
+    /**
+     * Compute full-space inverse diagonal for Jacobi preconditioner (fallback).
+     */
+    _computeFullDiagonal(E_vals, activeElements, KEflat, edofArray, nel, ndof, fixedMask, invDiag) {
+        const diag = new Float64Array(ndof);
+        for (let ae = 0, aeLen = activeElements.length; ae < aeLen; ae++) {
+            const e = activeElements[ae];
+            const E = E_vals[e];
+            const eOff = e * 24;
+            for (let i = 0; i < 24; i++) {
+                diag[edofArray[eOff + i]] += E * KEflat[i * 24 + i];
+            }
+        }
+        invDiag.fill(0);
+        for (let i = 0; i < ndof; i++) {
+            if (!fixedMask[i] && diag[i] > 1e-30) {
+                invDiag[i] = 1.0 / diag[i];
+            }
+        }
     }
 
     computeElementEnergy(KE, Ue) {
