@@ -305,3 +305,83 @@ export function computeElementEnergies(
   }
 }
 
+/**
+ * Element-by-Element matrix-vector multiply: Ap = K(x) * p
+ * Avoids assembling the global stiffness matrix.
+ * Operates on full-space vectors (ndof-sized).
+ * @param densities - element densities (nel)
+ * @param KEflat - flat element stiffness matrix (edofSize x edofSize)
+ * @param edofs - element DOF indices (nel * edofSize)
+ * @param p - input vector (ndof)
+ * @param Ap - output vector (ndof), must be pre-zeroed
+ * @param nel - number of elements
+ * @param edofSize - DOFs per element (8 for 2D, 24 for 3D)
+ * @param Emin - minimum Young's modulus
+ * @param E0 - base Young's modulus
+ * @param penal - SIMP penalization exponent
+ */
+export function ebeMatVec(
+  densities: Float64Array,
+  KEflat: Float64Array,
+  edofs: Int32Array,
+  p: Float64Array,
+  Ap: Float64Array,
+  nel: i32,
+  edofSize: i32,
+  Emin: f64,
+  E0: f64,
+  penal: f64
+): void {
+  for (let e = 0; e < nel; e++) {
+    const density: f64 = unchecked(densities[e]);
+    const stiffness: f64 = Emin + Math.pow(density, penal) * (E0 - Emin);
+    const eOff: i32 = e * edofSize;
+
+    for (let i = 0; i < edofSize; i++) {
+      const gi: i32 = unchecked(edofs[eOff + i]);
+      let sum: f64 = 0.0;
+      const keRow: i32 = i * edofSize;
+      for (let j = 0; j < edofSize; j++) {
+        sum += unchecked(KEflat[keRow + j]) * unchecked(p[unchecked(edofs[eOff + j])]);
+      }
+      unchecked(Ap[gi] = unchecked(Ap[gi]) + stiffness * sum);
+    }
+  }
+}
+
+/**
+ * Compute diagonal of global stiffness matrix K(x) element-by-element.
+ * Used for Jacobi preconditioning.
+ * @param densities - element densities (nel)
+ * @param KEflat - flat element stiffness matrix (edofSize x edofSize)
+ * @param edofs - element DOF indices (nel * edofSize)
+ * @param diag - output diagonal vector (ndof)
+ * @param nel - number of elements
+ * @param edofSize - DOFs per element
+ * @param Emin - minimum Young's modulus
+ * @param E0 - base Young's modulus
+ * @param penal - SIMP penalization exponent
+ */
+export function computeDiagonal(
+  densities: Float64Array,
+  KEflat: Float64Array,
+  edofs: Int32Array,
+  diag: Float64Array,
+  nel: i32,
+  edofSize: i32,
+  Emin: f64,
+  E0: f64,
+  penal: f64
+): void {
+  for (let e = 0; e < nel; e++) {
+    const density: f64 = unchecked(densities[e]);
+    const stiffness: f64 = Emin + Math.pow(density, penal) * (E0 - Emin);
+    const eOff: i32 = e * edofSize;
+
+    for (let i = 0; i < edofSize; i++) {
+      const gi: i32 = unchecked(edofs[eOff + i]);
+      unchecked(diag[gi] = unchecked(diag[gi]) + stiffness * unchecked(KEflat[i * edofSize + i]));
+    }
+  }
+}
+

@@ -3,6 +3,7 @@
 
 const EPSILON = 1e-12;
 const CG_TOLERANCE = 1e-8;
+const MAX_CG_ITERATIONS = 2000;
 
 // WASM Module for high-performance operations
 let wasmModule = null;
@@ -230,6 +231,120 @@ class TopologyOptimizerWorker3D {
         this.useWasm = false;
     }
 
+    _flattenKE(KE, size) {
+        const flat = new Float64Array(size * size);
+        for (let i = 0; i < size; i++)
+            for (let j = 0; j < size; j++)
+                flat[i * size + j] = KE[i][j];
+        return flat;
+    }
+
+    _precomputeEdofs3D(nelx, nely, nelz) {
+        const nel = nelx * nely * nelz;
+        const nny = nely + 1;
+        const nnz = nelz + 1;
+        const edofArray = new Int32Array(nel * 24);
+        for (let elz = 0; elz < nelz; elz++) {
+            for (let ely = 0; ely < nely; ely++) {
+                for (let elx = 0; elx < nelx; elx++) {
+                    const idx = elx + ely * nelx + elz * nelx * nely;
+                    const offset = idx * 24;
+                    const n0 = elx * nny * nnz + ely * nnz + elz;
+                    const n1 = (elx + 1) * nny * nnz + ely * nnz + elz;
+                    const n2 = (elx + 1) * nny * nnz + (ely + 1) * nnz + elz;
+                    const n3 = elx * nny * nnz + (ely + 1) * nnz + elz;
+                    const n4 = elx * nny * nnz + ely * nnz + (elz + 1);
+                    const n5 = (elx + 1) * nny * nnz + ely * nnz + (elz + 1);
+                    const n6 = (elx + 1) * nny * nnz + (ely + 1) * nnz + (elz + 1);
+                    const n7 = elx * nny * nnz + (ely + 1) * nnz + (elz + 1);
+                    edofArray[offset]      = 3 * n0;
+                    edofArray[offset + 1]  = 3 * n0 + 1;
+                    edofArray[offset + 2]  = 3 * n0 + 2;
+                    edofArray[offset + 3]  = 3 * n1;
+                    edofArray[offset + 4]  = 3 * n1 + 1;
+                    edofArray[offset + 5]  = 3 * n1 + 2;
+                    edofArray[offset + 6]  = 3 * n2;
+                    edofArray[offset + 7]  = 3 * n2 + 1;
+                    edofArray[offset + 8]  = 3 * n2 + 2;
+                    edofArray[offset + 9]  = 3 * n3;
+                    edofArray[offset + 10] = 3 * n3 + 1;
+                    edofArray[offset + 11] = 3 * n3 + 2;
+                    edofArray[offset + 12] = 3 * n4;
+                    edofArray[offset + 13] = 3 * n4 + 1;
+                    edofArray[offset + 14] = 3 * n4 + 2;
+                    edofArray[offset + 15] = 3 * n5;
+                    edofArray[offset + 16] = 3 * n5 + 1;
+                    edofArray[offset + 17] = 3 * n5 + 2;
+                    edofArray[offset + 18] = 3 * n6;
+                    edofArray[offset + 19] = 3 * n6 + 1;
+                    edofArray[offset + 20] = 3 * n6 + 2;
+                    edofArray[offset + 21] = 3 * n7;
+                    edofArray[offset + 22] = 3 * n7 + 1;
+                    edofArray[offset + 23] = 3 * n7 + 2;
+                }
+            }
+        }
+        return edofArray;
+    }
+
+    _ebeMatVec(x, penal, KEflat, edofArray, nel, edofSize, p_reduced, Ap_reduced, freedofs, ndof) {
+        const p_full = this._p_full;
+        const Ap_full = this._Ap_full;
+
+        p_full.fill(0);
+        for (let i = 0; i < freedofs.length; i++) {
+            p_full[freedofs[i]] = p_reduced[i];
+        }
+
+        Ap_full.fill(0);
+        for (let e = 0; e < nel; e++) {
+            const E = this.Emin + Math.pow(x[e], penal) * (this.E0 - this.Emin);
+            const eOff = e * edofSize;
+            for (let i = 0; i < edofSize; i++) {
+                const gi = edofArray[eOff + i];
+                let sum = 0;
+                const keRow = i * edofSize;
+                for (let j = 0; j < edofSize; j++) {
+                    sum += KEflat[keRow + j] * p_full[edofArray[eOff + j]];
+                }
+                Ap_full[gi] += E * sum;
+            }
+        }
+
+        for (let i = 0; i < freedofs.length; i++) {
+            Ap_reduced[i] = Ap_full[freedofs[i]];
+        }
+    }
+
+    _computeDiagonal(x, penal, KEflat, edofArray, nel, edofSize, freedofs, ndof) {
+        const diag = new Float64Array(ndof);
+        for (let e = 0; e < nel; e++) {
+            const E = this.Emin + Math.pow(x[e], penal) * (this.E0 - this.Emin);
+            const eOff = e * edofSize;
+            for (let i = 0; i < edofSize; i++) {
+                diag[edofArray[eOff + i]] += E * KEflat[i * edofSize + i];
+            }
+        }
+        const invDiag = new Float64Array(freedofs.length);
+        for (let i = 0; i < freedofs.length; i++) {
+            const d = diag[freedofs[i]];
+            invDiag[i] = d > 1e-30 ? 1.0 / d : 0.0;
+        }
+        return invDiag;
+    }
+
+    _computeElementEnergyFlat(KEflat, Ue, size) {
+        let energy = 0;
+        for (let i = 0; i < size; i++) {
+            const keRow = i * size;
+            const ui = Ue[i];
+            for (let j = 0; j < size; j++) {
+                energy += ui * KEflat[keRow + j] * Ue[j];
+            }
+        }
+        return energy;
+    }
+
     async optimize(model, config) {
         // Try to load WASM module if not already loaded
         if (!wasmLoaded && !this.wasmLoadAttempted) {
@@ -312,6 +427,8 @@ class TopologyOptimizerWorker3D {
         const freedofs = alldofs.filter(dof => !fixedSet.has(dof));
 
         const KE = this.lk();
+        const KEflat = this._flattenKE(KE, 24);
+        const edofArray = this._precomputeEdofs3D(nelx, nely, nelz);
 
         // Compute per-element force magnitudes for adaptive mesh info
         const elementForces = this.computeElementForces(nelx, nely, nelz, F);
@@ -335,24 +452,20 @@ class TopologyOptimizerWorker3D {
             const iterStartTime = performance.now();
             xold = Float32Array.from(x);
 
-            const { U, c: compliance } = this.FE(nelx, nely, nelz, x, this.penal, KE, F, freedofs, fixeddofs);
+            const { U, c: compliance } = this.FE(nelx, nely, nelz, x, this.penal, KEflat, edofArray, F, freedofs);
             c = compliance;
 
             const dc = new Float32Array(nel);
             const elementEnergies = new Float32Array(nel);
-            for (let elz = 0; elz < nelz; elz++) {
-                for (let ely = 0; ely < nely; ely++) {
-                    for (let elx = 0; elx < nelx; elx++) {
-                        const edof = this.getElementDOFs(elx, ely, elz, nelx, nely, nelz);
-                        const Ue = edof.map(dof => U[dof] || 0);
-                        const idx = elx + ely * nelx + elz * nelx * nely;
-                        const energy = this.computeElementEnergy(KE, Ue);
-                        elementEnergies[idx] = energy;
-
-                        dc[idx] = -this.penal * Math.pow(x[idx], this.penal - 1) *
-                                  this.E0 * energy;
-                    }
+            const Ue = new Float64Array(24);
+            for (let e = 0; e < nel; e++) {
+                const eOff = e * 24;
+                for (let i = 0; i < 24; i++) {
+                    Ue[i] = U[edofArray[eOff + i]];
                 }
+                const energy = this._computeElementEnergyFlat(KEflat, Ue, 24);
+                elementEnergies[e] = energy;
+                dc[e] = -this.penal * Math.pow(x[e], this.penal - 1) * this.E0 * energy;
             }
 
             const dcn = this.filterSensitivities(dc, x, H, Hs, nelx, nely, nelz);
@@ -988,12 +1101,12 @@ class TopologyOptimizerWorker3D {
         return KE;
     }
 
-    FE(nelx, nely, nelz, x, penal, KE, F, freedofs, fixeddofs) {
+    FE(nelx, nely, nelz, x, penal, KEflat, edofArray, F, freedofs) {
         const ndof = 3 * (nelx + 1) * (nely + 1) * (nelz + 1);
-        const U = new Float32Array(ndof);
+        const nel = nelx * nely * nelz;
+        const U = new Float64Array(ndof);
 
-        const K = this.assembleK(nelx, nely, nelz, x, penal, KE);
-        const Uf = this.solveCG(K, F, freedofs, fixeddofs);
+        const Uf = this.solveCG(x, penal, KEflat, edofArray, nel, 24, F, freedofs, ndof);
 
         for (let i = 0; i < freedofs.length; i++) {
             U[freedofs[i]] = Uf[i];
@@ -1007,203 +1120,66 @@ class TopologyOptimizerWorker3D {
         return { U, c };
     }
 
-    assembleK(nelx, nely, nelz, x, penal, KE) {
-        const ndof = 3 * (nelx + 1) * (nely + 1) * (nelz + 1);
-        const nel = nelx * nely * nelz;
-        
-        // Build sparse matrix in COO format, then convert to CSR for fast mat-vec
-        // Each element contributes 24x24 = 576 entries
-        const maxEntries = nel * 576;
-        const cooRow = new Int32Array(maxEntries);
-        const cooCol = new Int32Array(maxEntries);
-        const cooVal = new Float64Array(maxEntries);
-        let nnz = 0;
-
-        for (let elz = 0; elz < nelz; elz++) {
-            for (let ely = 0; ely < nely; ely++) {
-                for (let elx = 0; elx < nelx; elx++) {
-                    const edof = this.getElementDOFs(elx, ely, elz, nelx, nely, nelz);
-                    const idx = elx + ely * nelx + elz * nelx * nely;
-                    const E = this.Emin + Math.pow(x[idx], penal) * (this.E0 - this.Emin);
-
-                    for (let i = 0; i < 24; i++) {
-                        for (let j = 0; j < 24; j++) {
-                            cooRow[nnz] = edof[i];
-                            cooCol[nnz] = edof[j];
-                            cooVal[nnz] = E * KE[i][j];
-                            nnz++;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Convert COO to CSR (Compressed Sparse Row) for efficient mat-vec
-        const rowPtr = new Int32Array(ndof + 1);
-        
-        // Count entries per row
-        for (let k = 0; k < nnz; k++) {
-            rowPtr[cooRow[k] + 1]++;
-        }
-        // Cumulative sum
-        for (let i = 0; i < ndof; i++) {
-            rowPtr[i + 1] += rowPtr[i];
-        }
-        
-        const colIdx = new Int32Array(nnz);
-        const values = new Float64Array(nnz);
-        const tempPtr = new Int32Array(ndof);
-        for (let i = 0; i < ndof; i++) {
-            tempPtr[i] = rowPtr[i];
-        }
-        
-        for (let k = 0; k < nnz; k++) {
-            const row = cooRow[k];
-            const pos = tempPtr[row];
-            colIdx[pos] = cooCol[k];
-            values[pos] = cooVal[k];
-            tempPtr[row]++;
-        }
-
-        return { ndof, rowPtr, colIdx, values };
-    }
-
-    // Build reverse map: global DOF -> local index (-1 if not free)
-    // Cache the dofMap per ndof size to avoid repeated allocation across CG iterations
-    _sparseMatVec(K, p, Ap, freedofs) {
+    solveCG(x, penal, KEflat, edofArray, nel, edofSize, F, freedofs, ndof) {
         const n = freedofs.length;
-        const { rowPtr, colIdx, values } = K;
-        
-        if (!this._dofMap || this._dofMap.length !== K.ndof) {
-            this._dofMap = new Int32Array(K.ndof).fill(-1);
-            this._dofMapInitialized = false;
-        }
-        
-        // Only rebuild the map if freedofs changed (first call per FE solve)
-        if (!this._dofMapInitialized) {
-            this._dofMap.fill(-1);
-            for (let i = 0; i < n; i++) {
-                this._dofMap[freedofs[i]] = i;
-            }
-            this._dofMapInitialized = true;
-        }
-        
-        for (let li = 0; li < n; li++) {
-            const gi = freedofs[li];
-            let sum = 0;
-            for (let k = rowPtr[gi]; k < rowPtr[gi + 1]; k++) {
-                const lj = this._dofMap[colIdx[k]];
-                if (lj >= 0) {
-                    sum += values[k] * p[lj];
-                }
-            }
-            Ap[li] = sum;
-        }
-    }
 
-    solveCG(K, F, freedofs, fixeddofs) {
-        const n = freedofs.length;
-        const Uf = new Float32Array(n);
-        
-        // Reset dofMap cache for this new solve
-        this._dofMapInitialized = false;
-
-        // Try WASM accelerated CG solver
-        if (this.useWasm && wasmModule) {
-            try {
-                // Extract reduced K matrix as dense for WASM (WASM CG expects dense)
-                const Kf = new Float64Array(n * n);
-                const Ff = new Float64Array(n);
-                
-                // Build reverse map for extraction
-                const dofMap = new Int32Array(K.ndof).fill(-1);
-                for (let i = 0; i < n; i++) {
-                    dofMap[freedofs[i]] = i;
-                }
-                
-                for (let i = 0; i < n; i++) {
-                    Ff[i] = F[freedofs[i]];
-                    const gi = freedofs[i];
-                    for (let k = K.rowPtr[gi]; k < K.rowPtr[gi + 1]; k++) {
-                        const lj = dofMap[K.colIdx[k]];
-                        if (lj >= 0) {
-                            Kf[i * n + lj] += K.values[k];
-                        }
-                    }
-                }
-                
-                const Uf64 = new Float64Array(n);
-                const maxIter = Math.min(n, 1000);
-                
-                // Call WASM CG solver
-                const ptrK = this._copyToWasm(Kf);
-                const ptrF = this._copyToWasm(Ff);
-                const ptrU = this._copyToWasm(Uf64);
-                
-                wasmModule.exports.conjugateGradient(ptrK, ptrF, ptrU, n, maxIter, CG_TOLERANCE);
-                
-                // Read result back
-                const result = this._readFromWasm(ptrU, n);
-                for (let i = 0; i < n; i++) {
-                    Uf[i] = result[i];
-                }
-                
-                // Free WASM memory
-                this._freeWasm(ptrK);
-                this._freeWasm(ptrF);
-                this._freeWasm(ptrU);
-                
-                return Uf;
-            } catch (error) {
-                console.warn('WASM CG solver failed, falling back to JS:', error);
-                // Fall through to JS implementation
-            }
+        // Allocate full-space work buffers for EbE matvec
+        if (!this._p_full || this._p_full.length !== ndof) {
+            this._p_full = new Float64Array(ndof);
+            this._Ap_full = new Float64Array(ndof);
         }
 
-        // Pure JavaScript CG solver fallback using sparse mat-vec
-        const r = new Float32Array(n);
-        const p = new Float32Array(n);
-        const Ap = new Float32Array(n);
+        // Compute Jacobi preconditioner (inverse diagonal of K)
+        const invDiag = this._computeDiagonal(x, penal, KEflat, edofArray, nel, edofSize, freedofs, ndof);
 
+        const Uf = new Float64Array(n);
+        const r = new Float64Array(n);
+        const z = new Float64Array(n);
+        const p = new Float64Array(n);
+        const Ap = new Float64Array(n);
+
+        // r = F_free (initial residual since U_0 = 0)
         for (let i = 0; i < n; i++) {
             r[i] = F[freedofs[i]];
         }
 
-        const maxIter = Math.min(n, 1000);
-        // Compare rho (= ||r||²) against tolSq to avoid sqrt per iteration
-        const tolSq = CG_TOLERANCE * CG_TOLERANCE;
-
-        let rho = 0;
+        // z = M^{-1} r; p = z; rz = r^T z
+        let rz = 0;
         for (let i = 0; i < n; i++) {
-            rho += r[i] * r[i];
-            p[i] = r[i];
+            z[i] = invDiag[i] * r[i];
+            p[i] = z[i];
+            rz += r[i] * z[i];
         }
 
-        for (let iter = 0; iter < maxIter; iter++) {
-            if (rho < tolSq) break;
+        const maxIter = Math.min(n, MAX_CG_ITERATIONS);
+        const tolSq = CG_TOLERANCE * CG_TOLERANCE;
 
-            // Sparse mat-vec: Ap = K * p
-            this._sparseMatVec(K, p, Ap, freedofs);
+        for (let iter = 0; iter < maxIter; iter++) {
+            let rnorm2 = 0;
+            for (let i = 0; i < n; i++) rnorm2 += r[i] * r[i];
+            if (rnorm2 < tolSq) break;
+
+            // Ap = K * p (element-by-element)
+            this._ebeMatVec(x, penal, KEflat, edofArray, nel, edofSize, p, Ap, freedofs, ndof);
 
             let pAp = 0;
-            for (let i = 0; i < n; i++) {
-                pAp += p[i] * Ap[i];
-            }
-            const alpha = rho / (pAp + EPSILON);
+            for (let i = 0; i < n; i++) pAp += p[i] * Ap[i];
+            const alpha = rz / (pAp + EPSILON);
 
-            let rho_new = 0;
+            let rz_new = 0;
             for (let i = 0; i < n; i++) {
                 Uf[i] += alpha * p[i];
                 r[i] -= alpha * Ap[i];
-                rho_new += r[i] * r[i];
+                z[i] = invDiag[i] * r[i];
+                rz_new += r[i] * z[i];
             }
 
-            const beta = rho_new / (rho + EPSILON);
+            const beta = rz_new / (rz + EPSILON);
             for (let i = 0; i < n; i++) {
-                p[i] = r[i] + beta * p[i];
+                p[i] = z[i] + beta * p[i];
             }
 
-            rho = rho_new;
+            rz = rz_new;
         }
 
         return Uf;
