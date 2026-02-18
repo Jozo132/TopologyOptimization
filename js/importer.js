@@ -400,7 +400,7 @@ export class ModelImporter {
      * Used externally to convert voxel size in mm to a resolution value.
      */
     static getTemplateMaxDim(type) {
-        const dims = { beam: 30, bridge: 40, cube: 5 };
+        const dims = { beam: 30, bridge: 40, cube: 10 };
         return dims[type] || 20;
     }
 
