@@ -15,6 +15,15 @@
  *   3. Reports per-element Von-Mises-equivalent stress
  *      (highest stress and top-5 % average)
  *   4. Cross-compares multiple solver configurations
+ *
+ * NOTE: For a high-level benchmark that uses the TopologySolver library API
+ * (works in both Node.js and the browser), import TopologySolver instead:
+ *
+ *   import { TopologySolver } from './lib/topology-solver.js';
+ *   const solver = new TopologySolver();
+ *   const result = await solver.optimize(model, { solver: 'mgpcg', maxIterations: 30, ... }, onProgress);
+ *
+ * This benchmark runs the solver engine directly for detailed profiling.
  */
 
 import { performance } from 'perf_hooks';
