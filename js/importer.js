@@ -41,7 +41,7 @@ export class ModelImporter {
         }
 
         // Fallback: if no triangles were found, try the other format
-        if (result.originalVertices && result.originalVertices.length === 0) {
+        if (result && result.originalVertices && result.originalVertices.length === 0) {
             if (isBinary) {
                 result = this.parseASCIISTL(arrayBuffer);
             } else {
@@ -73,7 +73,7 @@ export class ModelImporter {
         const headerText = new TextDecoder().decode(arrayBuffer.slice(0, 5));
         if (headerText.toLowerCase().startsWith('solid')) {
             const probeSize = Math.min(1000, arrayBuffer.byteLength);
-            const probe = new TextDecoder().decode(arrayBuffer.slice(0, probeSize));
+            const probe = new TextDecoder().decode(arrayBuffer.slice(0, probeSize)).toLowerCase();
             if (probe.includes('facet') && probe.includes('vertex')) {
                 return false; // Looks like genuine ASCII STL
             }
