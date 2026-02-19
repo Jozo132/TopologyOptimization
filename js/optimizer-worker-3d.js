@@ -1075,6 +1075,11 @@ class TopologyOptimizerWorker3D {
             await loadWasmModule();
             this.useWasm = wasmLoaded;
         }
+
+        // Route to genetic optimizer if requested
+        if (config.optimizer === 'genetic') {
+            return this.geneticOptimize(model, config);
+        }
         
         const { nx, ny, nz } = model;
         const nelx = nx;
@@ -1100,6 +1105,92 @@ class TopologyOptimizerWorker3D {
         }
 
         const nel = nelx * nely * nelz;
+
+        // ── FEA-only mode ─────────────────────────────────────────────────
+        if (config.feaOnly) {
+            const x = new Float32Array(nel);
+            if (model.elements) {
+                for (let i = 0; i < nel; i++) {
+                    x[i] = model.elements[i] > 0.5 ? 1.0 : this.Emin;
+                }
+            } else {
+                x.fill(1.0);
+            }
+
+            let fixeddofs = this.getFixedDOFs(nelx, nely, nelz, config.constraintPosition, config.constraintDOFs);
+            let F = this.getLoadVector(nelx, nely, nelz, config.forceDirection, config.forceMagnitude, config.forceVector);
+
+            if (config.paintedConstraints && config.paintedConstraints.length > 0) {
+                fixeddofs = this.getFixedDOFsFromPaint(nelx, nely, nelz, config.paintedConstraints, config.constraintDOFs);
+            }
+            if (config.paintedForces && config.paintedForces.length > 0) {
+                F = this.getLoadVectorFromPaint(nelx, nely, nelz, config.paintedForces, config.forceDirection, config.forceMagnitude, config.forceVector);
+            }
+
+            const ndof = 3 * (nelx + 1) * (nely + 1) * (nelz + 1);
+            const fixedMask = new Uint8Array(ndof);
+            for (let i = 0; i < fixeddofs.length; i++) {
+                const dof = fixeddofs[i];
+                if (dof >= 0 && dof < ndof) fixedMask[dof] = 1;
+            }
+            let nFree = 0;
+            for (let i = 0; i < ndof; i++) if (!fixedMask[i]) nFree++;
+            const freedofs = new Int32Array(nFree);
+            let fp = 0;
+            for (let i = 0; i < ndof; i++) if (!fixedMask[i]) freedofs[fp++] = i;
+
+            const KE = this.lk();
+            const KEflat = this._flattenKE(KE, 24);
+            const edofArray = this._precomputeEdofs3D(nelx, nely, nelz);
+            const elementForces = this.computeElementForces(nelx, nely, nelz, F);
+
+            const penal = config.penaltyFactor || 3;
+            const startTime = performance.now();
+            const { U, c: compliance } = this.FE(nelx, nely, nelz, x, penal, KEflat, edofArray, F, freedofs, fixedMask, config, 1, 1, fixeddofs);
+
+            const elementEnergies = new Float32Array(nel);
+            const elementStress = new Float32Array(nel);
+            const Ue = new Float64Array(24);
+            let maxStress = 0;
+            for (let e = 0; e < nel; e++) {
+                const eOff = e * 24;
+                for (let i = 0; i < 24; i++) {
+                    Ue[i] = U[edofArray[eOff + i]];
+                }
+                const energy = this._computeElementEnergyFlat(KEflat, Ue, 24);
+                elementEnergies[e] = energy;
+                const stiffness = this.Emin + Math.pow(x[e], penal) * (this.E0 - this.Emin);
+                elementStress[e] = stiffness * energy;
+                if (elementStress[e] > maxStress) maxStress = elementStress[e];
+            }
+
+            const meshData = this.buildAdaptiveMesh(nelx, nely, nelz, x, elementEnergies, elementForces, null);
+            const totalTime = performance.now() - startTime;
+
+            postMessage({
+                type: 'complete',
+                result: {
+                    densities: x,
+                    finalCompliance: compliance,
+                    iterations: 0,
+                    volumeFraction: 1.0,
+                    nx: nelx,
+                    ny: nely,
+                    nz: nelz,
+                    meshData: meshData,
+                    maxStress: maxStress,
+                    elementStress: elementStress,
+                    feaOnly: true,
+                    timing: {
+                        totalTime: totalTime,
+                        avgIterationTime: totalTime,
+                        iterationTimes: [totalTime],
+                        usingWasm: this.useWasm
+                    }
+                }
+            });
+            return;
+        }
         
         // Initialize AMR manager if enabled
         const amrManager = config.useAMR ? 
@@ -1449,6 +1540,306 @@ class TopologyOptimizerWorker3D {
             3*n6, 3*n6+1, 3*n6+2,
             3*n7, 3*n7+1, 3*n7+2
         ];
+    }
+
+    /**
+     * Genetic algorithm optimizer for 3D topology optimization.
+     * Uses tournament selection, uniform crossover, and bit-flip mutation
+     * with volume-fraction penalty to evolve element density distributions.
+     */
+    async geneticOptimize(model, config) {
+        const { nx, ny, nz } = model;
+        const nelx = nx;
+        const nely = ny;
+        const nelz = nz;
+        const volfrac = config.volumeFraction || 0.5;
+        const maxGenerations = config.maxIterations || 50;
+        const populationSize = config.populationSize || 20;
+        const eliteCount = config.eliteCount || 2;
+        const mutationRate = config.mutationRate || 0.02;
+        const crossoverRate = config.crossoverRate || 0.8;
+        const tournamentSize = config.tournamentSize || 3;
+        const penaltyWeight = config.volumePenalty || 2.0;
+
+        this.penal = config.penaltyFactor || 3;
+        this.rmin = config.filterRadius || 1.5;
+        this.cancelled = false;
+        this._paused = false;
+        if (config.linearSolver) this.linearSolver = config.linearSolver;
+
+        if (config.youngsModulus) this.E0 = config.youngsModulus;
+        if (config.poissonsRatio !== undefined) this.nu = config.poissonsRatio;
+
+        const nel = nelx * nely * nelz;
+
+        let fixeddofs = this.getFixedDOFs(nelx, nely, nelz, config.constraintPosition, config.constraintDOFs);
+        let F = this.getLoadVector(nelx, nely, nelz, config.forceDirection, config.forceMagnitude, config.forceVector);
+
+        if (config.paintedConstraints && config.paintedConstraints.length > 0) {
+            fixeddofs = this.getFixedDOFsFromPaint(nelx, nely, nelz, config.paintedConstraints, config.constraintDOFs);
+        }
+        if (config.paintedForces && config.paintedForces.length > 0) {
+            F = this.getLoadVectorFromPaint(nelx, nely, nelz, config.paintedForces, config.forceDirection, config.forceMagnitude, config.forceVector);
+        }
+
+        // Build preserved/void element sets
+        const preservedElements = new Set();
+        const allPaintedKeys = [
+            ...(config.paintedConstraints || []),
+            ...(config.paintedForces || []),
+            ...(config.paintedKeep || [])
+        ];
+        for (const key of allPaintedKeys) {
+            const parts = key.split(',');
+            if (parts.length < 3) continue;
+            const vx = parseInt(parts[0], 10);
+            const vy = parseInt(parts[1], 10);
+            const vz = parseInt(parts[2], 10);
+            if (!isNaN(vx) && !isNaN(vy) && !isNaN(vz) &&
+                vx >= 0 && vx < nelx && vy >= 0 && vy < nely && vz >= 0 && vz < nelz) {
+                preservedElements.add(vx + vy * nelx + vz * nelx * nely);
+            }
+        }
+        if (!config.paintedConstraints || config.paintedConstraints.length === 0) {
+            const constraintElems = this.getConstraintElements(nelx, nely, nelz, config.constraintPosition);
+            for (const idx of constraintElems) preservedElements.add(idx);
+        }
+        if (!config.paintedForces || config.paintedForces.length === 0) {
+            const forceElems = this.getForceElements(nelx, nely, nelz, config.forceDirection);
+            for (const idx of forceElems) preservedElements.add(idx);
+        }
+
+        const voidElements = new Set();
+        if (config.constrainToSolid && model.elements) {
+            for (let i = 0; i < nel; i++) {
+                if (model.elements[i] < 0.5) voidElements.add(i);
+            }
+        }
+
+        const ndof = 3 * (nelx + 1) * (nely + 1) * (nelz + 1);
+        const fixedMask = new Uint8Array(ndof);
+        for (let i = 0; i < fixeddofs.length; i++) {
+            const dof = fixeddofs[i];
+            if (dof >= 0 && dof < ndof) fixedMask[dof] = 1;
+        }
+        let nFree = 0;
+        for (let i = 0; i < ndof; i++) if (!fixedMask[i]) nFree++;
+        const freedofs = new Int32Array(nFree);
+        let fp = 0;
+        for (let i = 0; i < ndof; i++) if (!fixedMask[i]) freedofs[fp++] = i;
+
+        const KE = this.lk();
+        const KEflat = this._flattenKE(KE, 24);
+        const edofArray = this._precomputeEdofs3D(nelx, nely, nelz);
+        const elementForces = this.computeElementForces(nelx, nely, nelz, F);
+
+        // Seeded random number generator
+        let _seed = 42;
+        const _random = () => { _seed = (_seed * 1103515245 + 12345) & 0x7fffffff; return _seed / 0x7fffffff; };
+
+        const createIndividual = () => {
+            const x = new Float32Array(nel);
+            for (let i = 0; i < nel; i++) {
+                if (preservedElements.has(i)) { x[i] = 1.0; }
+                else if (voidElements.has(i)) { x[i] = 0.0; }
+                else { x[i] = _random() < volfrac ? 1.0 : 0.0; }
+            }
+            return x;
+        };
+
+        const evaluate = (x) => {
+            // Use Emin floor for void elements to avoid singular stiffness matrix
+            const xFEA = new Float32Array(nel);
+            for (let i = 0; i < nel; i++) {
+                xFEA[i] = x[i] > 0.5 ? x[i] : 0.001;
+            }
+
+            const { U, c: compliance } = this.FE(nelx, nely, nelz, xFEA, this.penal, KEflat, edofArray, F, freedofs, fixedMask, config, 1, 1, fixeddofs);
+
+            // Guard against invalid FEA results (diverged solver)
+            if (!isFinite(compliance) || compliance <= 0) {
+                return { compliance: 1e20, rawCompliance: 1e20, volFrac: 1.0, U };
+            }
+
+            let vol = 0;
+            for (let i = 0; i < nel; i++) vol += x[i];
+            const volFrac = vol / nel;
+            const volViolation = Math.max(0, volFrac - volfrac);
+            const penalty = penaltyWeight * compliance * volViolation * volViolation;
+            return { compliance: compliance + penalty, rawCompliance: compliance, volFrac, U };
+        };
+
+        const tournamentSelect = (population, fitnesses) => {
+            let bestIdx = Math.floor(_random() * population.length);
+            for (let t = 1; t < tournamentSize; t++) {
+                const idx = Math.floor(_random() * population.length);
+                if (fitnesses[idx] < fitnesses[bestIdx]) bestIdx = idx;
+            }
+            return bestIdx;
+        };
+
+        const crossover = (parent1, parent2) => {
+            const child = new Float32Array(nel);
+            for (let i = 0; i < nel; i++) {
+                if (preservedElements.has(i)) { child[i] = 1.0; }
+                else if (voidElements.has(i)) { child[i] = 0.0; }
+                else { child[i] = _random() < 0.5 ? parent1[i] : parent2[i]; }
+            }
+            return child;
+        };
+
+        const mutate = (individual, rate) => {
+            for (let i = 0; i < nel; i++) {
+                if (preservedElements.has(i) || voidElements.has(i)) continue;
+                if (_random() < rate) {
+                    individual[i] = individual[i] > 0.5 ? 0.0 : 1.0;
+                }
+            }
+        };
+
+        let population = [];
+        for (let i = 0; i < populationSize; i++) {
+            population.push(createIndividual());
+        }
+
+        const startTime = performance.now();
+        const iterationTimes = [];
+        let bestCompliance = Infinity;
+        let bestIndividual = null;
+
+        for (let gen = 0; gen < maxGenerations; gen++) {
+            await _yieldToLoop();
+
+            if (this.cancelled) {
+                postMessage({ type: 'cancelled', iteration: gen });
+                return;
+            }
+
+            if (this._paused) {
+                postMessage({ type: 'paused', iteration: gen });
+                await new Promise(resolve => { this._resumeResolve = resolve; });
+            }
+
+            const iterStartTime = performance.now();
+
+            const results = population.map(ind => evaluate(ind));
+            const fitnesses = results.map(r => r.compliance);
+
+            for (let i = 0; i < populationSize; i++) {
+                if (fitnesses[i] < bestCompliance) {
+                    bestCompliance = fitnesses[i];
+                    bestIndividual = Float32Array.from(population[i]);
+                }
+            }
+
+            const indices = Array.from({ length: populationSize }, (_, i) => i);
+            indices.sort((a, b) => fitnesses[a] - fitnesses[b]);
+
+            const newPop = [];
+            for (let i = 0; i < eliteCount && i < populationSize; i++) {
+                newPop.push(Float32Array.from(population[indices[i]]));
+            }
+
+            while (newPop.length < populationSize) {
+                if (_random() < crossoverRate) {
+                    const p1 = tournamentSelect(population, fitnesses);
+                    const p2 = tournamentSelect(population, fitnesses);
+                    const child = crossover(population[p1], population[p2]);
+                    mutate(child, mutationRate);
+                    newPop.push(child);
+                } else {
+                    const p = tournamentSelect(population, fitnesses);
+                    const child = Float32Array.from(population[p]);
+                    mutate(child, mutationRate);
+                    newPop.push(child);
+                }
+            }
+
+            population = newPop;
+
+            // Build mesh for visualization
+            const bestEval = evaluate(bestIndividual);
+            const elementEnergies = new Float32Array(nel);
+            const Ue = new Float64Array(24);
+            for (let e = 0; e < nel; e++) {
+                const eOff = e * 24;
+                for (let i = 0; i < 24; i++) {
+                    Ue[i] = bestEval.U[edofArray[eOff + i]];
+                }
+                elementEnergies[e] = this._computeElementEnergyFlat(KEflat, Ue, 24);
+            }
+
+            const meshData = this.buildAdaptiveMesh(nelx, nely, nelz, bestIndividual, elementEnergies, elementForces, null);
+
+            const iterEndTime = performance.now();
+            const iterTime = iterEndTime - iterStartTime;
+            iterationTimes.push(iterTime);
+
+            const avgIterTime = iterationTimes.reduce((a, b) => a + b, 0) / iterationTimes.length;
+            const elapsedTime = iterEndTime - startTime;
+
+            postMessage({
+                type: 'progress',
+                iteration: gen + 1,
+                compliance: bestCompliance,
+                meshData: meshData,
+                maxStress: meshData ? meshData.maxStress : 0,
+                penal: this.penal,
+                beta: 1,
+                timing: {
+                    iterationTime: iterTime,
+                    avgIterationTime: avgIterTime,
+                    elapsedTime: elapsedTime,
+                    usingWasm: this.useWasm
+                }
+            });
+        }
+
+        if (this.cancelled) {
+            postMessage({ type: 'cancelled', iteration: maxGenerations });
+            return;
+        }
+
+        // Final evaluation
+        const finalEval = evaluate(bestIndividual);
+        const finalEnergies = new Float32Array(nel);
+        const Ue = new Float64Array(24);
+        for (let e = 0; e < nel; e++) {
+            const eOff = e * 24;
+            for (let i = 0; i < 24; i++) {
+                Ue[i] = finalEval.U[edofArray[eOff + i]];
+            }
+            finalEnergies[e] = this._computeElementEnergyFlat(KEflat, Ue, 24);
+        }
+
+        const finalMesh = this.buildAdaptiveMesh(nelx, nely, nelz, bestIndividual, finalEnergies, elementForces, null);
+
+        const totalTime = performance.now() - startTime;
+        const avgIterTime = iterationTimes.length > 0
+            ? iterationTimes.reduce((a, b) => a + b, 0) / iterationTimes.length
+            : 0;
+
+        postMessage({
+            type: 'complete',
+            result: {
+                densities: bestIndividual,
+                finalCompliance: bestCompliance,
+                iterations: maxGenerations,
+                volumeFraction: volfrac,
+                nx: nelx,
+                ny: nely,
+                nz: nelz,
+                meshData: finalMesh,
+                maxStress: finalMesh ? finalMesh.maxStress : 0,
+                geneticOptimization: true,
+                timing: {
+                    totalTime: totalTime,
+                    avgIterationTime: avgIterTime,
+                    iterationTimes: iterationTimes,
+                    usingWasm: this.useWasm
+                }
+            }
+        });
     }
 
     // Compute per-element force magnitude based on the global load vector
