@@ -1101,17 +1101,17 @@ class TopologyOptimizerWorker3D {
         let xold = new Float32Array(nel);
 
         const { H, Hs } = this.prepareFilter(nelx, nely, nelz, this.rmin);
-        let fixeddofs = this.getFixedDOFs(nelx, nely, nelz, config.constraintPosition);
-        let F = this.getLoadVector(nelx, nely, nelz, config.forceDirection, config.forceMagnitude);
+        let fixeddofs = this.getFixedDOFs(nelx, nely, nelz, config.constraintPosition, config.constraintDOFs);
+        let F = this.getLoadVector(nelx, nely, nelz, config.forceDirection, config.forceMagnitude, config.forceVector);
 
         // Apply painted constraints (override dropdown if painted faces exist)
         if (config.paintedConstraints && config.paintedConstraints.length > 0) {
-            fixeddofs = this.getFixedDOFsFromPaint(nelx, nely, nelz, config.paintedConstraints);
+            fixeddofs = this.getFixedDOFsFromPaint(nelx, nely, nelz, config.paintedConstraints, config.constraintDOFs);
         }
 
         // Apply painted forces (override dropdown if painted faces exist)
         if (config.paintedForces && config.paintedForces.length > 0) {
-            F = this.getLoadVectorFromPaint(nelx, nely, nelz, config.paintedForces, config.forceDirection, config.forceMagnitude);
+            F = this.getLoadVectorFromPaint(nelx, nely, nelz, config.paintedForces, config.forceDirection, config.forceMagnitude, config.forceVector);
         }
 
         // Build set of element indices that must stay solid (constraint/force surfaces)
@@ -2229,7 +2229,14 @@ class TopologyOptimizerWorker3D {
         return energy;
     }
 
-    getFixedDOFs(nelx, nely, nelz, position) {
+    _addNodeDOFs(fixeddofs, n, constraintDOFs) {
+        const mode = constraintDOFs || 'all';
+        if (mode === 'all' || mode.includes('x')) fixeddofs.push(3 * n);
+        if (mode === 'all' || mode.includes('y')) fixeddofs.push(3 * n + 1);
+        if (mode === 'all' || mode.includes('z')) fixeddofs.push(3 * n + 2);
+    }
+
+    getFixedDOFs(nelx, nely, nelz, position, constraintDOFs) {
         const fixeddofs = [];
         const nny = nely + 1;
         const nnz = nelz + 1;
@@ -2240,7 +2247,7 @@ class TopologyOptimizerWorker3D {
                 for (let j = 0; j <= nely; j++) {
                     for (let k = 0; k <= nelz; k++) {
                         const n = 0 * nny * nnz + j * nnz + k;
-                        fixeddofs.push(3 * n, 3 * n + 1, 3 * n + 2);
+                        this._addNodeDOFs(fixeddofs, n, constraintDOFs);
                     }
                 }
                 break;
@@ -2249,7 +2256,7 @@ class TopologyOptimizerWorker3D {
                 for (let j = 0; j <= nely; j++) {
                     for (let k = 0; k <= nelz; k++) {
                         const n = nelx * nny * nnz + j * nnz + k;
-                        fixeddofs.push(3 * n, 3 * n + 1, 3 * n + 2);
+                        this._addNodeDOFs(fixeddofs, n, constraintDOFs);
                     }
                 }
                 break;
@@ -2258,7 +2265,7 @@ class TopologyOptimizerWorker3D {
                 for (let i = 0; i <= nelx; i++) {
                     for (let k = 0; k <= nelz; k++) {
                         const n = i * nny * nnz + 0 * nnz + k;
-                        fixeddofs.push(3 * n, 3 * n + 1, 3 * n + 2);
+                        this._addNodeDOFs(fixeddofs, n, constraintDOFs);
                     }
                 }
                 break;
@@ -2267,7 +2274,7 @@ class TopologyOptimizerWorker3D {
                 for (let i = 0; i <= nelx; i++) {
                     for (let k = 0; k <= nelz; k++) {
                         const n = i * nny * nnz + nely * nnz + k;
-                        fixeddofs.push(3 * n, 3 * n + 1, 3 * n + 2);
+                        this._addNodeDOFs(fixeddofs, n, constraintDOFs);
                     }
                 }
                 break;
@@ -2280,7 +2287,7 @@ class TopologyOptimizerWorker3D {
                     nelx * nny * nnz + nely * nnz + 0         // (nelx,nely,0)
                 ];
                 for (const n of corners) {
-                    fixeddofs.push(3 * n, 3 * n + 1, 3 * n + 2);
+                    this._addNodeDOFs(fixeddofs, n, constraintDOFs);
                 }
                 break;
         }
@@ -2288,11 +2295,23 @@ class TopologyOptimizerWorker3D {
         return fixeddofs;
     }
 
-    getLoadVector(nelx, nely, nelz, direction, magnitude) {
+    getLoadVector(nelx, nely, nelz, direction, magnitude, forceVector) {
         const ndof = 3 * (nelx + 1) * (nely + 1) * (nelz + 1);
         const F = new Float32Array(ndof);
         const nny = nely + 1;
         const nnz = nelz + 1;
+
+        if (forceVector && Array.isArray(forceVector) && forceVector.length >= 3) {
+            // Custom force vector: apply at top-right corner
+            const len = Math.sqrt(forceVector[0] ** 2 + forceVector[1] ** 2 + forceVector[2] ** 2);
+            if (len > 0) {
+                const n = nelx * nny * nnz + nely * nnz + nelz;
+                F[3 * n]     = (forceVector[0] / len) * magnitude;
+                F[3 * n + 1] = (forceVector[1] / len) * magnitude;
+                F[3 * n + 2] = (forceVector[2] / len) * magnitude;
+            }
+            return F;
+        }
 
         switch (direction) {
             case 'down': {
@@ -2407,10 +2426,11 @@ class TopologyOptimizerWorker3D {
      * Face keys are "x,y,z,faceIndex" where x,y,z are voxel coordinates.
      * Maps to 3D nodes at the voxel corners.
      */
-    getFixedDOFsFromPaint(nelx, nely, nelz, paintedKeys) {
+    getFixedDOFsFromPaint(nelx, nely, nelz, paintedKeys, constraintDOFs) {
         const dofSet = new Set();
         const nny = nely + 1;
         const nnz = nelz + 1;
+        const mode = constraintDOFs || 'all';
 
         for (const key of paintedKeys) {
             const parts = key.split(',');
@@ -2434,9 +2454,9 @@ class TopologyOptimizerWorker3D {
             const maxNode = (nelx + 1) * (nely + 1) * (nelz + 1);
             for (const n of nodes) {
                 if (n >= 0 && n < maxNode) {
-                    dofSet.add(3 * n);
-                    dofSet.add(3 * n + 1);
-                    dofSet.add(3 * n + 2);
+                    if (mode === 'all' || mode.includes('x')) dofSet.add(3 * n);
+                    if (mode === 'all' || mode.includes('y')) dofSet.add(3 * n + 1);
+                    if (mode === 'all' || mode.includes('z')) dofSet.add(3 * n + 2);
                 }
             }
         }
@@ -2447,7 +2467,7 @@ class TopologyOptimizerWorker3D {
      * Convert painted force face keys to a load vector.
      * Distributes force evenly across all painted face nodes.
      */
-    getLoadVectorFromPaint(nelx, nely, nelz, paintedKeys, direction, magnitude) {
+    getLoadVectorFromPaint(nelx, nely, nelz, paintedKeys, direction, magnitude, forceVector) {
         const ndof = 3 * (nelx + 1) * (nely + 1) * (nelz + 1);
         const F = new Float32Array(ndof);
         const nny = nely + 1;
@@ -2455,13 +2475,22 @@ class TopologyOptimizerWorker3D {
 
         // Determine force direction components
         let fx = 0, fy = 0, fz = 0;
-        switch (direction) {
-            case 'down':       fy = -1; break;
-            case 'up':         fy = 1; break;
-            case 'left':       fx = -1; break;
-            case 'right':      fx = 1; break;
-            case 'top-center': fz = 1; break;
-            default:           fy = -1;
+        if (forceVector && Array.isArray(forceVector) && forceVector.length >= 3) {
+            const len = Math.sqrt(forceVector[0] ** 2 + forceVector[1] ** 2 + forceVector[2] ** 2);
+            if (len > 0) {
+                fx = forceVector[0] / len;
+                fy = forceVector[1] / len;
+                fz = forceVector[2] / len;
+            }
+        } else {
+            switch (direction) {
+                case 'down':       fy = -1; break;
+                case 'up':         fy = 1; break;
+                case 'left':       fx = -1; break;
+                case 'right':      fx = 1; break;
+                case 'top-center': fz = 1; break;
+                default:           fy = -1;
+            }
         }
 
         // Collect unique nodes from painted faces

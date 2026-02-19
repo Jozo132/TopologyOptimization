@@ -9,6 +9,7 @@ const GRID_COLOR = [0.25, 0.25, 0.35];      // Ground grid line color
 const DEFAULT_TRIANGLE_DENSITY = 0.5;
 const WIREFRAME_EDGE_COLOR = 0.2;
 const EDGE_COLOR_COMPONENT_COUNT = 18;
+const BRUSH_DEPTH_TOLERANCE = 0.1;           // Depth tolerance for 3D brush face selection
 
 // ─── WebGL Shader Sources ───────────────────────────────────────────────────
 
@@ -205,8 +206,15 @@ export class Viewer3D {
         this.paintedConstraintFaces = new Set();
         this.paintedForceFaces = new Set();
         this.forceDirection = 'down';
+        this.forceVector = null; // Custom force vector [fx, fy, fz], overrides forceDirection
         this.forceMagnitude = 1000;
         this.isPainting = false;
+        this._paintErasing = false;
+
+        // 3D brush
+        this.brushSize = 1;
+        this._hoverFaces = [];
+        this._hoverMousePos = null;
 
         // Cached boundary faces for picking
         this._boundaryFaces = [];
@@ -320,14 +328,28 @@ export class Viewer3D {
 
         canvas.addEventListener('mousedown', (e) => {
             if (this.paintMode && this.model) {
-                this.isPainting = true;
-                this.handlePaintClick(e);
-                return;
-            }
-            if (e.button === 1 || (e.button === 0 && e.shiftKey)) {
-                this.isPanning = true;
-            } else if (e.button === 0) {
-                this.isDragging = true;
+                // Paint mode controls: MMB rotates, SHIFT+MMB pans
+                if (e.button === 1 && e.shiftKey) {
+                    this.isPanning = true;
+                } else if (e.button === 1) {
+                    this.isDragging = true;
+                } else if (e.button === 0) {
+                    // Left click: paint
+                    this.isPainting = true;
+                    this._paintErasing = false;
+                    this.handlePaintClick(e);
+                } else if (e.button === 2) {
+                    // Right click: erase
+                    this.isPainting = true;
+                    this._paintErasing = true;
+                    this.handlePaintClick(e);
+                }
+            } else {
+                if (e.button === 1 || (e.button === 0 && e.shiftKey)) {
+                    this.isPanning = true;
+                } else if (e.button === 0) {
+                    this.isDragging = true;
+                }
             }
             this.lastMousePos = { x: e.clientX, y: e.clientY };
         });
@@ -337,6 +359,12 @@ export class Viewer3D {
                 this.handlePaintClick(e);
                 return;
             }
+
+            // Hover highlight in paint mode
+            if (this.paintMode && this.model && !this.isDragging && !this.isPanning) {
+                this._updateHover(e);
+            }
+
             const dx = e.clientX - this.lastMousePos.x;
             const dy = e.clientY - this.lastMousePos.y;
 
@@ -365,6 +393,10 @@ export class Viewer3D {
             this.isDragging = false;
             this.isPanning = false;
             this.isPainting = false;
+            if (this._hoverFaces.length > 0) {
+                this._hoverFaces = [];
+                this.draw();
+            }
         });
 
         canvas.addEventListener('wheel', (e) => {
@@ -380,6 +412,10 @@ export class Viewer3D {
     setPaintMode(mode) {
         this.paintMode = mode;
         this.canvas.style.cursor = mode ? 'crosshair' : 'grab';
+        if (!mode) {
+            this._hoverFaces = [];
+            this.draw();
+        }
     }
 
     handlePaintClick(e) {
@@ -388,15 +424,53 @@ export class Viewer3D {
         const my = (e.clientY - rect.top) * (this.canvas.height / rect.height);
 
         if (!this.model || this._boundaryFaces.length === 0) return;
+
+        const facesInBrush = this._findFacesInBrush(mx, my);
+        const targetSet = this.paintMode === 'constraint' ? this.paintedConstraintFaces : this.paintedForceFaces;
+
+        for (const face of facesInBrush) {
+            if (this._paintErasing) {
+                targetSet.delete(face.key);
+            } else {
+                targetSet.add(face.key);
+            }
+        }
+
+        if (facesInBrush.length > 0) {
+            this._needsRebuild = true;
+            this.draw();
+        }
+    }
+
+    _updateHover(e) {
+        const rect = this.canvas.getBoundingClientRect();
+        const mx = (e.clientX - rect.left) * (this.canvas.width / rect.width);
+        const my = (e.clientY - rect.top) * (this.canvas.height / rect.height);
+
+        if (!this.model || this._boundaryFaces.length === 0) {
+            if (this._hoverFaces.length > 0) {
+                this._hoverFaces = [];
+                this.draw();
+            }
+            return;
+        }
+
+        this._hoverFaces = this._findFacesInBrush(mx, my);
+        this.draw();
+    }
+
+    _findFacesInBrush(mx, my) {
+        if (!this.model || this._boundaryFaces.length === 0) return [];
+
         const { nx, ny, nz } = this.model;
         const { width, height } = this.canvas;
-
         const aspect = width / height;
         const proj = mat4Perspective(Math.PI / 4, aspect, 0.1, 1000);
         const mv = this._buildModelView(nx, ny, nz);
 
+        // Step 1: Find the closest face to cursor (depth-prioritized)
         let bestDist = Infinity;
-        let bestFace = null;
+        let centerFace = null;
         let bestZ = Infinity;
 
         for (const bf of this._boundaryFaces) {
@@ -415,23 +489,48 @@ export class Viewer3D {
                 const avgZ = (screenVerts[0].z + screenVerts[1].z + screenVerts[2].z + screenVerts[3].z) / 4;
                 if (avgZ < bestZ || (Math.abs(avgZ - bestZ) < 0.001 && dist < bestDist)) {
                     bestDist = dist;
-                    bestFace = bf;
+                    centerFace = bf;
                     bestZ = avgZ;
                 }
             }
         }
 
-        if (bestFace) {
-            const key = bestFace.key;
-            const targetSet = this.paintMode === 'constraint' ? this.paintedConstraintFaces : this.paintedForceFaces;
-            if (e.shiftKey) {
-                targetSet.delete(key);
-            } else {
-                targetSet.add(key);
+        if (!centerFace) return [];
+        if (this.brushSize <= 1) return [centerFace];
+
+        // Step 2: Find all faces within brushSize voxel units in 3D from center face
+        const cv = centerFace.projVerts;
+        const centerX = (cv[0].x + cv[1].x + cv[2].x + cv[3].x) / 4;
+        const centerY = (cv[0].y + cv[1].y + cv[2].y + cv[3].y) / 4;
+        const centerZ = (cv[0].z + cv[1].z + cv[2].z + cv[3].z) / 4;
+
+        const brushRadiusSq = this.brushSize * this.brushSize;
+        const result = [];
+
+        for (const bf of this._boundaryFaces) {
+            const v = bf.projVerts;
+            const fx = (v[0].x + v[1].x + v[2].x + v[3].x) / 4;
+            const fy = (v[0].y + v[1].y + v[2].y + v[3].y) / 4;
+            const fz = (v[0].z + v[1].z + v[2].z + v[3].z) / 4;
+
+            const dx = fx - centerX;
+            const dy = fy - centerY;
+            const dz = fz - centerZ;
+            const distSq = dx * dx + dy * dy + dz * dz;
+
+            if (distSq <= brushRadiusSq) {
+                // Depth check: only include faces on the same side (not through the model)
+                const sv = bf.projVerts.map(pv =>
+                    this._projectToScreen(pv, mv, proj, width, height)
+                );
+                const faceZ = (sv[0].z + sv[1].z + sv[2].z + sv[3].z) / 4;
+                if (Math.abs(faceZ - bestZ) < BRUSH_DEPTH_TOLERANCE) {
+                    result.push(bf);
+                }
             }
-            this._needsRebuild = true;
-            this.draw();
         }
+
+        return result;
     }
 
     _projectToScreen(worldPos, mv, proj, w, h) {
@@ -533,6 +632,11 @@ export class Viewer3D {
         // Draw overlays
         this._drawOverlays(gl, projection, modelView, nx, ny, nz);
 
+        // Draw hover highlight for brush preview
+        if (this.paintMode && this._hoverFaces.length > 0) {
+            this._drawHoverHighlight(gl, projection, modelView);
+        }
+
         // Draw 2D overlay
         this._drawAxesOverlay();
 
@@ -541,8 +645,8 @@ export class Viewer3D {
             this.ctx.font = '14px Arial';
             this.ctx.textAlign = 'left';
             const label = this.paintMode === 'constraint'
-                ? '🖌 Painting Constraints (Shift+click to remove)'
-                : '🖌 Painting Forces (Shift+click to remove)';
+                ? '🖌 Painting Constraints (Right-click to remove)'
+                : '🖌 Painting Forces (Right-click to remove)';
             this.ctx.fillText(label, 10, height - 10);
         }
     }
@@ -999,16 +1103,63 @@ export class Viewer3D {
         gl.enable(gl.CULL_FACE);
     }
 
+    _drawHoverHighlight(gl, projection, modelView) {
+        if (this._hoverFaces.length === 0) return;
+
+        const prog = this._overlayProgram;
+        gl.useProgram(prog);
+
+        gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uProjection'), false, projection);
+        gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uModelView'), false, modelView);
+
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        gl.depthMask(false);
+        gl.disable(gl.CULL_FACE);
+
+        const posLoc = gl.getAttribLocation(prog, 'aPosition');
+        const positions = [];
+
+        for (const bf of this._hoverFaces) {
+            const v = bf.projVerts;
+            positions.push(v[0].x, v[0].y, v[0].z, v[1].x, v[1].y, v[1].z, v[2].x, v[2].y, v[2].z);
+            positions.push(v[0].x, v[0].y, v[0].z, v[2].x, v[2].y, v[2].z, v[3].x, v[3].y, v[3].z);
+        }
+
+        if (positions.length > 0) {
+            const buf = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.DYNAMIC_DRAW);
+            gl.enableVertexAttribArray(posLoc);
+            gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+
+            // White semi-transparent highlight
+            gl.uniform4fv(gl.getUniformLocation(prog, 'uColor'), [1.0, 1.0, 1.0, 0.3]);
+            gl.drawArrays(gl.TRIANGLES, 0, positions.length / 3);
+
+            gl.disableVertexAttribArray(posLoc);
+            gl.deleteBuffer(buf);
+        }
+
+        gl.depthMask(true);
+        gl.disable(gl.BLEND);
+        gl.enable(gl.CULL_FACE);
+    }
+
     _drawForceArrows2D(nx, ny, nz, projection, modelView) {
         const { width, height } = this.overlayCanvas;
 
         let arrowDir;
-        switch (this.forceDirection) {
-            case 'down':  arrowDir = [0, -1, 0]; break;
-            case 'up':    arrowDir = [0, 1, 0]; break;
-            case 'left':  arrowDir = [-1, 0, 0]; break;
-            case 'right': arrowDir = [1, 0, 0]; break;
-            default:      arrowDir = [0, -1, 0];
+        if (this.forceVector) {
+            arrowDir = vec3Normalize(this.forceVector);
+        } else {
+            switch (this.forceDirection) {
+                case 'down':  arrowDir = [0, -1, 0]; break;
+                case 'up':    arrowDir = [0, 1, 0]; break;
+                case 'left':  arrowDir = [-1, 0, 0]; break;
+                case 'right': arrowDir = [1, 0, 0]; break;
+                default:      arrowDir = [0, -1, 0];
+            }
         }
         const arrowLen = 1.5;
 
@@ -1152,6 +1303,7 @@ export class Viewer3D {
         this.paintedForceFaces = new Set();
         this.paintMode = null;
         this._boundaryFaces = [];
+        this._hoverFaces = [];
         this._needsRebuild = true;
         this.draw();
     }
