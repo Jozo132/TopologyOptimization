@@ -774,8 +774,8 @@ class TopologyApp {
     async handleFileImport(file) {
         try {
             console.log('Importing file:', file.name);
-            // Parse STL first, then voxelize with mm-based voxel size
-            const model = await this.importer.importSTL(file, null);
+            // Parse file (STL or STEP), then voxelize with mm-based voxel size
+            const model = await this.importer.importFile(file, null);
             // Re-voxelize with the configured voxel size in mm
             const voxelSizeMM = this.config.voxelSizeMM;
             const revoxelized = this.importer.voxelizeVertices(model.originalVertices, null, voxelSizeMM);

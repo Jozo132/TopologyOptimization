@@ -11,6 +11,7 @@ A minimalistic but fully functional web-based topology optimization application 
 - 🔧 **SIMP Algorithm**: Solid Isotropic Material with Penalization
 - 🎯 **Full 3D Optimization**: True 3D FEA with 8-node hexahedral elements
 - 📦 **STL Support**: Import and export STL files
+- 📐 **STEP Support**: Import STEP files (AP203 and AP214 protocols)
 - 🎯 **Template Models**: Quick start with cantilever beam, bridge, or cube test templates
 - 💾 **Export Options**: Download optimized STL or JSON data
 - ⚡ **Web Worker Optimization**: Runs optimization in a background thread, keeping the UI responsive
@@ -76,7 +77,7 @@ A minimalistic but fully functional web-based topology optimization application 
 ## Usage
 
 1. **Import Model**
-   - Upload an STL file, or
+   - Upload an STL or STEP file (AP203/AP214), or
    - Use a pre-defined template:
      - **Cantilever Beam**: Classic 2D beam optimization
      - **Bridge**: 2D bridge span optimization
