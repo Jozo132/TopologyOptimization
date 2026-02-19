@@ -3435,6 +3435,198 @@ class TopologyOptimizerWorker3D {
         return { U, c: c2, solverStats: { cgIterations: cgIters, tolerance } };
     }
 
+    /**
+     * Full FEA solve using the WASM ebeKSP_BDDC kernel.
+     * The entire PCG loop with BDDC domain decomposition preconditioner
+     * runs in WASM with zero per-iteration JS↔WASM boundary crossings.
+     */
+    _solveWithWasmKSP_BDDC(nelx, nely, nelz, x, penal, KEflat, edofArray, F, freedofs, fixedMask, iteration, maxIterations) {
+        if (!wasmLoaded || !wasmModule?.exports?.ebeKSP_BDDC) return null;
+
+        const ndof = 3 * (nelx + 1) * (nely + 1) * (nelz + 1);
+        const nel = nelx * nely * nelz;
+        const nfree = freedofs.length;
+        const dE = this.E0 - this.Emin;
+        const skipThreshold = this.Emin * 1000;
+
+        // Build E_vals and active elements
+        const E_vals = new Float64Array(nel);
+        const active = [];
+        for (let e = 0; e < nel; e++) {
+            const E = this.Emin + Math.pow(x[e], penal) * dE;
+            E_vals[e] = E;
+            if (E > skipThreshold) active.push(e);
+        }
+        const activeCount = active.length;
+
+        // Build global diagonal and inverse diagonal
+        const diag = new Float64Array(ndof);
+        for (let ai = 0; ai < activeCount; ai++) {
+            const e = active[ai];
+            const E = E_vals[e];
+            const eOff = e * 24;
+            for (let i = 0; i < 24; i++) {
+                diag[edofArray[eOff + i]] += E * KEflat[i * 24 + i];
+            }
+        }
+        const invDiag = new Float64Array(ndof);
+        for (let i = 0; i < ndof; i++) {
+            if (!fixedMask[i] && diag[i] > 1e-30) invDiag[i] = 1.0 / diag[i];
+        }
+
+        // Build KSP solver (for its subdomain partitioning)
+        if (!this._ksp) {
+            this._ksp = new KSPSolver(KEflat, { pc: 'bddc' });
+        }
+        this._ksp.ensure(nelx, nely, nelz, edofArray, fixedMask, freedofs);
+        this._ksp.updateOperators(x, penal, this.E0, this.Emin);
+
+        const subdomains = this._ksp._subdomains;
+        const coarseMap = this._ksp._coarseMap;
+        if (!subdomains || !coarseMap) return null;
+
+        const numSubs = subdomains.length;
+        const numCoarse = coarseMap.length;
+        const BDDC_SUB_STRIDE = 32;
+        const align8 = (v) => (v + 7) & ~7;
+
+        // Calculate total WASM memory needed
+        let totalBytes = 0;
+        totalBytes += 576 * 8;               // KEflat
+        totalBytes += nel * 24 * 4 + 8;      // edofs + align
+        totalBytes += nel * 8;               // evals
+        totalBytes += activeCount * 4 + 8;   // active + align
+        totalBytes += ndof + 8;              // fixedMask + align
+        totalBytes += ndof * 8;              // invDiag
+        totalBytes += ndof * 8;              // F
+        totalBytes += ndof * 8;              // U
+        totalBytes += numCoarse * 4 + 8;     // coarseMap + align
+        totalBytes += BDDC_SUB_STRIDE * numSubs; // subdomain descriptors
+        // Per-subdomain data
+        for (const sub of subdomains) {
+            totalBytes += sub.elements.length * 4 + 8;  // elements + align
+            totalBytes += sub.dofs.length * 4 + 8;      // dofs + align
+            totalBytes += ndof * 8;                     // localInvDiag
+        }
+        // Workspace: 7 * ndof * 8 + 192 (scratch24)
+        totalBytes += 7 * ndof * 8 + 192 + 1024;
+
+        const mem = wasmModule.exports.memory;
+        const neededPages = Math.ceil(totalBytes / 65536) + 2;
+        const dataStart = mem.buffer.byteLength;
+        const growResult = mem.grow(neededPages);
+        if (growResult === -1) return null;
+
+        let off = dataStart;
+
+        // Write KEflat
+        const keOff = off; off += 576 * 8;
+        new Float64Array(mem.buffer, keOff, 576).set(KEflat);
+
+        // Write edofs
+        const edofsOff = off; off += nel * 24 * 4; off = align8(off);
+        new Int32Array(mem.buffer, edofsOff, nel * 24).set(edofArray);
+
+        // Write evals
+        const evalsOff = off; off += nel * 8;
+        new Float64Array(mem.buffer, evalsOff, nel).set(E_vals);
+
+        // Write active elements
+        const activeOff = off; off += activeCount * 4; off = align8(off);
+        new Int32Array(mem.buffer, activeOff, activeCount).set(new Int32Array(active));
+
+        // Write fixedMask
+        const fixedOff = off; off += ndof; off = align8(off);
+        new Uint8Array(mem.buffer, fixedOff, ndof).set(fixedMask);
+
+        // Write invDiag
+        const invDiagOff = off; off += ndof * 8;
+        new Float64Array(mem.buffer, invDiagOff, ndof).set(invDiag);
+
+        // Write F
+        const fOff = off; off += ndof * 8;
+        new Float64Array(mem.buffer, fOff, ndof).set(F);
+
+        // Write U
+        const uOff = off; off += ndof * 8;
+        new Float64Array(mem.buffer, uOff, ndof).fill(0);
+
+        // Write coarse map
+        const coarseOff = off; off += numCoarse * 4; off = align8(off);
+        new Int32Array(mem.buffer, coarseOff, numCoarse).set(new Int32Array(coarseMap));
+
+        // Write subdomain descriptors and data
+        const subsOff = off; off += BDDC_SUB_STRIDE * numSubs;
+
+        for (let si = 0; si < numSubs; si++) {
+            const sub = subdomains[si];
+            const descOff = subsOff + si * BDDC_SUB_STRIDE;
+
+            // Write subdomain elements
+            const elemOff = off; off += sub.elements.length * 4; off = align8(off);
+            new Int32Array(mem.buffer, elemOff, sub.elements.length).set(new Int32Array(sub.elements));
+
+            // Write subdomain DOFs
+            const dofsOff = off; off += sub.dofs.length * 4; off = align8(off);
+            new Int32Array(mem.buffer, dofsOff, sub.dofs.length).set(new Int32Array(sub.dofs));
+
+            // Write local inverse diagonal
+            const localInvDiagOff = off; off += ndof * 8;
+            new Float64Array(mem.buffer, localInvDiagOff, ndof).set(sub.localInvDiag);
+
+            // Write descriptor
+            const desc = new DataView(mem.buffer, descOff, BDDC_SUB_STRIDE);
+            desc.setInt32(0, sub.elements.length, true);
+            desc.setInt32(4, sub.dofs.length, true);
+            desc.setUint32(8, elemOff, true);
+            desc.setUint32(12, dofsOff, true);
+            desc.setUint32(16, localInvDiagOff, true);
+            desc.setInt32(20, 0, true);
+            desc.setInt32(24, 0, true);
+            desc.setInt32(28, 0, true);
+        }
+
+        // Workspace
+        const workOff = off;
+
+        // Schedule CG tolerance
+        const progress = maxIterations > 1 ? (iteration - 1) / (maxIterations - 1) : 1;
+        const tolerance = Math.exp(
+            Math.log(CG_TOL_START) + progress * (Math.log(CG_TOL_END) - Math.log(CG_TOL_START))
+        );
+        const maxIter = Math.min(nfree, MAX_CG_ITERATIONS);
+
+        // Call WASM KSP BDDC solver
+        const cgIters = wasmModule.exports.ebeKSP_BDDC(
+            subsOff, numSubs, coarseOff, numCoarse,
+            keOff, edofsOff, evalsOff,
+            activeOff, activeCount,
+            fixedOff, invDiagOff,
+            fOff, uOff,
+            ndof, maxIter, tolerance,
+            KSP_BDDC_SMOOTHER_ITERS, workOff
+        );
+
+        // Allocate / reuse output buffers
+        if (!this._U || this._U.length !== ndof) {
+            this._U = new Float64Array(ndof);
+            this._U_prev = new Float64Array(ndof);
+        }
+
+        // Read U back from WASM
+        const U = this._U;
+        U.set(new Float64Array(mem.buffer, uOff, ndof));
+
+        // Save for warm-start
+        this._U_prev.set(U);
+
+        // Compute compliance
+        let c = 0;
+        for (let i = 0; i < ndof; i++) c += F[i] * U[i];
+
+        return { U, c, solverStats: { cgIterations: cgIters, tolerance } };
+    }
+
     FE(nelx, nely, nelz, x, penal, KEflat, edofArray, F, freedofs, fixedMask, config, iteration, maxIterations, fixeddofs) {
         const ndof = 3 * (nelx + 1) * (nely + 1) * (nelz + 1);
         const nel = nelx * nely * nelz;
@@ -3444,6 +3636,13 @@ class TopologyOptimizerWorker3D {
             const result = this._solveWithWasmMGPCG(nelx, nely, nelz, x, penal, KEflat, edofArray, F, freedofs, fixedMask, iteration, maxIterations);
             if (result) return result;
             // Fall through to JS MGPCG if WASM allocation failed
+        }
+
+        // ── Full WASM KSP BDDC solve (BDDC domain decomposition in WASM, zero per-iteration crossings) ──
+        if (this.linearSolver === 'petsc' && (!config?.petscPC || config.petscPC === 'bddc') && wasmLoaded && wasmModule?.exports?.ebeKSP_BDDC) {
+            const result = this._solveWithWasmKSP_BDDC(nelx, nely, nelz, x, penal, KEflat, edofArray, F, freedofs, fixedMask, iteration, maxIterations);
+            if (result) return result;
+            // Fall through to JS KSP solver if WASM allocation failed
         }
 
         // ── Full WASM FEA solve (Jacobi-PCG, zero per-iteration JS↔WASM crossings) ──
