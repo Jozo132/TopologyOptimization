@@ -475,6 +475,39 @@ console.log('Test 16: TopologySolver library – cancel');
 }
 
 // ──────────────────────────────────────────────────
+// Test 17: TopologySolver library – preventVoids parameter
+// ──────────────────────────────────────────────────
+console.log('Test 17: TopologySolver library – preventVoids parameter');
+{
+    const solver = new TopologySolver();
+    const nx = 8, ny = 4, nz = 1;
+    const model = { nx, ny, nz, type: 'beam', elements: new Float32Array(nx * ny).fill(1) };
+    const config = {
+        solver: '2d',
+        volumeFraction: 0.3,
+        maxIterations: 3,
+        penaltyFactor: 3,
+        filterRadius: 0.9,
+        forceDirection: 'down',
+        forceMagnitude: 100,
+        constraintPosition: 'left',
+        useAMR: false,
+        youngsModulus: 2.3,
+        poissonsRatio: 0.35,
+        penalStart: 1.5,
+        continuationIters: 3,
+        useProjection: false,
+        preventVoids: true,
+    };
+
+    const result = await solver.optimize(model, config, () => {});
+
+    assert(result.iterations >= 1, `preventVoids: should complete at least 1 iteration, got ${result.iterations}`);
+    assert(typeof result.finalCompliance === 'number' && result.finalCompliance > 0, 'preventVoids: finalCompliance should be a positive number');
+    assert(result.densities instanceof Float32Array, 'preventVoids: result.densities should be a Float32Array');
+}
+
+// ──────────────────────────────────────────────────
 // Summary
 // ──────────────────────────────────────────────────
 console.log(`\nResults: ${passed} passed, ${failed} failed`);
