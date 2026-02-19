@@ -25,8 +25,10 @@ class TopologyApp {
         this.config = {
             volumeFraction: 0.1,
             forceDirection: 'down',
+            forceVector: null, // Custom force vector [fx, fy, fz]
             forceMagnitude: 1000,
             constraintPosition: 'left',
+            constraintDOFs: 'all',
             maxIterations: 30,
             penaltyFactor: 3,
             filterRadius: 0.9,
@@ -285,12 +287,35 @@ class TopologyApp {
         document.getElementById('forceDirection').addEventListener('change', (e) => {
             this.config.forceDirection = e.target.value;
             this.viewer.forceDirection = e.target.value;
+            const vectorControls = document.getElementById('forceVectorControls');
+            if (e.target.value === 'custom') {
+                vectorControls.classList.remove('hidden');
+                this._updateForceVector();
+            } else {
+                vectorControls.classList.add('hidden');
+                this.config.forceVector = null;
+                this.viewer.forceVector = null;
+            }
             this.viewer.draw();
         });
+
+        const updateForceVectorFromInputs = () => {
+            if (this.config.forceDirection === 'custom') {
+                this._updateForceVector();
+                this.viewer.draw();
+            }
+        };
+        document.getElementById('forceVectorX').addEventListener('input', updateForceVectorFromInputs);
+        document.getElementById('forceVectorY').addEventListener('input', updateForceVectorFromInputs);
+        document.getElementById('forceVectorZ').addEventListener('input', updateForceVectorFromInputs);
         
         document.getElementById('forceMagnitude').addEventListener('input', (e) => {
             this.config.forceMagnitude = parseFloat(e.target.value);
             this.viewer.forceMagnitude = parseFloat(e.target.value);
+        });
+
+        document.getElementById('constraintDOFs').addEventListener('change', (e) => {
+            this.config.constraintDOFs = e.target.value;
         });
         
         document.getElementById('constraintPosition').addEventListener('change', (e) => {
@@ -312,6 +337,11 @@ class TopologyApp {
             this.viewer.setPaintMode(null);
             document.getElementById('paintConstraint').classList.remove('active-tool');
             document.getElementById('paintForce').classList.remove('active-tool');
+        });
+        document.getElementById('brushSize').addEventListener('input', (e) => {
+            const size = parseInt(e.target.value);
+            this.viewer.brushSize = size;
+            document.getElementById('brushSizeValue').textContent = size;
         });
         
         // Step 3: Solve
@@ -476,6 +506,14 @@ class TopologyApp {
             this._lastStrainInput = 'max';
             updateStrainSlider();
         });
+    }
+
+    _updateForceVector() {
+        const fx = parseFloat(document.getElementById('forceVectorX').value) || 0;
+        const fy = parseFloat(document.getElementById('forceVectorY').value) || 0;
+        const fz = parseFloat(document.getElementById('forceVectorZ').value) || 0;
+        this.config.forceVector = [fx, fy, fz];
+        this.viewer.forceVector = [fx, fy, fz];
     }
 
     async handleFileImport(file) {
