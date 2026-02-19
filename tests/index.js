@@ -1547,6 +1547,234 @@ console.log('Test 41: Blended curvature mesh – no triangles fills all');
 }
 
 // ──────────────────────────────────────────────────
+// AMR Surface Mesh Tests
+// ──────────────────────────────────────────────────
+
+const { generateUniformSurfaceMesh, generateAMRSurfaceMesh, checkWatertight, indexedMeshToTriangles } = await import(join(__dirname, '..', 'js', 'amr-surface-mesh.js'));
+
+// ──────────────────────────────────────────────────
+// Test 42: Uniform surface mesh – single voxel
+// ──────────────────────────────────────────────────
+console.log('Test 42: Uniform surface mesh – single voxel');
+{
+    const densities = new Float32Array([1.0]);
+    const mesh = generateUniformSurfaceMesh({ densities, nx: 1, ny: 1, nz: 1 });
+
+    // A single cube has 6 faces × 2 triangles = 12 triangles
+    const numTriangles = mesh.indices.length / 3;
+    assert(numTriangles === 12, `Single voxel should have 12 triangles, got ${numTriangles}`);
+    assert(mesh.positions.length > 0, 'Should have positions');
+    assert(mesh.normals.length === mesh.positions.length, 'Normals should match positions count');
+    assert(mesh.watertight, 'Single voxel mesh should be watertight');
+}
+
+// ──────────────────────────────────────────────────
+// Test 43: Uniform surface mesh – 2x2x2 solid cube
+// ──────────────────────────────────────────────────
+console.log('Test 43: Uniform surface mesh – 2x2x2 solid cube');
+{
+    const densities = new Float32Array(8).fill(1.0);
+    const mesh = generateUniformSurfaceMesh({ densities, nx: 2, ny: 2, nz: 2 });
+
+    // 2x2x2 cube has 24 outer faces × 2 triangles = 48 triangles
+    const numTriangles = mesh.indices.length / 3;
+    assert(numTriangles === 48, `2x2x2 cube should have 48 triangles, got ${numTriangles}`);
+    assert(mesh.watertight, '2x2x2 cube mesh should be watertight');
+}
+
+// ──────────────────────────────────────────────────
+// Test 44: Uniform surface mesh – vertex deduplication
+// ──────────────────────────────────────────────────
+console.log('Test 44: Uniform surface mesh – vertex deduplication');
+{
+    const densities = new Float32Array(8).fill(1.0);
+    const mesh = generateUniformSurfaceMesh({ densities, nx: 2, ny: 2, nz: 2 });
+
+    // Vertices should be fewer than non-deduped count (48 tris × 3 verts = 144)
+    const numVerts = mesh.positions.length / 3;
+    assert(numVerts < 144, `Deduplication should reduce vertex count from 144, got ${numVerts}`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 45: Uniform surface mesh – empty grid
+// ──────────────────────────────────────────────────
+console.log('Test 45: Uniform surface mesh – empty grid');
+{
+    const densities = new Float32Array(27).fill(0.0);
+    const mesh = generateUniformSurfaceMesh({ densities, nx: 3, ny: 3, nz: 3 });
+
+    assert(mesh.indices.length === 0, 'Empty grid should produce no triangles');
+    assert(mesh.watertight, 'Empty mesh should be trivially watertight');
+}
+
+// ──────────────────────────────────────────────────
+// Test 46: Uniform surface mesh – with stress field
+// ──────────────────────────────────────────────────
+console.log('Test 46: Uniform surface mesh – with stress field');
+{
+    const densities = new Float32Array([1.0]);
+    const stress = new Float32Array([42.0]);
+    const mesh = generateUniformSurfaceMesh({ densities, nx: 1, ny: 1, nz: 1, stress });
+
+    assert(mesh.stress !== null, 'Should have stress output');
+    assert(mesh.stress.length === mesh.positions.length / 3, 'Stress should be per-vertex');
+    // All vertices belong to the same voxel, so stress should be ~42.0
+    let allStress42 = true;
+    for (let i = 0; i < mesh.stress.length; i++) {
+        if (Math.abs(mesh.stress[i] - 42.0) > 0.01) { allStress42 = false; break; }
+    }
+    assert(allStress42, 'All vertex stress values should be ~42.0');
+}
+
+// ──────────────────────────────────────────────────
+// Test 47: Uniform surface mesh – L-shaped model (watertight)
+// ──────────────────────────────────────────────────
+console.log('Test 47: Uniform surface mesh – L-shaped model watertight');
+{
+    // L-shape: 3×3×1 grid with top-right corner removed
+    const densities = new Float32Array(9);
+    // Fill all except (2,2)
+    for (let y = 0; y < 3; y++) {
+        for (let x = 0; x < 3; x++) {
+            const idx = x + y * 3;
+            densities[idx] = (x === 2 && y === 2) ? 0.0 : 1.0;
+        }
+    }
+    const mesh = generateUniformSurfaceMesh({ densities, nx: 3, ny: 3, nz: 1 });
+    assert(mesh.watertight, 'L-shaped model should be watertight');
+    assert(mesh.indices.length > 0, 'L-shaped model should have triangles');
+}
+
+// ──────────────────────────────────────────────────
+// Test 48: checkWatertight – valid closed mesh
+// ──────────────────────────────────────────────────
+console.log('Test 48: checkWatertight – valid closed mesh');
+{
+    // A tetrahedron with 4 faces (each edge shared by exactly 2 faces)
+    const indices = new Uint32Array([
+        0, 1, 2,
+        0, 3, 1,
+        0, 2, 3,
+        1, 3, 2
+    ]);
+    assert(checkWatertight(indices), 'Tetrahedron should be watertight');
+}
+
+// ──────────────────────────────────────────────────
+// Test 49: checkWatertight – open mesh
+// ──────────────────────────────────────────────────
+console.log('Test 49: checkWatertight – open mesh');
+{
+    // Single triangle – not closed
+    const indices = new Uint32Array([0, 1, 2]);
+    assert(!checkWatertight(indices), 'Single triangle should not be watertight');
+}
+
+// ──────────────────────────────────────────────────
+// Test 50: indexedMeshToTriangles conversion
+// ──────────────────────────────────────────────────
+console.log('Test 50: indexedMeshToTriangles conversion');
+{
+    const densities = new Float32Array([1.0]);
+    const mesh = generateUniformSurfaceMesh({ densities, nx: 1, ny: 1, nz: 1 });
+    const triangles = indexedMeshToTriangles(mesh);
+
+    assert(triangles.length === 12, `Should have 12 triangles, got ${triangles.length}`);
+    for (const tri of triangles) {
+        assert(tri.normal.length === 3, 'Each triangle should have a 3-component normal');
+        assert(tri.vertices.length === 3, 'Each triangle should have 3 vertices');
+        assert(tri.vertices[0].length === 3, 'Each vertex should have 3 components');
+    }
+}
+
+// ──────────────────────────────────────────────────
+// Test 51: AMR surface mesh – single cell
+// ──────────────────────────────────────────────────
+console.log('Test 51: AMR surface mesh – single cell');
+{
+    const cells = [{ x: 0, y: 0, z: 0, size: 1, density: 1.0 }];
+    const mesh = generateAMRSurfaceMesh({ cells });
+
+    const numTriangles = mesh.indices.length / 3;
+    assert(numTriangles === 12, `Single AMR cell should have 12 triangles, got ${numTriangles}`);
+    assert(mesh.watertight, 'Single AMR cell should be watertight');
+}
+
+// ──────────────────────────────────────────────────
+// Test 52: AMR surface mesh – two adjacent cells
+// ──────────────────────────────────────────────────
+console.log('Test 52: AMR surface mesh – two adjacent cells');
+{
+    const cells = [
+        { x: 0, y: 0, z: 0, size: 1, density: 1.0 },
+        { x: 1, y: 0, z: 0, size: 1, density: 1.0 }
+    ];
+    const mesh = generateAMRSurfaceMesh({ cells });
+
+    // Two adjacent cubes share one face → 10 outer faces × 2 tris = 20
+    const numTriangles = mesh.indices.length / 3;
+    assert(numTriangles === 20, `Two adjacent cells should have 20 triangles, got ${numTriangles}`);
+    assert(mesh.watertight, 'Two adjacent cells should be watertight');
+}
+
+// ──────────────────────────────────────────────────
+// Test 53: AMR surface mesh – empty cells
+// ──────────────────────────────────────────────────
+console.log('Test 53: AMR surface mesh – empty cells');
+{
+    const mesh = generateAMRSurfaceMesh({ cells: [] });
+    assert(mesh.indices.length === 0, 'Empty cells should produce no triangles');
+    assert(mesh.watertight, 'Empty mesh should be trivially watertight');
+}
+
+// ──────────────────────────────────────────────────
+// Test 54: AMR surface mesh – inactive cells excluded
+// ──────────────────────────────────────────────────
+console.log('Test 54: AMR surface mesh – inactive cells excluded');
+{
+    const cells = [
+        { x: 0, y: 0, z: 0, size: 1, density: 1.0 },
+        { x: 1, y: 0, z: 0, size: 1, density: 0.01 } // below threshold
+    ];
+    const mesh = generateAMRSurfaceMesh({ cells });
+
+    // Only one active cell → 12 triangles
+    const numTriangles = mesh.indices.length / 3;
+    assert(numTriangles === 12, `Only active cells should generate triangles, got ${numTriangles}`);
+    assert(mesh.watertight, 'Mesh with inactive cells should still be watertight');
+}
+
+// ──────────────────────────────────────────────────
+// Test 55: Exporter generates watertight mesh via AMR surface mesh
+// ──────────────────────────────────────────────────
+console.log('Test 55: Exporter generates watertight mesh via AMR surface mesh');
+{
+    // Test the surface mesh that the exporter delegates to
+    const densities = new Float32Array(27);
+    // Create an L-shape in 3x3x3
+    for (let z = 0; z < 3; z++) {
+        for (let y = 0; y < 3; y++) {
+            for (let x = 0; x < 3; x++) {
+                const idx = x + y * 3 + z * 9;
+                densities[idx] = (x < 2 || y < 2) ? 1.0 : 0.0;
+            }
+        }
+    }
+    const mesh = generateUniformSurfaceMesh({ densities, nx: 3, ny: 3, nz: 3 });
+    assert(mesh.watertight, 'Exporter-style L-shape mesh should be watertight');
+    const triangles = indexedMeshToTriangles(mesh);
+    assert(triangles.length > 0, 'Should have triangles for STL export');
+
+    // Verify all normals are unit vectors
+    let allUnit = true;
+    for (const tri of triangles) {
+        const len = Math.sqrt(tri.normal[0] ** 2 + tri.normal[1] ** 2 + tri.normal[2] ** 2);
+        if (Math.abs(len - 1) > 0.01 && len > 0.001) { allUnit = false; break; }
+    }
+    assert(allUnit, 'All triangle normals should be unit vectors');
+}
+
+// ──────────────────────────────────────────────────
 // Summary
 // ──────────────────────────────────────────────────
 console.log(`\nResults: ${passed} passed, ${failed} failed`);
