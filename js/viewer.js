@@ -269,8 +269,11 @@ export class Viewer3D {
         this.sectionEnabled = false;
         this.sectionNormal = [1, 0, 0];
         this.sectionOffset = 0;
+        this._sectionInitialized = false;
         this._isSectionDragging = false;
         this._sectionPlaneBuffer = null;
+        this._sectionCapBuffer = null;
+        this.onSectionChange = null; // callback when section plane changes
 
         // Cached GPU buffers
         this._meshBuffers = null;
@@ -427,6 +430,7 @@ export class Viewer3D {
                 this._rotateSectionPlane(dx, dy);
                 this.lastMousePos = { x: e.clientX, y: e.clientY };
                 this.draw();
+                if (this.onSectionChange) this.onSectionChange();
             } else if (this.isPanning) {
                 const panScale = 0.003 / this.zoom;
                 this.pan.x += dx * panScale;
@@ -471,6 +475,7 @@ export class Viewer3D {
                 const maxDim = Math.max(this.model.nx, this.model.ny, this.model.nz);
                 this.sectionOffset -= e.deltaY * 0.005 * maxDim;
                 this.draw();
+                if (this.onSectionChange) this.onSectionChange();
             } else {
                 this.zoom *= (1 - e.deltaY * 0.001);
                 this.zoom = Math.max(0.1, Math.min(10, this.zoom));
@@ -983,8 +988,9 @@ export class Viewer3D {
             this._drawEdges(gl, projection, modelView);
         }
 
-        // Draw section plane visualization
+        // Draw section plane visualization and cross-section cap
         if (this.sectionEnabled) {
+            this._drawSectionCap(gl, projection, modelView, normalMatrix, nx, ny, nz);
             this._drawSectionPlane(gl, projection, modelView, nx, ny, nz);
         }
 
@@ -1578,6 +1584,191 @@ export class Viewer3D {
         gl.enable(gl.CULL_FACE);
     }
 
+    /**
+     * Build and draw cross-section cap: solid fill at the clipping plane intersection.
+     * For each solid voxel that the plane passes through, computes the plane–cube
+     * intersection polygon and renders it as filled triangles.
+     */
+    _drawSectionCap(gl, projection, modelView, normalMatrix, nx, ny, nz) {
+        const n = this.sectionNormal;
+        const d = this.sectionOffset;
+
+        // Build per-voxel visibility (same logic as buffer builders)
+        const total = nx * ny * nz;
+        const visible = new Uint8Array(total);
+        const densityMap = new Float32Array(total);
+
+        if (this.viewMode !== 'voxel' && this.meshData && this.meshData.length > 0) {
+            const hasStrainFilter = this.strainMin > 0 || this.strainMax < 1;
+            if (hasStrainFilter) {
+                for (const tri of this.meshData) {
+                    const v = tri.vertices[0];
+                    const ex = Math.min(Math.max(Math.floor(v[0]), 0), nx - 1);
+                    const ey = Math.min(Math.max(Math.floor(v[1]), 0), ny - 1);
+                    const ez = Math.min(Math.max(Math.floor(v[2]), 0), nz - 1);
+                    const idx = ex + ey * nx + ez * nx * ny;
+                    densityMap[idx] = tri.density;
+                    const strain = tri.strain !== undefined ? tri.strain : 0;
+                    if (strain >= this.strainMin && strain <= this.strainMax) visible[idx] = 1;
+                }
+            } else {
+                for (const tri of this.meshData) {
+                    const v = tri.vertices[0];
+                    const ex = Math.min(Math.max(Math.floor(v[0]), 0), nx - 1);
+                    const ey = Math.min(Math.max(Math.floor(v[1]), 0), ny - 1);
+                    const ez = Math.min(Math.max(Math.floor(v[2]), 0), nz - 1);
+                    const idx = ex + ey * nx + ez * nx * ny;
+                    densityMap[idx] = tri.density;
+                    if (tri.density > DENSITY_THRESHOLD) visible[idx] = 1;
+                }
+            }
+        } else {
+            const elements = this.model.elements;
+            for (let i = 0; i < total; i++) {
+                const density = this.densities ? this.densities[i] : elements[i];
+                densityMap[i] = density;
+                if (density > DENSITY_THRESHOLD) visible[i] = 1;
+            }
+        }
+
+        // Cube edges: 12 edges of a unit cube, each defined by two corner indices
+        // Corners: 0=(0,0,0) 1=(1,0,0) 2=(0,1,0) 3=(1,1,0) 4=(0,0,1) 5=(1,0,1) 6=(0,1,1) 7=(1,1,1)
+        const corners = [[0,0,0],[1,0,0],[0,1,0],[1,1,0],[0,0,1],[1,0,1],[0,1,1],[1,1,1]];
+        const edges = [[0,1],[2,3],[4,5],[6,7],[0,2],[1,3],[4,6],[5,7],[0,4],[1,5],[2,6],[3,7]];
+
+        const positions = [];
+        const normals = [];
+        const colors = [];
+        const capNormal = [-n[0], -n[1], -n[2]]; // face toward the camera (opposite to clip discard direction)
+
+        for (let x = 0; x < nx; x++) {
+            for (let y = 0; y < ny; y++) {
+                for (let z = 0; z < nz; z++) {
+                    const idx = x + y * nx + z * nx * ny;
+                    if (!visible[idx]) continue;
+
+                    // Signed distances from each corner to the plane
+                    const dists = new Float64Array(8);
+                    let hasPos = false, hasNeg = false;
+                    for (let c = 0; c < 8; c++) {
+                        dists[c] = n[0] * (x + corners[c][0]) + n[1] * (y + corners[c][1]) + n[2] * (z + corners[c][2]) - d;
+                        if (dists[c] > 0) hasPos = true;
+                        else hasNeg = true;
+                    }
+                    if (!hasPos || !hasNeg) continue; // plane doesn't intersect this voxel
+
+                    // Compute intersection points on edges where sign changes
+                    const pts = [];
+                    for (const [a, b] of edges) {
+                        if ((dists[a] > 0) !== (dists[b] > 0)) {
+                            const t = dists[a] / (dists[a] - dists[b]);
+                            pts.push([
+                                x + corners[a][0] + t * (corners[b][0] - corners[a][0]),
+                                y + corners[a][1] + t * (corners[b][1] - corners[a][1]),
+                                z + corners[a][2] + t * (corners[b][2] - corners[a][2])
+                            ]);
+                        }
+                    }
+                    if (pts.length < 3) continue;
+
+                    // Sort points in winding order around centroid
+                    const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length;
+                    const cy = pts.reduce((s, p) => s + p[1], 0) / pts.length;
+                    const cz = pts.reduce((s, p) => s + p[2], 0) / pts.length;
+                    // Build local 2D basis on the plane (avoid parallel up vector)
+                    let up = Math.abs(n[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+                    const t1 = vec3Normalize([
+                        up[1] * n[2] - up[2] * n[1],
+                        up[2] * n[0] - up[0] * n[2],
+                        up[0] * n[1] - up[1] * n[0]
+                    ]);
+                    // Second tangent: cross(capNormal, t1)
+                    const t2 = [
+                        capNormal[1] * t1[2] - capNormal[2] * t1[1],
+                        capNormal[2] * t1[0] - capNormal[0] * t1[2],
+                        capNormal[0] * t1[1] - capNormal[1] * t1[0]
+                    ];
+                    pts.sort((a, b) => {
+                        const da = [a[0] - cx, a[1] - cy, a[2] - cz];
+                        const db = [b[0] - cx, b[1] - cy, b[2] - cz];
+                        const angleA = Math.atan2(da[0]*t2[0]+da[1]*t2[1]+da[2]*t2[2], da[0]*t1[0]+da[1]*t1[1]+da[2]*t1[2]);
+                        const angleB = Math.atan2(db[0]*t2[0]+db[1]*t2[1]+db[2]*t2[2], db[0]*t1[0]+db[1]*t1[1]+db[2]*t1[2]);
+                        return angleA - angleB;
+                    });
+
+                    // Determine color from density
+                    const density = densityMap[idx];
+                    const hasDensityColors = !!(this.densities || (this.meshData && this.meshData.length > 0));
+                    let cr, cg, cb;
+                    if (hasDensityColors) {
+                        cr = density;
+                        cg = DENSITY_COLOR_GREEN;
+                        cb = 1 - density;
+                    } else {
+                        cr = DEFAULT_MESH_COLOR[0];
+                        cg = DEFAULT_MESH_COLOR[1];
+                        cb = DEFAULT_MESH_COLOR[2];
+                    }
+
+                    // Fan triangulation
+                    for (let i = 1; i < pts.length - 1; i++) {
+                        positions.push(...pts[0], ...pts[i], ...pts[i + 1]);
+                        normals.push(...capNormal, ...capNormal, ...capNormal);
+                        colors.push(cr, cg, cb, cr, cg, cb, cr, cg, cb);
+                    }
+                }
+            }
+        }
+
+        if (positions.length === 0) return;
+
+        // Upload to GPU
+        if (!this._sectionCapBuffer) {
+            this._sectionCapBuffer = { position: gl.createBuffer(), normal: gl.createBuffer(), color: gl.createBuffer() };
+        }
+        const scb = this._sectionCapBuffer;
+        gl.bindBuffer(gl.ARRAY_BUFFER, scb.position);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.DYNAMIC_DRAW);
+        gl.bindBuffer(gl.ARRAY_BUFFER, scb.normal);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(normals), gl.DYNAMIC_DRAW);
+        gl.bindBuffer(gl.ARRAY_BUFFER, scb.color);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.DYNAMIC_DRAW);
+
+        // Draw using mesh shader (with lighting) but no clipping on the cap itself
+        const prog = this._meshProgram;
+        gl.useProgram(prog);
+        gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uProjection'), false, projection);
+        gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uModelView'), false, modelView);
+        gl.uniformMatrix3fv(gl.getUniformLocation(prog, 'uNormalMatrix'), false, normalMatrix);
+        const lightDir = vec3Normalize([0.3, 0.5, 0.8]);
+        gl.uniform3fv(gl.getUniformLocation(prog, 'uLightDir'), lightDir);
+        gl.uniform1f(gl.getUniformLocation(prog, 'uAmbient'), 0.4);
+        gl.uniform1f(gl.getUniformLocation(prog, 'uClipEnabled'), 0.0); // don't clip cap faces
+
+        gl.disable(gl.CULL_FACE);
+        const posLoc = gl.getAttribLocation(prog, 'aPosition');
+        const normLoc = gl.getAttribLocation(prog, 'aNormal');
+        const colLoc = gl.getAttribLocation(prog, 'aColor');
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, scb.position);
+        gl.enableVertexAttribArray(posLoc);
+        gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+        gl.bindBuffer(gl.ARRAY_BUFFER, scb.normal);
+        gl.enableVertexAttribArray(normLoc);
+        gl.vertexAttribPointer(normLoc, 3, gl.FLOAT, false, 0, 0);
+        gl.bindBuffer(gl.ARRAY_BUFFER, scb.color);
+        gl.enableVertexAttribArray(colLoc);
+        gl.vertexAttribPointer(colLoc, 3, gl.FLOAT, false, 0, 0);
+
+        const count = positions.length / 3;
+        gl.drawArrays(gl.TRIANGLES, 0, count);
+
+        gl.disableVertexAttribArray(posLoc);
+        gl.disableVertexAttribArray(normLoc);
+        gl.disableVertexAttribArray(colLoc);
+        gl.enable(gl.CULL_FACE);
+    }
+
     _drawHoverHighlight(gl, projection, modelView) {
         if (this._hoverFaces.length === 0) return;
 
@@ -1889,9 +2080,10 @@ export class Viewer3D {
 
     toggleSection() {
         this.sectionEnabled = !this.sectionEnabled;
-        if (this.sectionEnabled && this.model) {
+        if (this.sectionEnabled && this.model && !this._sectionInitialized) {
             this.sectionNormal = [1, 0, 0];
             this.sectionOffset = this.model.nx / 2;
+            this._sectionInitialized = true;
         }
         this.draw();
     }
@@ -1918,6 +2110,7 @@ export class Viewer3D {
         this.sectionEnabled = false;
         this.sectionNormal = [1, 0, 0];
         this.sectionOffset = 0;
+        this._sectionInitialized = false;
         this.paintedConstraintFaces = new Set();
         this.paintedForceFaces = new Set();
         this.paintMode = null;
