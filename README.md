@@ -16,6 +16,7 @@ A minimalistic but fully functional web-based topology optimization application 
 - 💾 **Export Options**: Download optimized STL or JSON data
 - ⚡ **Web Worker Optimization**: Runs optimization in a background thread, keeping the UI responsive
 - ⚡ **WASM Acceleration**: High-performance AssemblyScript WASM module for matrix operations with automatic fallback to pure JS
+- 🖥️ **GPU Acceleration**: WebGL2 GPGPU and WebGPU compute shader APIs for large-scale matrix operations
 - ❌ **Cancellable Optimization**: Cancel a running optimization at any point
 - 🔬 **Adaptive Mesh**: Dynamically refines mesh resolution in high-force / high-energy regions
 - 🔺 **Triangle Mesh Rendering**: Displays elements as proper triangulated mesh, not just squares
@@ -29,6 +30,8 @@ A minimalistic but fully functional web-based topology optimization application 
 - **Vanilla JavaScript**: No frameworks, pure ES6 modules
 - **Web Workers**: Background thread for heavy computation
 - **WebAssembly**: High-performance matrix operations via AssemblyScript
+- **WebGL2 GPGPU**: Render-to-texture compute for GPU-accelerated matrix ops
+- **WebGPU Compute**: Native compute shaders for modern GPU acceleration
 - **Canvas 2D**: Interactive 3D visualization with no external dependencies
 - **SIMP Algorithm**: Industry-standard topology optimization
 
