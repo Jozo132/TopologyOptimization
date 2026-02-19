@@ -1152,9 +1152,9 @@ class KSPSolver {
         // Determine number of subdomains per axis (target ~8-64 total subdomains)
         const totalElements = nelx * nely * nelz;
         const targetSubdomains = Math.max(8, Math.min(64, Math.ceil(Math.cbrt(totalElements / 100))));
-        const nsx = Math.max(KSP_BDDC_MIN_SUBDOMAINS, Math.min(nelx, Math.round(Math.cbrt(targetSubdomains * nelx / nely * nelx / nelz))));
-        const nsy = Math.max(KSP_BDDC_MIN_SUBDOMAINS, Math.min(nely, Math.round(Math.cbrt(targetSubdomains * nely / nelx * nely / nelz))));
-        const nsz = Math.max(KSP_BDDC_MIN_SUBDOMAINS, Math.min(nelz, Math.round(Math.cbrt(targetSubdomains * nelz / nelx * nelz / nely))));
+        const nsx = Math.max(KSP_BDDC_MIN_SUBDOMAINS, Math.min(nelx, Math.round(Math.cbrt(targetSubdomains * (nelx * nelx) / (nely * nelz)))));
+        const nsy = Math.max(KSP_BDDC_MIN_SUBDOMAINS, Math.min(nely, Math.round(Math.cbrt(targetSubdomains * (nely * nely) / (nelx * nelz)))));
+        const nsz = Math.max(KSP_BDDC_MIN_SUBDOMAINS, Math.min(nelz, Math.round(Math.cbrt(targetSubdomains * (nelz * nelz) / (nelx * nely)))));
 
         const subdomains = [];
         for (let sz = 0; sz < nsz; sz++) {
@@ -1320,9 +1320,9 @@ class KSPSolver {
             }
         }
 
-        // Apply multiple smoothing sweeps for better local approximation
+        // Apply additional smoothing sweeps for better local approximation
         const Ap = this._Ap_buf;
-        for (let sweep = 1; sweep < KSP_BDDC_SMOOTHER_ITERS; sweep++) {
+        for (let sweep = 0; sweep < KSP_BDDC_SMOOTHER_ITERS - 1; sweep++) {
             this.applyA(localCorrection, Ap);
             for (const sub of this._subdomains) {
                 const invD = sub.localInvDiag;
@@ -1336,11 +1336,13 @@ class KSPSolver {
 
         // Step 2: Coarse-level correction via primal DOFs
         // The coarse space enforces continuity at subdomain corner nodes.
-        // Use weighted Jacobi on the coarse (primal) DOFs for the residual.
+        // Apply Jacobi correction restricted to the primal (corner) DOFs.
         const invDiag = this._invDiag;
         const coarseCorrection = new Float64Array(ndof);
         this.applyA(localCorrection, Ap);
-        for (let i = 0; i < ndof; i++) {
+        const coarseMap = this._coarseMap;
+        for (let ci = 0; ci < coarseMap.length; ci++) {
+            const i = coarseMap[ci];
             if (fixedMask[i]) continue;
             const coarseRes = r[i] - Ap[i];
             coarseCorrection[i] = invDiag[i] * coarseRes;
