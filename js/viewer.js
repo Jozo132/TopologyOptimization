@@ -275,6 +275,11 @@ export class Viewer3D {
         this._sectionCapBuffer = null;
         this.onSectionChange = null; // callback when section plane changes
 
+        // Stress bar drag handles
+        this._stressBarRect = null;
+        this._stressHandleDrag = null; // 'min' | 'max' | null
+        this.onStrainRangeChange = null; // callback when strain range changes via handles
+
         // Cached GPU buffers
         this._meshBuffers = null;
         this._edgeBuffers = null;
@@ -396,7 +401,11 @@ export class Viewer3D {
                     this.handlePaintClick(e);
                 }
             } else {
-                if (e.button === 1 || (e.button === 0 && e.shiftKey)) {
+                // Check for stress bar handle hit
+                const handleHit = this._hitTestStressHandle(e);
+                if (e.button === 0 && handleHit) {
+                    this._stressHandleDrag = handleHit;
+                } else if (e.button === 1 || (e.button === 0 && e.shiftKey)) {
                     this.isPanning = true;
                 } else if (e.button === 0 && e.altKey && this.sectionEnabled) {
                     this._isSectionDragging = true;
@@ -408,6 +417,11 @@ export class Viewer3D {
         });
 
         canvas.addEventListener('mousemove', (e) => {
+            if (this._stressHandleDrag) {
+                this._updateStressHandleDrag(e);
+                return;
+            }
+
             if (this.isPainting && this.paintMode && this.model) {
                 this.handlePaintClick(e);
                 return;
@@ -451,6 +465,7 @@ export class Viewer3D {
             this.isPanning = false;
             this.isPainting = false;
             this._isSectionDragging = false;
+            this._stressHandleDrag = null;
         });
 
         canvas.addEventListener('mouseleave', () => {
@@ -458,6 +473,7 @@ export class Viewer3D {
             this.isPanning = false;
             this.isPainting = false;
             this._isSectionDragging = false;
+            this._stressHandleDrag = null;
             if (this._hoverFaces.length > 0) {
                 this._hoverFaces = [];
                 this.draw();
@@ -1524,9 +1540,49 @@ export class Viewer3D {
     _drawSectionPlane(gl, projection, modelView, nx, ny, nz) {
         const n = this.sectionNormal;
         const d = this.sectionOffset;
-        const maxDim = Math.max(nx, ny, nz);
 
-        // Find two tangent vectors perpendicular to the plane normal
+        // Build per-voxel visibility (same logic as _drawSectionCap)
+        const total = nx * ny * nz;
+        const visible = new Uint8Array(total);
+
+        const elements = this.model.elements;
+        for (let i = 0; i < total; i++) {
+            const density = this.densities ? this.densities[i] : elements[i];
+            if (density > DENSITY_THRESHOLD) visible[i] = 1;
+        }
+
+        if (this.viewMode !== 'voxel' && this.meshData && this.meshData.length > 0) {
+            const hasStrainFilter = this.strainMin > 0 || this.strainMax < 1;
+            if (hasStrainFilter) {
+                const surfaceVoxels = new Set();
+                const strainPassVoxels = new Set();
+                for (const tri of this.meshData) {
+                    const v = tri.vertices[0];
+                    const ex = Math.min(Math.max(Math.floor(v[0]), 0), nx - 1);
+                    const ey = Math.min(Math.max(Math.floor(v[1]), 0), ny - 1);
+                    const ez = Math.min(Math.max(Math.floor(v[2]), 0), nz - 1);
+                    const idx = ex + ey * nx + ez * nx * ny;
+                    surfaceVoxels.add(idx);
+                    const strain = tri.strain !== undefined ? tri.strain : 0;
+                    if (strain >= this.strainMin && strain <= this.strainMax) {
+                        strainPassVoxels.add(idx);
+                    }
+                }
+                for (const idx of surfaceVoxels) {
+                    if (!strainPassVoxels.has(idx)) {
+                        visible[idx] = 0;
+                    }
+                }
+            }
+        }
+
+        // Cube corners and edges for plane-cube intersection
+        const corners = [[0,0,0],[1,0,0],[0,1,0],[1,1,0],[0,0,1],[1,0,1],[0,1,1],[1,1,1]];
+        const edges = [[0,1],[2,3],[4,5],[6,7],[0,2],[1,3],[4,6],[5,7],[0,4],[1,5],[2,6],[3,7]];
+
+        const positions = [];
+
+        // Build local 2D basis on the plane (computed once)
         let up = Math.abs(n[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
         const t1 = vec3Normalize([
             up[1] * n[2] - up[2] * n[1],
@@ -1539,25 +1595,64 @@ export class Viewer3D {
             n[0] * t1[1] - n[1] * t1[0]
         ];
 
-        // Project model center onto the plane
-        const mc = [nx / 2, ny / 2, nz / 2];
-        const dist = n[0] * mc[0] + n[1] * mc[1] + n[2] * mc[2] - d;
-        const center = [mc[0] - dist * n[0], mc[1] - dist * n[1], mc[2] - dist * n[2]];
+        for (let x = 0; x < nx; x++) {
+            for (let y = 0; y < ny; y++) {
+                for (let z = 0; z < nz; z++) {
+                    const idx = x + y * nx + z * nx * ny;
+                    if (!visible[idx]) continue;
 
-        const size = maxDim;
-        const v0 = [center[0] - t1[0] * size - t2[0] * size, center[1] - t1[1] * size - t2[1] * size, center[2] - t1[2] * size - t2[2] * size];
-        const v1 = [center[0] + t1[0] * size - t2[0] * size, center[1] + t1[1] * size - t2[1] * size, center[2] + t1[2] * size - t2[2] * size];
-        const v2 = [center[0] + t1[0] * size + t2[0] * size, center[1] + t1[1] * size + t2[1] * size, center[2] + t1[2] * size + t2[2] * size];
-        const v3 = [center[0] - t1[0] * size + t2[0] * size, center[1] - t1[1] * size + t2[1] * size, center[2] - t1[2] * size + t2[2] * size];
+                    // Signed distances from each corner to the plane
+                    const dists = new Float64Array(8);
+                    let hasPos = false, hasNeg = false;
+                    for (let c = 0; c < 8; c++) {
+                        dists[c] = n[0] * (x + corners[c][0]) + n[1] * (y + corners[c][1]) + n[2] * (z + corners[c][2]) - d;
+                        if (dists[c] > 0) hasPos = true;
+                        else hasNeg = true;
+                    }
+                    if (!hasPos || !hasNeg) continue; // plane doesn't intersect this voxel
 
-        const positions = [...v0, ...v1, ...v2, ...v0, ...v2, ...v3];
+                    // Compute intersection points on edges where sign changes
+                    const pts = [];
+                    for (const [a, b] of edges) {
+                        if ((dists[a] > 0) !== (dists[b] > 0)) {
+                            const t = dists[a] / (dists[a] - dists[b]);
+                            pts.push([
+                                x + corners[a][0] + t * (corners[b][0] - corners[a][0]),
+                                y + corners[a][1] + t * (corners[b][1] - corners[a][1]),
+                                z + corners[a][2] + t * (corners[b][2] - corners[a][2])
+                            ]);
+                        }
+                    }
+                    if (pts.length < 3) continue;
+
+                    // Sort points in winding order around centroid
+                    const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length;
+                    const cy = pts.reduce((s, p) => s + p[1], 0) / pts.length;
+                    const cz = pts.reduce((s, p) => s + p[2], 0) / pts.length;
+                    pts.sort((a, b) => {
+                        const da = [a[0] - cx, a[1] - cy, a[2] - cz];
+                        const db = [b[0] - cx, b[1] - cy, b[2] - cz];
+                        const angleA = Math.atan2(da[0]*t2[0]+da[1]*t2[1]+da[2]*t2[2], da[0]*t1[0]+da[1]*t1[1]+da[2]*t1[2]);
+                        const angleB = Math.atan2(db[0]*t2[0]+db[1]*t2[1]+db[2]*t2[2], db[0]*t1[0]+db[1]*t1[1]+db[2]*t1[2]);
+                        return angleA - angleB;
+                    });
+
+                    // Fan triangulation
+                    for (let i = 1; i < pts.length - 1; i++) {
+                        positions.push(...pts[0], ...pts[i], ...pts[i + 1]);
+                    }
+                }
+            }
+        }
+
+        if (positions.length === 0) return;
 
         const prog = this._overlayProgram;
         gl.useProgram(prog);
 
         gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uProjection'), false, projection);
         gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uModelView'), false, modelView);
-        // Do not clip the plane quad itself
+        // Do not clip the plane quads themselves
         gl.uniform1f(gl.getUniformLocation(prog, 'uClipEnabled'), 0.0);
 
         gl.enable(gl.BLEND);
@@ -1575,7 +1670,7 @@ export class Viewer3D {
         gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
 
         gl.uniform4fv(gl.getUniformLocation(prog, 'uColor'), [0.3, 0.5, 0.8, 0.12]);
-        gl.drawArrays(gl.TRIANGLES, 0, 6);
+        gl.drawArrays(gl.TRIANGLES, 0, positions.length / 3);
 
         gl.disableVertexAttribArray(posLoc);
 
@@ -1880,6 +1975,9 @@ export class Viewer3D {
         const barY = (viewHeight - barHeight) / 2;
         const maxStress = this.maxStress || 1;
 
+        // Store bar geometry for hit testing on drag handles
+        this._stressBarRect = { x: barX, y: barY, width: barWidth, height: barHeight };
+
         // Draw gradient bar (blue at bottom = low stress, red at top = high stress)
         // Uses DENSITY_COLOR_GREEN to match the mesh coloring scheme
         for (let i = 0; i < barHeight; i++) {
@@ -1896,13 +1994,25 @@ export class Viewer3D {
         ctx.lineWidth = 1;
         ctx.strokeRect(barX, barY, barWidth, barHeight);
 
-        // Draw strain range filter indicators (horizontal lines at min/max)
+        // Draw strain range filter handles and shading
+        const minY = barY + barHeight - this.strainMin * barHeight;
+        const maxY = barY + barHeight - this.strainMax * barHeight;
+        const handleW = 10;
+        const handleH = 6;
+
+        // Shade out-of-range regions
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+        if (this.strainMin > 0) {
+            ctx.fillRect(barX, minY, barWidth, barY + barHeight - minY);
+        }
+        if (this.strainMax < 1) {
+            ctx.fillRect(barX, barY, barWidth, maxY - barY);
+        }
+
+        // Draw handle lines
         if (this.strainMin > 0 || this.strainMax < 1) {
             ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
             ctx.lineWidth = 2;
-            const minY = barY + barHeight - this.strainMin * barHeight;
-            const maxY = barY + barHeight - this.strainMax * barHeight;
-            // Draw filter region lines
             ctx.beginPath();
             ctx.moveTo(barX - 5, minY);
             ctx.lineTo(barX + barWidth + 5, minY);
@@ -1911,15 +2021,33 @@ export class Viewer3D {
             ctx.moveTo(barX - 5, maxY);
             ctx.lineTo(barX + barWidth + 5, maxY);
             ctx.stroke();
-            // Shade out-of-range regions
-            ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
-            if (this.strainMin > 0) {
-                ctx.fillRect(barX, minY, barWidth, barY + barHeight - minY);
-            }
-            if (this.strainMax < 1) {
-                ctx.fillRect(barX, barY, barWidth, maxY - barY);
-            }
         }
+
+        // Draw draggable handle triangles (left side of bar)
+        const drawHandle = (y, isActive) => {
+            ctx.fillStyle = isActive ? '#ffffff' : 'rgba(255, 255, 255, 0.85)';
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.5)';
+            ctx.lineWidth = 1;
+            // Left triangle handle pointing right
+            ctx.beginPath();
+            ctx.moveTo(barX - handleW, y - handleH);
+            ctx.lineTo(barX, y);
+            ctx.lineTo(barX - handleW, y + handleH);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+            // Right triangle handle pointing left
+            ctx.beginPath();
+            ctx.moveTo(barX + barWidth + handleW, y - handleH);
+            ctx.lineTo(barX + barWidth, y);
+            ctx.lineTo(barX + barWidth + handleW, y + handleH);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+        };
+
+        drawHandle(minY, this._stressHandleDrag === 'min');
+        drawHandle(maxY, this._stressHandleDrag === 'max');
 
         // Draw tick labels
         ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
@@ -1994,6 +2122,53 @@ export class Viewer3D {
         ctx.fillStyle = '#ffffff';
         ctx.textAlign = 'left';
         ctx.fillText(text, tx + padding, ty + 4);
+    }
+
+    /** Test if mouse position hits a stress bar drag handle. Returns 'min', 'max', or null. */
+    _hitTestStressHandle(e) {
+        if (!this._stressBarRect || !this.meshData || this.meshData.length === 0) return null;
+        const bar = this._stressBarRect;
+        const rect = this.canvas.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+
+        const handleW = 10;
+        const handleH = 8;
+
+        const minY = bar.y + bar.height - this.strainMin * bar.height;
+        const maxY = bar.y + bar.height - this.strainMax * bar.height;
+
+        // Hit zone extends across handle triangles on both sides of bar
+        const hitLeft = bar.x - handleW - 2;
+        const hitRight = bar.x + bar.width + handleW + 2;
+
+        if (mx >= hitLeft && mx <= hitRight) {
+            if (Math.abs(my - minY) <= handleH) return 'min';
+            if (Math.abs(my - maxY) <= handleH) return 'max';
+        }
+        return null;
+    }
+
+    /** Update strain range when dragging a stress bar handle. */
+    _updateStressHandleDrag(e) {
+        if (!this._stressBarRect) return;
+        const bar = this._stressBarRect;
+        const rect = this.canvas.getBoundingClientRect();
+        const my = e.clientY - rect.top;
+
+        // Convert mouse Y to normalized strain value (0 at bottom, 1 at top)
+        let val = 1 - (my - bar.y) / bar.height;
+        val = Math.max(0, Math.min(1, val));
+
+        if (this._stressHandleDrag === 'min') {
+            this.strainMin = Math.min(val, this.strainMax - 0.01);
+        } else if (this._stressHandleDrag === 'max') {
+            this.strainMax = Math.max(val, this.strainMin + 0.01);
+        }
+
+        this._needsRebuild = true;
+        this.draw();
+        if (this.onStrainRangeChange) this.onStrainRangeChange(this.strainMin, this.strainMax);
     }
 
     // ─── 2D Overlay (axes) ──────────────────────────────────────────────────
