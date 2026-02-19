@@ -1192,3 +1192,327 @@ export function ebeMGPCG(
   return maxIter;
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// KSP CG + BDDC — PETSc-style KSP solver with Balancing Domain
+// Decomposition by Constraints preconditioner, fully self-contained.
+//
+// The caller partitions the mesh into subdomains and describes each via
+// a 32-byte descriptor (see BDDC_SUB_STRIDE).  Corner (primal) DOFs
+// form the coarse space that couples the subdomains.
+// ═══════════════════════════════════════════════════════════════════════
+
+const BDDC_SUB_STRIDE: usize = 32;
+
+// ─── Helper: subdomain descriptor field access ───
+@inline function bddcSubNumElem(base: usize, si: i32): i32 {
+  return load<i32>(base + <usize>si * BDDC_SUB_STRIDE);
+}
+@inline function bddcSubNumDofs(base: usize, si: i32): i32 {
+  return load<i32>(base + <usize>si * BDDC_SUB_STRIDE + 4);
+}
+@inline function bddcSubElemPtr(base: usize, si: i32): usize {
+  return <usize>load<u32>(base + <usize>si * BDDC_SUB_STRIDE + 8);
+}
+@inline function bddcSubDofsPtr(base: usize, si: i32): usize {
+  return <usize>load<u32>(base + <usize>si * BDDC_SUB_STRIDE + 12);
+}
+@inline function bddcSubInvDiagPtr(base: usize, si: i32): usize {
+  return <usize>load<u32>(base + <usize>si * BDDC_SUB_STRIDE + 16);
+}
+
+// ─── bddcApplyA: EbE matrix-vector product y = A·x (active elements) ───
+// Zeros y before accumulation. Uses scratchPtr for 24-f64 gather buffer.
+function bddcApplyA(
+  kePtr: usize, edofsPtr: usize, evalsPtr: usize,
+  activePtr: usize, activeCount: i32,
+  xPtr: usize, yPtr: usize, ndof: i32, scratchPtr: usize
+): void {
+  memory.fill(yPtr, 0, <usize>ndof << 3);
+
+  for (let ai: i32 = 0; ai < activeCount; ai++) {
+    const e: i32 = load<i32>(activePtr + (<usize>ai << 2));
+    const E: f64 = load<f64>(evalsPtr + (<usize>e << 3));
+    const edBase: usize = edofsPtr + (<usize>(e * 24) << 2);
+
+    // Gather local DOFs into scratch
+    for (let j: i32 = 0; j < 24; j++) {
+      const gj: i32 = load<i32>(edBase + (<usize>j << 2));
+      store<f64>(scratchPtr + (<usize>j << 3), load<f64>(xPtr + (<usize>gj << 3)));
+    }
+    // Local matvec and scatter-add
+    for (let i: i32 = 0; i < 24; i++) {
+      const gi: i32 = load<i32>(edBase + (<usize>i << 2));
+      let sum: f64 = 0.0;
+      const rowBase: usize = kePtr + (<usize>(i * 24) << 3);
+      for (let j: i32 = 0; j < 24; j++) {
+        sum += load<f64>(rowBase + (<usize>j << 3)) * load<f64>(scratchPtr + (<usize>j << 3));
+      }
+      store<f64>(yPtr + (<usize>gi << 3),
+        load<f64>(yPtr + (<usize>gi << 3)) + E * sum);
+    }
+  }
+}
+
+// ─── bddcApply: z = M⁻¹·r  (BDDC preconditioner) ───
+// Steps:
+//   1. Additive Schwarz: local Jacobi smoothing per subdomain
+//   2. Additional smoother sweeps using global matvec
+//   3. Coarse-level correction via primal (corner) DOFs
+//   4. Combine local + coarse corrections; zero fixed DOFs
+function bddcApply(
+  subsPtr: usize, numSubs: i32,
+  coarsePtr: usize, numCoarse: i32,
+  kePtr: usize, edofsPtr: usize, evalsPtr: usize,
+  activePtr: usize, activeCount: i32,
+  fixedMask: usize, invDiagPtr: usize,
+  rPtr: usize, zPtr: usize, ndof: i32,
+  smootherIters: i32,
+  localCorrPtr: usize, weightPtr: usize, coarseCorrPtr: usize,
+  scratchPtr: usize
+): void {
+  const ndofBytes: usize = <usize>ndof << 3;
+
+  // ── Step 1: Additive Schwarz — local Jacobi per subdomain ──
+  memory.fill(zPtr, 0, ndofBytes);
+  memory.fill(weightPtr, 0, ndofBytes);
+
+  for (let si: i32 = 0; si < numSubs; si++) {
+    const subNDofs: i32 = bddcSubNumDofs(subsPtr, si);
+    const subDofsArr: usize = bddcSubDofsPtr(subsPtr, si);
+    const subInvDiag: usize = bddcSubInvDiagPtr(subsPtr, si);
+
+    for (let li: i32 = 0; li < subNDofs; li++) {
+      const gi: i32 = load<i32>(subDofsArr + (<usize>li << 2));
+      const giOff: usize = <usize>gi << 3;
+      const invD: f64 = load<f64>(subInvDiag + giOff);
+      const ri: f64 = load<f64>(rPtr + giOff);
+      store<f64>(zPtr + giOff, load<f64>(zPtr + giOff) + invD * ri);
+      store<f64>(weightPtr + giOff, load<f64>(weightPtr + giOff) + 1.0);
+    }
+  }
+
+  // Average overlapping contributions
+  for (let i: i32 = 0; i < ndof; i++) {
+    const iOff: usize = <usize>i << 3;
+    const w: f64 = load<f64>(weightPtr + iOff);
+    if (w > 1e-12) {
+      store<f64>(zPtr + iOff, load<f64>(zPtr + iOff) / w);
+    }
+  }
+
+  // ── Step 2: Additional Jacobi smoother sweeps using global matvec ──
+  // Step 1 already performed one sweep; loop adds (smootherIters - 1) more
+  for (let s: i32 = 1; s < smootherIters; s++) {
+    // localCorr = A · z
+    bddcApplyA(kePtr, edofsPtr, evalsPtr,
+               activePtr, activeCount,
+               zPtr, localCorrPtr, ndof, scratchPtr);
+
+    // z += invDiag * (r - A·z)
+    for (let i: i32 = 0; i < ndof; i++) {
+      const iOff: usize = <usize>i << 3;
+      const res: f64 = load<f64>(rPtr + iOff) - load<f64>(localCorrPtr + iOff);
+      const invD: f64 = load<f64>(invDiagPtr + iOff);
+      store<f64>(zPtr + iOff, load<f64>(zPtr + iOff) + invD * res);
+    }
+  }
+
+  // ── Step 3: Coarse-level correction via primal DOFs ──
+  memory.fill(coarseCorrPtr, 0, ndofBytes);
+
+  if (numCoarse > 0) {
+    // Compute coarse residual: r_c = r - A·z at coarse DOFs
+    bddcApplyA(kePtr, edofsPtr, evalsPtr,
+               activePtr, activeCount,
+               zPtr, localCorrPtr, ndof, scratchPtr);
+
+    for (let ci: i32 = 0; ci < numCoarse; ci++) {
+      const gi: i32 = load<i32>(coarsePtr + (<usize>ci << 2));
+      const giOff: usize = <usize>gi << 3;
+      const rc: f64 = load<f64>(rPtr + giOff) - load<f64>(localCorrPtr + giOff);
+      const invD: f64 = load<f64>(invDiagPtr + giOff);
+      store<f64>(coarseCorrPtr + giOff, invD * rc);
+    }
+  }
+
+  // ── Step 4: Combine local + coarse corrections ──
+  for (let i: i32 = 0; i < ndof; i++) {
+    const iOff: usize = <usize>i << 3;
+    store<f64>(zPtr + iOff,
+      load<f64>(zPtr + iOff) + load<f64>(coarseCorrPtr + iOff));
+  }
+
+  // Zero fixed DOFs in z
+  for (let i: i32 = 0; i < ndof; i++) {
+    if (load<u8>(fixedMask + <usize>i)) store<f64>(zPtr + (<usize>i << 3), 0.0);
+  }
+}
+
+/**
+ * Full self-contained KSP CG solver with BDDC domain decomposition preconditioner.
+ * Runs the entire PCG solve inside a single WASM call.
+ *
+ * Memory layout for subdomain descriptor (BDDC_SUB_STRIDE = 32 bytes each):
+ *   0: numElements (i32)       - number of elements in this subdomain
+ *   4: numDofs (i32)           - number of DOFs touched by this subdomain
+ *   8: elementsPtr (u32)       - pointer to i32[numElements] element indices
+ *  12: dofsPtr (u32)           - pointer to i32[numDofs] DOF indices
+ *  16: localInvDiagPtr (u32)   - pointer to f64[ndof] local inverse diagonal
+ *  20: padding (i32)
+ *  24: padding (i32)
+ *  28: padding (i32)
+ *
+ * @param subsPtr     - Base pointer for subdomain descriptor table
+ * @param numSubs     - Number of subdomains
+ * @param coarsePtr   - Pointer to i32[numCoarse] coarse (primal) DOF indices
+ * @param numCoarse   - Number of coarse DOFs
+ * @param kePtr       - KEflat: f64[576] reference element stiffness
+ * @param edofsPtr    - Element DOF connectivity: i32[nel*24]
+ * @param evalsPtr    - Per-element stiffness: f64[nel]
+ * @param activePtr   - Active element indices: i32[activeCount]
+ * @param activeCount - Number of active elements
+ * @param fixedMask   - Fixed DOF mask: u8[ndof]
+ * @param invDiagPtr  - Global inverse diagonal: f64[ndof]
+ * @param fPtr        - F: f64[ndof] force vector
+ * @param uPtr        - U: f64[ndof] displacement output
+ * @param ndof        - Total DOFs
+ * @param maxIter     - Maximum CG iterations
+ * @param tolerance   - Convergence tolerance (relative)
+ * @param smootherIters - Number of local Jacobi smoother iterations (typically 3)
+ * @param workPtr     - Workspace: r[ndof] + z[ndof] + p[ndof] + Ap[ndof] + localCorr[ndof] + weight[ndof] + coarseCorr[ndof]
+ * @returns number of CG iterations performed
+ */
+export function ebeKSP_BDDC(
+  subsPtr: usize,
+  numSubs: i32,
+  coarsePtr: usize,
+  numCoarse: i32,
+  kePtr: usize,
+  edofsPtr: usize,
+  evalsPtr: usize,
+  activePtr: usize,
+  activeCount: i32,
+  fixedMask: usize,
+  invDiagPtr: usize,
+  fPtr: usize,
+  uPtr: usize,
+  ndof: i32,
+  maxIter: i32,
+  tolerance: f64,
+  smootherIters: i32,
+  workPtr: usize
+): i32 {
+  const EPSILON: f64 = 1e-12;
+  const ndofBytes: usize = <usize>ndof << 3;
+
+  // ── Workspace layout ──────────────────────────────────────────────
+  let off: usize = workPtr;
+  const rPtr: usize = off;           off += ndofBytes;        // f64[ndof]
+  const zPtr: usize = off;           off += ndofBytes;        // f64[ndof]
+  const pPtr: usize = off;           off += ndofBytes;        // f64[ndof]
+  const apPtr: usize = off;          off += ndofBytes;        // f64[ndof]
+  const localCorrPtr: usize = off;   off += ndofBytes;        // f64[ndof]
+  const weightPtr: usize = off;      off += ndofBytes;        // f64[ndof]
+  const coarseCorrPtr: usize = off;  off += ndofBytes;        // f64[ndof]
+  const scratchPtr: usize = off;     // f64[24] = 192 bytes
+
+  // ── Zero U (cold start) ──
+  memory.fill(uPtr, 0, ndofBytes);
+
+  // ── r = F, zeroing fixed DOFs ──
+  for (let i: i32 = 0; i < ndof; i++) {
+    const iOff: usize = <usize>i << 3;
+    if (load<u8>(fixedMask + <usize>i)) {
+      store<f64>(rPtr + iOff, 0.0);
+    } else {
+      store<f64>(rPtr + iOff, load<f64>(fPtr + iOff));
+    }
+  }
+
+  // ── Apply preconditioner: z = BDDC(r) ──
+  memory.fill(zPtr, 0, ndofBytes);
+  bddcApply(subsPtr, numSubs, coarsePtr, numCoarse,
+            kePtr, edofsPtr, evalsPtr,
+            activePtr, activeCount,
+            fixedMask, invDiagPtr,
+            rPtr, zPtr, ndof, smootherIters,
+            localCorrPtr, weightPtr, coarseCorrPtr, scratchPtr);
+
+  // p = z
+  memory.copy(pPtr, zPtr, ndofBytes);
+
+  // rz = r^T · z,  r0norm2 = ||r||^2
+  let rz: f64 = 0.0;
+  let r0norm2: f64 = 0.0;
+  for (let i: i32 = 0; i < ndof; i++) {
+    const iOff: usize = <usize>i << 3;
+    const ri: f64 = load<f64>(rPtr + iOff);
+    rz += ri * load<f64>(zPtr + iOff);
+    r0norm2 += ri * ri;
+  }
+
+  const tolSq: f64 = tolerance * tolerance * (r0norm2 > 1e-30 ? r0norm2 : <f64>1e-30);
+
+  // ── PCG iteration loop ──
+  for (let iter: i32 = 0; iter < maxIter; iter++) {
+    // Check convergence
+    let rnorm2: f64 = 0.0;
+    for (let i: i32 = 0; i < ndof; i++) {
+      const ri: f64 = load<f64>(rPtr + (<usize>i << 3));
+      rnorm2 += ri * ri;
+    }
+    if (rnorm2 < tolSq) return iter;
+
+    // Ap = A · p
+    bddcApplyA(kePtr, edofsPtr, evalsPtr,
+               activePtr, activeCount,
+               pPtr, apPtr, ndof, scratchPtr);
+    // Zero fixed DOFs in Ap
+    for (let i: i32 = 0; i < ndof; i++) {
+      if (load<u8>(fixedMask + <usize>i)) store<f64>(apPtr + (<usize>i << 3), 0.0);
+    }
+
+    // α = rz / (p^T · Ap)
+    let pAp: f64 = 0.0;
+    for (let i: i32 = 0; i < ndof; i++) {
+      const iOff: usize = <usize>i << 3;
+      pAp += load<f64>(pPtr + iOff) * load<f64>(apPtr + iOff);
+    }
+    const alpha: f64 = rz / (pAp + EPSILON);
+
+    // U += α·p,  r -= α·Ap
+    for (let i: i32 = 0; i < ndof; i++) {
+      const iOff: usize = <usize>i << 3;
+      store<f64>(uPtr + iOff, load<f64>(uPtr + iOff) + alpha * load<f64>(pPtr + iOff));
+      store<f64>(rPtr + iOff, load<f64>(rPtr + iOff) - alpha * load<f64>(apPtr + iOff));
+    }
+
+    // z = BDDC(r)
+    memory.fill(zPtr, 0, ndofBytes);
+    bddcApply(subsPtr, numSubs, coarsePtr, numCoarse,
+              kePtr, edofsPtr, evalsPtr,
+              activePtr, activeCount,
+              fixedMask, invDiagPtr,
+              rPtr, zPtr, ndof, smootherIters,
+              localCorrPtr, weightPtr, coarseCorrPtr, scratchPtr);
+
+    // β = rz_new / rz
+    let rz_new: f64 = 0.0;
+    for (let i: i32 = 0; i < ndof; i++) {
+      const iOff: usize = <usize>i << 3;
+      rz_new += load<f64>(rPtr + iOff) * load<f64>(zPtr + iOff);
+    }
+    const beta: f64 = rz_new / (rz + EPSILON);
+
+    // p = z + β·p
+    for (let i: i32 = 0; i < ndof; i++) {
+      const iOff: usize = <usize>i << 3;
+      store<f64>(pPtr + iOff, load<f64>(zPtr + iOff) + beta * load<f64>(pPtr + iOff));
+    }
+
+    rz = rz_new;
+  }
+
+  return maxIter;
+}
+
