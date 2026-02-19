@@ -1998,7 +1998,7 @@ export class Viewer3D {
         const minY = barY + barHeight - this.strainMin * barHeight;
         const maxY = barY + barHeight - this.strainMax * barHeight;
         const handleW = 10;
-        const handleH = 6;
+        const handleH = 8;
 
         // Shade out-of-range regions
         ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
@@ -2161,9 +2161,9 @@ export class Viewer3D {
         val = Math.max(0, Math.min(1, val));
 
         if (this._stressHandleDrag === 'min') {
-            this.strainMin = Math.min(val, this.strainMax - 0.01);
+            this.strainMin = Math.min(val, this.strainMax - 0.01); // 1% minimum gap between handles
         } else if (this._stressHandleDrag === 'max') {
-            this.strainMax = Math.max(val, this.strainMin + 0.01);
+            this.strainMax = Math.max(val, this.strainMin + 0.01); // 1% minimum gap between handles
         }
 
         this._needsRebuild = true;
