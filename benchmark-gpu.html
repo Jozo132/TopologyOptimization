@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPU Compute Benchmark – JS vs WASM vs WebGL vs WebGPU</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#0d1117;color:#c9d1d9;padding:1.5rem}
+h1{text-align:center;color:#58a6ff;margin-bottom:.25rem}
+.subtitle{text-align:center;color:#8b949e;margin-bottom:1.5rem}
+.controls{display:flex;gap:1rem;justify-content:center;flex-wrap:wrap;margin-bottom:1.5rem}
+button{background:#238636;color:#fff;border:none;padding:.5rem 1.2rem;border-radius:6px;cursor:pointer;font-size:.95rem}
+button:hover{background:#2ea043}
+button:disabled{opacity:.5;cursor:not-allowed}
+select,input[type=number]{background:#161b22;color:#c9d1d9;border:1px solid #30363d;padding:.4rem;border-radius:4px}
+.status{text-align:center;color:#8b949e;margin-bottom:1rem;min-height:1.5em}
+table{width:100%;border-collapse:collapse;margin-bottom:1.5rem}
+th,td{border:1px solid #30363d;padding:.5rem .75rem;text-align:right}
+th{background:#161b22;color:#58a6ff;text-align:center}
+td:first-child{text-align:left}
+tr.header-row td{background:#161b22;font-weight:600;text-align:center;color:#e6edf3}
+.fastest{color:#3fb950;font-weight:700}
+.na{color:#484f58}
+#log{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:1rem;max-height:300px;overflow-y:auto;font-family:'Cascadia Code',monospace;font-size:.82rem;white-space:pre-wrap;color:#8b949e}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:.75rem;font-weight:600}
+.badge-ok{background:#238636;color:#fff}
+.badge-no{background:#484f58;color:#8b949e}
+</style>
+</head>
+<body>
+<h1>⚡ GPU Compute Benchmark</h1>
+<p class="subtitle">JS &nbsp;vs&nbsp; WASM &nbsp;vs&nbsp; WebGL &nbsp;vs&nbsp; WebGPU — Matrix &amp; Compute Operations</p>
+
+<div class="controls">
+    <label>Matrix size <em>n</em>:
+        <select id="selSize">
+            <option value="64">64</option>
+            <option value="128">128</option>
+            <option value="256" selected>256</option>
+            <option value="512">512</option>
+            <option value="1024">1024</option>
+        </select>
+    </label>
+    <label>Runs:
+        <input type="number" id="inpRuns" value="5" min="1" max="50" style="width:60px">
+    </label>
+    <button id="btnRun">▶ Run Benchmark</button>
+</div>
+
+<p class="status" id="status">Ready – press <strong>Run Benchmark</strong></p>
+
+<div id="availability" style="text-align:center;margin-bottom:1rem"></div>
+
+<table id="results" style="display:none">
+    <thead>
+        <tr>
+            <th>Operation</th>
+            <th>JS (ms)</th>
+            <th>WASM (ms)</th>
+            <th>WebGL (ms)</th>
+            <th>WebGPU (ms)</th>
+            <th>Fastest</th>
+        </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+</table>
+
+<pre id="log"></pre>
+
+<script type="module">
+import { WebGLCompute } from './js/webgl-compute.js';
+import { GPUCompute }   from './js/gpu-compute.js';
+
+// ───────── helpers ──────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const log = msg => { const el = $('log'); el.textContent += msg + '\n'; el.scrollTop = el.scrollHeight; };
+const status = msg => $('status').innerHTML = msg;
+
+// ───────── JS reference implementations ─────────────────────────────
+function jsMatVecMul(A, x, n) {
+    const r = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+        let s = 0;
+        for (let j = 0; j < n; j++) s += A[i * n + j] * x[j];
+        r[i] = s;
+    }
+    return r;
+}
+
+function jsDot(a, b, n) {
+    let s = 0;
+    for (let i = 0; i < n; i++) s += a[i] * b[i];
+    return s;
+}
+
+function jsAxpy(x, y, alpha, n) {
+    const r = new Float64Array(n);
+    for (let i = 0; i < n; i++) r[i] = alpha * x[i] + y[i];
+    return r;
+}
+
+// ───────── WASM loader ──────────────────────────────────────────────
+let wasmExports = null;
+
+async function loadWasm() {
+    try {
+        const resp = await fetch('./wasm/matrix-ops.wasm');
+        const buffer = await resp.arrayBuffer();
+        const module = await WebAssembly.compile(buffer);
+        const instance = await WebAssembly.instantiate(module, {
+            env: { abort: () => {}, seed: () => Date.now() }
+        });
+        wasmExports = instance.exports;
+        return true;
+    } catch (e) {
+        log('WASM load failed: ' + e.message);
+        return false;
+    }
+}
+
+function wasmMatVecMul(K, x, n) {
+    // Dense mat-vec via WASM (use the raw-pointer version)
+    const mem = wasmExports.memory;
+    const needed = (n * n + n + n) * 8;
+    // Ensure enough memory
+    const pages = Math.ceil((needed + 65536) / 65536);
+    while (mem.buffer.byteLength < pages * 65536) wasmExports.memory.grow(1);
+
+    const base = 1024; // safe start offset
+    const kPtr = base;
+    const pPtr = kPtr + n * n * 8;
+    const apPtr = pPtr + n * 8;
+
+    new Float64Array(mem.buffer, kPtr, n * n).set(K);
+    new Float64Array(mem.buffer, pPtr, n).set(x);
+
+    wasmExports.denseMatVecRaw(kPtr, pPtr, apPtr, n);
+
+    const result = new Float64Array(n);
+    result.set(new Float64Array(mem.buffer, apPtr, n));
+    return result;
+}
+
+// ───────── generate test data ───────────────────────────────────────
+function generateSPD(n) {
+    const A = new Float64Array(n * n);
+    for (let i = 0; i < n; i++)
+        for (let j = 0; j < n; j++)
+            A[i * n + j] = Math.random();
+    const K = new Float64Array(n * n);
+    for (let i = 0; i < n; i++)
+        for (let j = 0; j < n; j++) {
+            let s = 0;
+            for (let k = 0; k < n; k++) s += A[k * n + i] * A[k * n + j];
+            K[i * n + j] = s + (i === j ? n : 0);
+        }
+    return K;
+}
+
+function randVec(n) {
+    const v = new Float64Array(n);
+    for (let i = 0; i < n; i++) v[i] = Math.random();
+    return v;
+}
+
+// ───────── timing helper ────────────────────────────────────────────
+async function bench(fn, runs) {
+    // warm-up
+    await fn();
+    const times = [];
+    for (let r = 0; r < runs; r++) {
+        const t0 = performance.now();
+        await fn();
+        times.push(performance.now() - t0);
+    }
+    const avg = times.reduce((a, b) => a + b) / times.length;
+    return avg;
+}
+
+// ───────── main benchmark ───────────────────────────────────────────
+const webgl  = new WebGLCompute();
+const webgpu = new GPUCompute();
+
+let haveWasm   = false;
+let haveWebGL  = false;
+let haveWebGPU = false;
+
+async function initAll() {
+    status('Initialising backends…');
+    haveWasm   = await loadWasm();
+    haveWebGL  = await webgl.init();
+    haveWebGPU = await webgpu.init();
+
+    const badge = (ok, label) =>
+        `<span class="badge ${ok ? 'badge-ok' : 'badge-no'}">${label} ${ok ? '✓' : '✗'}</span>`;
+    $('availability').innerHTML = [
+        badge(true, 'JS'),
+        badge(haveWasm, 'WASM'),
+        badge(haveWebGL, 'WebGL'),
+        badge(haveWebGPU, 'WebGPU'),
+    ].join(' ');
+
+    log('Backends: JS ✓  WASM ' + (haveWasm ? '✓' : '✗') +
+        '  WebGL ' + (haveWebGL ? '✓' : '✗') +
+        '  WebGPU ' + (haveWebGPU ? '✓' : '✗'));
+    status('Ready – press <strong>Run Benchmark</strong>');
+}
+
+async function runBenchmark() {
+    const n    = parseInt($('selSize').value);
+    const runs = parseInt($('inpRuns').value);
+    log(`\n${'═'.repeat(60)}`);
+    log(`Benchmark: n=${n}, ${runs} runs per backend`);
+    log('═'.repeat(60));
+
+    status(`Generating ${n}×${n} SPD matrix…`);
+    const K = generateSPD(n);
+    const x = randVec(n);
+    const a = randVec(n);
+    const b = randVec(n);
+    const alpha = 2.5;
+
+    const rows = [];
+
+    // ── Mat-Vec Mul ──────────────────────────────────────────────
+    status('Benchmarking Mat-Vec Mul…');
+    const mvJS = await bench(() => jsMatVecMul(K, x, n), runs);
+    log(`  matVecMul  JS:     ${mvJS.toFixed(3)} ms`);
+
+    let mvWasm = null;
+    if (haveWasm) {
+        mvWasm = await bench(() => wasmMatVecMul(K, x, n), runs);
+        log(`  matVecMul  WASM:   ${mvWasm.toFixed(3)} ms`);
+    }
+
+    let mvGL = null;
+    if (haveWebGL) {
+        mvGL = await bench(() => webgl.matVecMul(K, x, n), runs);
+        log(`  matVecMul  WebGL:  ${mvGL.toFixed(3)} ms`);
+    }
+
+    let mvGPU = null;
+    if (haveWebGPU) {
+        mvGPU = await bench(() => webgpu.matVecMul(K, x, n), runs);
+        log(`  matVecMul  WebGPU: ${mvGPU.toFixed(3)} ms`);
+    }
+    rows.push({ op: 'Mat-Vec Mul', js: mvJS, wasm: mvWasm, gl: mvGL, gpu: mvGPU });
+
+    // ── Dot Product ─────────────────────────────────────────────
+    status('Benchmarking Dot Product…');
+    const dpJS = await bench(() => jsDot(a, b, n), runs);
+    log(`  dotProduct JS:     ${dpJS.toFixed(3)} ms`);
+
+    let dpGL = null;
+    if (haveWebGL) {
+        dpGL = await bench(() => webgl.dotProduct(a, b, n), runs);
+        log(`  dotProduct WebGL:  ${dpGL.toFixed(3)} ms`);
+    }
+
+    let dpGPU = null;
+    if (haveWebGPU) {
+        dpGPU = await bench(() => webgpu.dotProduct(a, b, n), runs);
+        log(`  dotProduct WebGPU: ${dpGPU.toFixed(3)} ms`);
+    }
+    rows.push({ op: 'Dot Product', js: dpJS, wasm: null, gl: dpGL, gpu: dpGPU });
+
+    // ── AXPY ────────────────────────────────────────────────────
+    status('Benchmarking AXPY…');
+    const axJS = await bench(() => jsAxpy(a, b, alpha, n), runs);
+    log(`  axpy       JS:     ${axJS.toFixed(3)} ms`);
+
+    let axGL = null;
+    if (haveWebGL) {
+        axGL = await bench(() => webgl.axpy(a, b, alpha, n), runs);
+        log(`  axpy       WebGL:  ${axGL.toFixed(3)} ms`);
+    }
+
+    let axGPU = null;
+    if (haveWebGPU) {
+        axGPU = await bench(() => webgpu.axpy(a, b, alpha, n), runs);
+        log(`  axpy       WebGPU: ${axGPU.toFixed(3)} ms`);
+    }
+    rows.push({ op: 'AXPY', js: axJS, wasm: null, gl: axGL, gpu: axGPU });
+
+    // ── render table ────────────────────────────────────────────
+    const tbody = $('tbody');
+    tbody.innerHTML = '';
+    for (const r of rows) {
+        const vals = { JS: r.js, WASM: r.wasm, WebGL: r.gl, WebGPU: r.gpu };
+        const available = Object.entries(vals).filter(([, v]) => v !== null);
+        const minVal = Math.min(...available.map(([, v]) => v));
+        const fastest = available.find(([, v]) => v === minVal)?.[0] || '–';
+
+        const cell = (v, key) => {
+            if (v === null) return '<td class="na">–</td>';
+            const cls = key === fastest ? ' class="fastest"' : '';
+            return `<td${cls}>${v.toFixed(3)}</td>`;
+        };
+
+        tbody.innerHTML += `<tr>
+            <td>${r.op}</td>
+            ${cell(r.js, 'JS')}
+            ${cell(r.wasm, 'WASM')}
+            ${cell(r.gl, 'WebGL')}
+            ${cell(r.gpu, 'WebGPU')}
+            <td class="fastest">${fastest}</td>
+        </tr>`;
+    }
+    $('results').style.display = '';
+
+    log('\n' + '─'.repeat(60));
+    log('Done.');
+    status('Benchmark complete ✓');
+}
+
+// ── wire up UI ──────────────────────────────────────────────────
+$('btnRun').addEventListener('click', async () => {
+    $('btnRun').disabled = true;
+    try { await runBenchmark(); }
+    catch (e) { log('ERROR: ' + e.message); status('Error – see log'); }
+    finally { $('btnRun').disabled = false; }
+});
+
+initAll();
+</script>
+</body>
+</html>
