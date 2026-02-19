@@ -1843,7 +1843,7 @@ class TopologyOptimizerWorker3D {
         const visited = new Uint8Array(nel);
         const queue = [];
 
-        // Helper to convert (ex, ey, ez) to flat index
+        // Helper to convert (ex, ey, ez) to flat index (x-major: x + y*nelx + z*nelx*nely)
         const idx3 = (ex, ey, ez) => ex + ey * nelx + ez * nelx * nely;
 
         // Seed: all boundary elements that are void
