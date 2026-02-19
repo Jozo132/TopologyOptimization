@@ -732,3 +732,463 @@ export function ebePCG(
   return cgMax;
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// MGPCG — Full self-contained Multigrid-Preconditioned Conjugate Gradient
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Performs the entire MGPCG solve inside WASM, including V-cycle
+// preconditioner with EbE/dense matvec, trilinear restriction &
+// prolongation, and damped-Jacobi smoothing.
+//
+// The caller lays out a level descriptor table in WASM linear memory.
+// Each level descriptor is 80 bytes (20 × i32) at stride 80.
+//
+// Level descriptor layout (byte offsets):
+//   0:  nelx (i32)            4:  nely (i32)
+//   8:  nelz (i32)           12:  ndof (i32)
+//  16:  nel (i32)            20:  nfree (i32)
+//  24:  activeCount (i32)    28:  hasDenseK (i32)  0 or 1
+//  32:  edofsPtr (u32)       36:  evalsPtr (u32)
+//  40:  activePtr (u32)      44:  fixedMaskPtr (u32)
+//  48:  freeDofsPtr (u32)    52:  invDiagPtr (u32)
+//  56:  denseKPtr (u32)      60:  AuPtr (u32)
+//  64:  resPtr (u32)         68:  bPtr (u32)
+//  72:  xPtr (u32)           76:  scratchPtr (u32)  [24 f64]
+// ═══════════════════════════════════════════════════════════════════════
+
+const MG_NU1: i32 = 2;
+const MG_NU2: i32 = 2;
+const MG_OMEGA: f64 = 0.5;
+const MG_COARSE_ITERS: i32 = 30;
+const MG_LEVEL_STRIDE: usize = 80;
+
+// ─── Helpers for level descriptor access ───
+@inline function lvlDesc(base: usize, li: i32): usize {
+  return base + <usize>li * MG_LEVEL_STRIDE;
+}
+
+// ─── applyA: matrix-vector product at a given level ───
+// Supports dense Galerkin (hasDenseK=1) or EbE with active elements.
+// Writes result to apPtr; for EbE, apPtr is zeroed internally.
+function mgApplyA(lvl: usize, kePtr: usize, pPtr: usize, apPtr: usize): void {
+  const ndof: i32 = load<i32>(lvl + 12);
+  const hasDense: i32 = load<i32>(lvl + 28);
+
+  if (hasDense) {
+    const dkPtr: usize = <usize>load<u32>(lvl + 56);
+    for (let i: i32 = 0; i < ndof; i++) {
+      let s: f64 = 0.0;
+      const rowBase: usize = dkPtr + (<usize>(i * ndof) << 3);
+      for (let j: i32 = 0; j < ndof; j++) {
+        s += load<f64>(rowBase + (<usize>j << 3)) * load<f64>(pPtr + (<usize>j << 3));
+      }
+      store<f64>(apPtr + (<usize>i << 3), s);
+    }
+    return;
+  }
+
+  // EbE matvec
+  memory.fill(apPtr, 0, <usize>ndof << 3);
+  const activeCount: i32 = load<i32>(lvl + 24);
+  const activeArr: usize = <usize>load<u32>(lvl + 40);
+  const edofsArr: usize = <usize>load<u32>(lvl + 32);
+  const evalsArr: usize = <usize>load<u32>(lvl + 36);
+  const scratch: usize = <usize>load<u32>(lvl + 76);
+
+  for (let ai: i32 = 0; ai < activeCount; ai++) {
+    const e: i32 = load<i32>(activeArr + (<usize>ai << 2));
+    const E: f64 = load<f64>(evalsArr + (<usize>e << 3));
+    const edBase: usize = edofsArr + (<usize>(e * 24) << 2);
+
+    for (let j: i32 = 0; j < 24; j++) {
+      const gj: i32 = load<i32>(edBase + (<usize>j << 2));
+      store<f64>(scratch + (<usize>j << 3), load<f64>(pPtr + (<usize>gj << 3)));
+    }
+    for (let i: i32 = 0; i < 24; i++) {
+      const gi: i32 = load<i32>(edBase + (<usize>i << 2));
+      let sum: f64 = 0.0;
+      const rowBase: usize = kePtr + (<usize>(i * 24) << 3);
+      for (let j: i32 = 0; j < 24; j++) {
+        sum += load<f64>(rowBase + (<usize>j << 3)) * load<f64>(scratch + (<usize>j << 3));
+      }
+      store<f64>(apPtr + (<usize>gi << 3), load<f64>(apPtr + (<usize>gi << 3)) + E * sum);
+    }
+  }
+}
+
+// ─── Damped Jacobi smoothing: x += ω·D⁻¹·(b − A·x) ───
+function mgSmooth(lvl: usize, kePtr: usize, bPtr: usize, xPtr: usize, auPtr: usize): void {
+  const nfree: i32 = load<i32>(lvl + 20);
+  const freeDofs: usize = <usize>load<u32>(lvl + 48);
+  const invDiag: usize = <usize>load<u32>(lvl + 52);
+
+  mgApplyA(lvl, kePtr, xPtr, auPtr);
+
+  for (let ii: i32 = 0; ii < nfree; ii++) {
+    const d: i32 = load<i32>(freeDofs + (<usize>ii << 2));
+    const dOff: usize = <usize>d << 3;
+    const r: f64 = load<f64>(bPtr + dOff) - load<f64>(auPtr + dOff);
+    store<f64>(xPtr + dOff,
+      load<f64>(xPtr + dOff) + MG_OMEGA * load<f64>(invDiag + dOff) * r);
+  }
+}
+
+// ─── V-cycle: recursive multigrid preconditioner ───
+function mgVcycle(levelsPtr: usize, li: i32, numLevels: i32, kePtr: usize,
+                  bPtr: usize, xPtr: usize): void {
+  const lvl: usize = lvlDesc(levelsPtr, li);
+  const ndof: i32 = load<i32>(lvl + 12);
+  const nfree: i32 = load<i32>(lvl + 20);
+  const freeDofs: usize = <usize>load<u32>(lvl + 48);
+  const auPtr: usize = <usize>load<u32>(lvl + 60);
+  const resPtr: usize = <usize>load<u32>(lvl + 64);
+
+  // ── Pre-smoothing ──
+  for (let s: i32 = 0; s < MG_NU1; s++) {
+    mgSmooth(lvl, kePtr, bPtr, xPtr, auPtr);
+  }
+
+  // ── Compute residual: res = b − A·x ──
+  mgApplyA(lvl, kePtr, xPtr, auPtr);
+  memory.fill(resPtr, 0, <usize>ndof << 3);
+  for (let ii: i32 = 0; ii < nfree; ii++) {
+    const d: i32 = load<i32>(freeDofs + (<usize>ii << 2));
+    const dOff: usize = <usize>d << 3;
+    store<f64>(resPtr + dOff, load<f64>(bPtr + dOff) - load<f64>(auPtr + dOff));
+  }
+
+  // ── Coarsest level: extra smoothing then return ──
+  if (li === numLevels - 1) {
+    for (let s: i32 = 0; s < MG_COARSE_ITERS; s++) {
+      mgSmooth(lvl, kePtr, bPtr, xPtr, auPtr);
+    }
+    return;
+  }
+
+  // ── Restriction: bC = P^T · res  (trilinear full-weighting) ──
+  const clvl: usize = lvlDesc(levelsPtr, li + 1);
+  const ndofC: i32 = load<i32>(clvl + 12);
+  const bCPtr: usize = <usize>load<u32>(clvl + 68);
+  const xCPtr: usize = <usize>load<u32>(clvl + 72);
+
+  const nxF: i32 = load<i32>(lvl + 0) + 1;   // nelx+1
+  const nyF: i32 = load<i32>(lvl + 4) + 1;   // nely+1
+  const nzF: i32 = load<i32>(lvl + 8) + 1;   // nelz+1
+  const nxC: i32 = load<i32>(clvl + 0) + 1;
+  const nyC: i32 = load<i32>(clvl + 4) + 1;
+  const nzC: i32 = load<i32>(clvl + 8) + 1;
+
+  memory.fill(bCPtr, 0, <usize>ndofC << 3);
+
+  for (let fz: i32 = 0; fz < nzF; fz++) {
+    const cz0: i32 = min(fz >> 1, nzC - 1);
+    const cz1: i32 = min(cz0 + 1, nzC - 1);
+    const tz: f64 = (cz0 !== cz1 && (fz & 1) !== 0) ? 0.5 : 0.0;
+    const wz0: f64 = 1.0 - tz;
+    const wz1: f64 = tz;
+
+    for (let fy: i32 = 0; fy < nyF; fy++) {
+      const cy0: i32 = min(fy >> 1, nyC - 1);
+      const cy1: i32 = min(cy0 + 1, nyC - 1);
+      const ty: f64 = (cy0 !== cy1 && (fy & 1) !== 0) ? 0.5 : 0.0;
+      const wy0: f64 = 1.0 - ty;
+      const wy1: f64 = ty;
+
+      for (let fx: i32 = 0; fx < nxF; fx++) {
+        const cx0: i32 = min(fx >> 1, nxC - 1);
+        const cx1: i32 = min(cx0 + 1, nxC - 1);
+        const tx: f64 = (cx0 !== cx1 && (fx & 1) !== 0) ? 0.5 : 0.0;
+        const wx0: f64 = 1.0 - tx;
+        const wx1: f64 = tx;
+
+        const nF: i32 = fx * nyF * nzF + fy * nzF + fz;
+        const rBase: usize = <usize>(3 * nF) << 3;
+        const r0: f64 = load<f64>(resPtr + rBase);
+        const r1: f64 = load<f64>(resPtr + rBase + 8);
+        const r2: f64 = load<f64>(resPtr + rBase + 16);
+
+        // Accumulate to 8 coarse corners
+        const w000: f64 = wx0 * wy0 * wz0;
+        if (w000 > 0) {
+          const c3: usize = <usize>(3 * (cx0 * nyC * nzC + cy0 * nzC + cz0)) << 3;
+          store<f64>(bCPtr + c3,      load<f64>(bCPtr + c3)      + w000 * r0);
+          store<f64>(bCPtr + c3 + 8,  load<f64>(bCPtr + c3 + 8)  + w000 * r1);
+          store<f64>(bCPtr + c3 + 16, load<f64>(bCPtr + c3 + 16) + w000 * r2);
+        }
+        const w100: f64 = wx1 * wy0 * wz0;
+        if (w100 > 0) {
+          const c3: usize = <usize>(3 * (cx1 * nyC * nzC + cy0 * nzC + cz0)) << 3;
+          store<f64>(bCPtr + c3,      load<f64>(bCPtr + c3)      + w100 * r0);
+          store<f64>(bCPtr + c3 + 8,  load<f64>(bCPtr + c3 + 8)  + w100 * r1);
+          store<f64>(bCPtr + c3 + 16, load<f64>(bCPtr + c3 + 16) + w100 * r2);
+        }
+        const w010: f64 = wx0 * wy1 * wz0;
+        if (w010 > 0) {
+          const c3: usize = <usize>(3 * (cx0 * nyC * nzC + cy1 * nzC + cz0)) << 3;
+          store<f64>(bCPtr + c3,      load<f64>(bCPtr + c3)      + w010 * r0);
+          store<f64>(bCPtr + c3 + 8,  load<f64>(bCPtr + c3 + 8)  + w010 * r1);
+          store<f64>(bCPtr + c3 + 16, load<f64>(bCPtr + c3 + 16) + w010 * r2);
+        }
+        const w110: f64 = wx1 * wy1 * wz0;
+        if (w110 > 0) {
+          const c3: usize = <usize>(3 * (cx1 * nyC * nzC + cy1 * nzC + cz0)) << 3;
+          store<f64>(bCPtr + c3,      load<f64>(bCPtr + c3)      + w110 * r0);
+          store<f64>(bCPtr + c3 + 8,  load<f64>(bCPtr + c3 + 8)  + w110 * r1);
+          store<f64>(bCPtr + c3 + 16, load<f64>(bCPtr + c3 + 16) + w110 * r2);
+        }
+        const w001: f64 = wx0 * wy0 * wz1;
+        if (w001 > 0) {
+          const c3: usize = <usize>(3 * (cx0 * nyC * nzC + cy0 * nzC + cz1)) << 3;
+          store<f64>(bCPtr + c3,      load<f64>(bCPtr + c3)      + w001 * r0);
+          store<f64>(bCPtr + c3 + 8,  load<f64>(bCPtr + c3 + 8)  + w001 * r1);
+          store<f64>(bCPtr + c3 + 16, load<f64>(bCPtr + c3 + 16) + w001 * r2);
+        }
+        const w101: f64 = wx1 * wy0 * wz1;
+        if (w101 > 0) {
+          const c3: usize = <usize>(3 * (cx1 * nyC * nzC + cy0 * nzC + cz1)) << 3;
+          store<f64>(bCPtr + c3,      load<f64>(bCPtr + c3)      + w101 * r0);
+          store<f64>(bCPtr + c3 + 8,  load<f64>(bCPtr + c3 + 8)  + w101 * r1);
+          store<f64>(bCPtr + c3 + 16, load<f64>(bCPtr + c3 + 16) + w101 * r2);
+        }
+        const w011: f64 = wx0 * wy1 * wz1;
+        if (w011 > 0) {
+          const c3: usize = <usize>(3 * (cx0 * nyC * nzC + cy1 * nzC + cz1)) << 3;
+          store<f64>(bCPtr + c3,      load<f64>(bCPtr + c3)      + w011 * r0);
+          store<f64>(bCPtr + c3 + 8,  load<f64>(bCPtr + c3 + 8)  + w011 * r1);
+          store<f64>(bCPtr + c3 + 16, load<f64>(bCPtr + c3 + 16) + w011 * r2);
+        }
+        const w111: f64 = wx1 * wy1 * wz1;
+        if (w111 > 0) {
+          const c3: usize = <usize>(3 * (cx1 * nyC * nzC + cy1 * nzC + cz1)) << 3;
+          store<f64>(bCPtr + c3,      load<f64>(bCPtr + c3)      + w111 * r0);
+          store<f64>(bCPtr + c3 + 8,  load<f64>(bCPtr + c3 + 8)  + w111 * r1);
+          store<f64>(bCPtr + c3 + 16, load<f64>(bCPtr + c3 + 16) + w111 * r2);
+        }
+      }
+    }
+  }
+
+  // Zero fixed DOFs on coarse level
+  const fixedC: usize = <usize>load<u32>(clvl + 44);
+  for (let i: i32 = 0; i < ndofC; i++) {
+    if (load<u8>(fixedC + <usize>i)) store<f64>(bCPtr + (<usize>i << 3), 0.0);
+  }
+
+  // ── Recursive coarse solve ──
+  memory.fill(xCPtr, 0, <usize>ndofC << 3);
+  mgVcycle(levelsPtr, li + 1, numLevels, kePtr, bCPtr, xCPtr);
+
+  // ── Prolongation: x += P · xC  (trilinear interpolation) ──
+  const fixedF: usize = <usize>load<u32>(lvl + 44);
+  for (let fz: i32 = 0; fz < nzF; fz++) {
+    const cz0: i32 = min(fz >> 1, nzC - 1);
+    const cz1: i32 = min(cz0 + 1, nzC - 1);
+    const tz: f64 = (cz0 !== cz1 && (fz & 1) !== 0) ? 0.5 : 0.0;
+    const wz0: f64 = 1.0 - tz;
+    const wz1: f64 = tz;
+
+    for (let fy: i32 = 0; fy < nyF; fy++) {
+      const cy0: i32 = min(fy >> 1, nyC - 1);
+      const cy1: i32 = min(cy0 + 1, nyC - 1);
+      const ty: f64 = (cy0 !== cy1 && (fy & 1) !== 0) ? 0.5 : 0.0;
+      const wy0: f64 = 1.0 - ty;
+      const wy1: f64 = ty;
+
+      for (let fx: i32 = 0; fx < nxF; fx++) {
+        const cx0: i32 = min(fx >> 1, nxC - 1);
+        const cx1: i32 = min(cx0 + 1, nxC - 1);
+        const tx: f64 = (cx0 !== cx1 && (fx & 1) !== 0) ? 0.5 : 0.0;
+        const wx0: f64 = 1.0 - tx;
+        const wx1: f64 = tx;
+
+        const nF: i32 = fx * nyF * nzF + fy * nzF + fz;
+        const n000: i32 = cx0 * nyC * nzC + cy0 * nzC + cz0;
+        const n100: i32 = cx1 * nyC * nzC + cy0 * nzC + cz0;
+        const n010: i32 = cx0 * nyC * nzC + cy1 * nzC + cz0;
+        const n110: i32 = cx1 * nyC * nzC + cy1 * nzC + cz0;
+        const n001: i32 = cx0 * nyC * nzC + cy0 * nzC + cz1;
+        const n101: i32 = cx1 * nyC * nzC + cy0 * nzC + cz1;
+        const n011: i32 = cx0 * nyC * nzC + cy1 * nzC + cz1;
+        const n111: i32 = cx1 * nyC * nzC + cy1 * nzC + cz1;
+
+        const pw000: f64 = wx0 * wy0 * wz0;
+        const pw100: f64 = wx1 * wy0 * wz0;
+        const pw010: f64 = wx0 * wy1 * wz0;
+        const pw110: f64 = wx1 * wy1 * wz0;
+        const pw001: f64 = wx0 * wy0 * wz1;
+        const pw101: f64 = wx1 * wy0 * wz1;
+        const pw011: f64 = wx0 * wy1 * wz1;
+        const pw111: f64 = wx1 * wy1 * wz1;
+
+        const bF: i32 = 3 * nF;
+        for (let d: i32 = 0; d < 3; d++) {
+          const fIdx: i32 = bF + d;
+          if (!load<u8>(fixedF + <usize>fIdx)) {
+            const val: f64 =
+              load<f64>(xCPtr + (<usize>(3 * n000 + d) << 3)) * pw000 +
+              load<f64>(xCPtr + (<usize>(3 * n100 + d) << 3)) * pw100 +
+              load<f64>(xCPtr + (<usize>(3 * n010 + d) << 3)) * pw010 +
+              load<f64>(xCPtr + (<usize>(3 * n110 + d) << 3)) * pw110 +
+              load<f64>(xCPtr + (<usize>(3 * n001 + d) << 3)) * pw001 +
+              load<f64>(xCPtr + (<usize>(3 * n101 + d) << 3)) * pw101 +
+              load<f64>(xCPtr + (<usize>(3 * n011 + d) << 3)) * pw011 +
+              load<f64>(xCPtr + (<usize>(3 * n111 + d) << 3)) * pw111;
+            store<f64>(xPtr + (<usize>fIdx << 3),
+              load<f64>(xPtr + (<usize>fIdx << 3)) + val);
+          }
+        }
+      }
+    }
+  }
+
+  // ── Post-smoothing ──
+  for (let s: i32 = 0; s < MG_NU2; s++) {
+    mgSmooth(lvl, kePtr, bPtr, xPtr, auPtr);
+  }
+}
+
+/**
+ * Full self-contained MGPCG (Multigrid-Preconditioned Conjugate Gradient)
+ * FEA solver running entirely in WASM.
+ *
+ * Eliminates per-CG-iteration JS↔WASM boundary crossings by performing
+ * the complete PCG solve, including multigrid V-cycle preconditioning,
+ * inside a single WASM call.
+ *
+ * The caller must:
+ *   1. Build the multigrid hierarchy on the JS side
+ *   2. Lay out level descriptors and data in WASM linear memory
+ *   3. Pre-compute E_vals, active elements, invDiag for each level
+ *   4. Optionally assemble dense Galerkin matrices for coarse levels
+ *
+ * @param levelsPtr   - Base pointer for level descriptor table (numLevels × 80 bytes)
+ * @param numLevels   - Number of multigrid levels
+ * @param kePtr       - KEflat: f64[576] shared reference element stiffness
+ * @param fPtr        - F: f64[ndof0] force vector at finest level
+ * @param uPtr        - U: f64[ndof0] displacement output at finest level
+ * @param fixedMask0  - fixedMask: u8[ndof0] at finest level
+ * @param ndof0       - Total DOFs at finest level
+ * @param maxIter     - Maximum CG iterations
+ * @param tolerance   - Convergence tolerance (relative)
+ * @param cgWorkPtr   - CG workspace: r[ndof0] + z[ndof0] + p[ndof0] + Ap[ndof0]
+ * @returns number of CG iterations performed
+ */
+export function ebeMGPCG(
+  levelsPtr: usize,
+  numLevels: i32,
+  kePtr: usize,
+  fPtr: usize,
+  uPtr: usize,
+  fixedMask0: usize,
+  ndof0: i32,
+  maxIter: i32,
+  tolerance: f64,
+  cgWorkPtr: usize
+): i32 {
+  const EPSILON: f64 = 1e-12;
+  const ndofBytes: usize = <usize>ndof0 << 3;
+
+  // CG workspace layout
+  const rPtr: usize = cgWorkPtr;
+  const zPtr: usize = rPtr + ndofBytes;
+  const pPtr: usize = zPtr + ndofBytes;
+  const apPtr: usize = pPtr + ndofBytes;
+
+  const lvl0: usize = lvlDesc(levelsPtr, 0);
+
+  // ── Initial residual: r = F − A·U (with fixed DOFs zeroed) ──
+  // Zero U first (cold start)
+  memory.fill(uPtr, 0, ndofBytes);
+
+  // r = F, zeroing fixed DOFs
+  for (let i: i32 = 0; i < ndof0; i++) {
+    const iOff: usize = <usize>i << 3;
+    if (load<u8>(fixedMask0 + <usize>i)) {
+      store<f64>(rPtr + iOff, 0.0);
+    } else {
+      store<f64>(rPtr + iOff, load<f64>(fPtr + iOff));
+    }
+  }
+
+  // ── Apply preconditioner: z = M⁻¹·r  (V-cycle) ──
+  memory.fill(zPtr, 0, ndofBytes);
+  mgVcycle(levelsPtr, 0, numLevels, kePtr, rPtr, zPtr);
+  // Zero fixed DOFs in z
+  for (let i: i32 = 0; i < ndof0; i++) {
+    if (load<u8>(fixedMask0 + <usize>i)) store<f64>(zPtr + (<usize>i << 3), 0.0);
+  }
+
+  // p = z
+  memory.copy(pPtr, zPtr, ndofBytes);
+
+  // rz = r^T · z,  r0norm2 = ||r||^2
+  let rz: f64 = 0.0;
+  let r0norm2: f64 = 0.0;
+  for (let i: i32 = 0; i < ndof0; i++) {
+    const iOff: usize = <usize>i << 3;
+    const ri: f64 = load<f64>(rPtr + iOff);
+    rz += ri * load<f64>(zPtr + iOff);
+    r0norm2 += ri * ri;
+  }
+
+  const tolSq: f64 = tolerance * tolerance * (r0norm2 > 1e-30 ? r0norm2 : <f64>1e-30);
+
+  // ── PCG iteration loop ──
+  for (let iter: i32 = 0; iter < maxIter; iter++) {
+    // Check convergence
+    let rnorm2: f64 = 0.0;
+    for (let i: i32 = 0; i < ndof0; i++) {
+      const ri: f64 = load<f64>(rPtr + (<usize>i << 3));
+      rnorm2 += ri * ri;
+    }
+    if (rnorm2 < tolSq) return iter;
+
+    // Ap = A · p
+    mgApplyA(lvl0, kePtr, pPtr, apPtr);
+    // Zero fixed DOFs in Ap
+    for (let i: i32 = 0; i < ndof0; i++) {
+      if (load<u8>(fixedMask0 + <usize>i)) store<f64>(apPtr + (<usize>i << 3), 0.0);
+    }
+
+    // α = rz / (p^T · Ap)
+    let pAp: f64 = 0.0;
+    for (let i: i32 = 0; i < ndof0; i++) {
+      const iOff: usize = <usize>i << 3;
+      pAp += load<f64>(pPtr + iOff) * load<f64>(apPtr + iOff);
+    }
+    const alpha: f64 = rz / (pAp + EPSILON);
+
+    // U += α·p,  r -= α·Ap
+    for (let i: i32 = 0; i < ndof0; i++) {
+      const iOff: usize = <usize>i << 3;
+      store<f64>(uPtr + iOff, load<f64>(uPtr + iOff) + alpha * load<f64>(pPtr + iOff));
+      store<f64>(rPtr + iOff, load<f64>(rPtr + iOff) - alpha * load<f64>(apPtr + iOff));
+    }
+
+    // z = M⁻¹ · r  (V-cycle preconditioner)
+    memory.fill(zPtr, 0, ndofBytes);
+    mgVcycle(levelsPtr, 0, numLevels, kePtr, rPtr, zPtr);
+    for (let i: i32 = 0; i < ndof0; i++) {
+      if (load<u8>(fixedMask0 + <usize>i)) store<f64>(zPtr + (<usize>i << 3), 0.0);
+    }
+
+    // β = rz_new / rz
+    let rz_new: f64 = 0.0;
+    for (let i: i32 = 0; i < ndof0; i++) {
+      const iOff: usize = <usize>i << 3;
+      rz_new += load<f64>(rPtr + iOff) * load<f64>(zPtr + iOff);
+    }
+    const beta: f64 = rz_new / (rz + EPSILON);
+
+    // p = z + β·p
+    for (let i: i32 = 0; i < ndof0; i++) {
+      const iOff: usize = <usize>i << 3;
+      store<f64>(pPtr + iOff, load<f64>(zPtr + iOff) + beta * load<f64>(pPtr + iOff));
+    }
+
+    rz = rz_new;
+  }
+
+  return maxIter;
+}
+
