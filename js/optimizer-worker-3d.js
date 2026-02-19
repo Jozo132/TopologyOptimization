@@ -1909,6 +1909,16 @@ class TopologyOptimizerWorker3D {
     }
 
     /**
+     * Compute the horizontal span (in grid cells) for a given overhang angle.
+     * At 90° the span is 0 (vertical only). Lower angles allow more horizontal reach.
+     */
+    _overhangSpan(angleDeg, maxExtent) {
+        const angleRad = angleDeg * Math.PI / 180;
+        const reach = Math.min(Math.tan(Math.PI / 2 - angleRad), maxExtent);
+        return Math.round(reach);
+    }
+
+    /**
      * Manufacturing overhang constraint (3D).
      * Sweeps bottom-to-top (build direction = +Y). For each layer, an element
      * is only allowed to be solid if it has support from the layer below
@@ -1920,9 +1930,7 @@ class TopologyOptimizerWorker3D {
      * Uses x-major indexing: idx = ex + ey * nelx + ez * nelx * nely.
      */
     _applyOverhangConstraint(x, nelx, nely, nelz, angleDeg, threshold = 0.3) {
-        const angleRad = angleDeg * Math.PI / 180;
-        const reach = Math.min(Math.tan(Math.PI / 2 - angleRad), Math.max(nelx, nelz)); // clamp to grid size
-        const span = Math.round(reach);
+        const span = this._overhangSpan(angleDeg, Math.max(nelx, nelz));
 
         const idx3 = (ex, ey, ez) => ex + ey * nelx + ez * nelx * nely;
 
@@ -1967,9 +1975,7 @@ class TopologyOptimizerWorker3D {
      * Uses x-major indexing: idx = ex + ey * nelx + ez * nelx * nely.
      */
     _enforceToolAccessibility(x, nelx, nely, nelz, angleDeg, threshold = 0.3) {
-        const angleRad = angleDeg * Math.PI / 180;
-        const reach = Math.min(Math.tan(Math.PI / 2 - angleRad), Math.max(nelx, nelz));
-        const span = Math.round(reach);
+        const span = this._overhangSpan(angleDeg, Math.max(nelx, nelz));
         const nel = nelx * nely * nelz;
         const accessible = new Uint8Array(nel);
 
@@ -2084,7 +2090,7 @@ class TopologyOptimizerWorker3D {
                             if (sx >= 0 && sx < nelx && sy >= 0 && sy < nely &&
                                 sz >= 0 && sz < nelz) {
                                 const sidx = idx3(sx, sy, sz);
-                                if (dilated[sidx] < threshold) dilated[sidx] = threshold;
+                                if (dilated[sidx] < threshold) dilated[sidx] = 1.0;
                             }
                         }
                     }

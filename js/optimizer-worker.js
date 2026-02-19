@@ -1094,6 +1094,16 @@ class TopologyOptimizerWorker {
     }
 
     /**
+     * Compute the horizontal span (in grid cells) for a given overhang angle.
+     * At 90° the span is 0 (vertical only). Lower angles allow more horizontal reach.
+     */
+    _overhangSpan(angleDeg, maxExtent) {
+        const angleRad = angleDeg * Math.PI / 180;
+        const reach = Math.min(Math.tan(Math.PI / 2 - angleRad), maxExtent);
+        return Math.round(reach);
+    }
+
+    /**
      * Manufacturing overhang constraint (2D).
      * Sweeps bottom-to-top (build direction = +Y). For each row, an element
      * is only allowed to be solid if it is supported from below within the
@@ -1105,14 +1115,10 @@ class TopologyOptimizerWorker {
      * Uses 2D column-major indexing: idx = ey + ex * nely.
      */
     _applyOverhangConstraint(x, nelx, nely, angleDeg, threshold = 0.3) {
-        // Convert angle to horizontal reach per row: how many columns an
-        // unsupported overhang can extend.  At 90° the reach is 0 (pure vertical).
-        const angleRad = angleDeg * Math.PI / 180;
-        const reach = Math.min(Math.tan(Math.PI / 2 - angleRad), nelx); // clamp to grid size
+        const span = this._overhangSpan(angleDeg, nelx);
 
         // Build a support map: sweep from bottom row (ey=nely-1) upward (ey=0)
         // bottom row is always self-supported
-        const span = Math.round(reach);
         for (let ey = nely - 2; ey >= 0; ey--) {
             for (let ex = 0; ex < nelx; ex++) {
                 const idx = ey + ex * nely; // column-major
@@ -1148,9 +1154,7 @@ class TopologyOptimizerWorker {
      * Uses 2D column-major indexing: idx = ey + ex * nely.
      */
     _enforceToolAccessibility(x, nelx, nely, angleDeg, threshold = 0.3) {
-        const angleRad = angleDeg * Math.PI / 180;
-        const reach = Math.min(Math.tan(Math.PI / 2 - angleRad), nelx);
-        const span = Math.round(reach);
+        const span = this._overhangSpan(angleDeg, nelx);
         const nel = nelx * nely;
         const accessible = new Uint8Array(nel);
 
@@ -1244,7 +1248,7 @@ class TopologyOptimizerWorker {
                         const sx = ex + dx, sy = ey + dy;
                         if (sx >= 0 && sx < nelx && sy >= 0 && sy < nely) {
                             const sidx = sy + sx * nely;
-                            if (dilated[sidx] < threshold) dilated[sidx] = threshold;
+                            if (dilated[sidx] < threshold) dilated[sidx] = 1.0;
                         }
                     }
                 }
