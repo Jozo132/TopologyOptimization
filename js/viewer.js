@@ -1014,6 +1014,8 @@ export class Viewer3D {
 
         this._boundaryFaces = [];
         this._boundaryFaceMap = {};
+
+        for (let x = 0; x < nx; x++) {
             for (let y = 0; y < ny; y++) {
                 for (let z = 0; z < nz; z++) {
                     if (!isVisible(x, y, z)) continue;
