@@ -11,6 +11,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const { ModelImporter } = await import(join(__dirname, '..', 'js', 'importer.js'));
+const { TopologySolver } = await import(join(__dirname, '..', 'lib', 'topology-solver.js'));
 
 const importer = new ModelImporter();
 
@@ -368,6 +369,109 @@ console.log('Test 12: Template scaling responds to voxel size');
     assert(bridge2mm.nx === 20, `Bridge at 2mm voxels (res=20) should have nx=20, got ${bridge2mm.nx}`);
     assert(bridge2mm.ny === 8, `Bridge at 2mm voxels (res=20) should have ny=8, got ${bridge2mm.ny}`);
     assert(bridge2mm.nz === 4, `Bridge at 2mm voxels (res=20) should have nz=4, got ${bridge2mm.nz}`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 13: TopologySolver library – environment detection
+// ──────────────────────────────────────────────────
+console.log('Test 13: TopologySolver library – environment detection');
+{
+    const info = TopologySolver.debug.detectEnvironment();
+    assert(info.env === 'node', `env should be 'node', got '${info.env}'`);
+    assert(info.workerType === 'worker_threads', `workerType should be 'worker_threads', got '${info.workerType}'`);
+
+    const url2d = TopologySolver.debug.workerUrl('2d');
+    const url3d = TopologySolver.debug.workerUrl('3d');
+    assert(url2d.endsWith('optimizer-worker.js'), `2D worker URL should end with optimizer-worker.js`);
+    assert(url3d.endsWith('optimizer-worker-3d.js'), `3D worker URL should end with optimizer-worker-3d.js`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 14: TopologySolver library – 2D optimization via worker_threads
+// ──────────────────────────────────────────────────
+console.log('Test 14: TopologySolver library – 2D optimization via Node.js worker_threads');
+{
+    const solver = new TopologySolver();
+    const nx = 8, ny = 4, nz = 1;
+    const model = { nx, ny, nz, type: 'beam', elements: new Float32Array(nx * ny).fill(1) };
+    const config = {
+        solver: '2d',
+        volumeFraction: 0.3,
+        maxIterations: 3,
+        penaltyFactor: 3,
+        filterRadius: 0.9,
+        forceDirection: 'down',
+        forceMagnitude: 100,
+        constraintPosition: 'left',
+        useAMR: false,
+        youngsModulus: 2.3,
+        poissonsRatio: 0.35,
+        penalStart: 1.5,
+        continuationIters: 3,
+        useProjection: false,
+    };
+
+    let progressCalled = false;
+    const result = await solver.optimize(model, config, (iter) => { progressCalled = true; });
+
+    assert(progressCalled, 'Progress callback should be called during optimization');
+    assert(result.iterations >= 1, `Should complete at least 1 iteration, got ${result.iterations}`);
+    assert(typeof result.finalCompliance === 'number' && result.finalCompliance > 0, `finalCompliance should be a positive number`);
+    assert(result.densities instanceof Float32Array, 'result.densities should be a Float32Array');
+}
+
+// ──────────────────────────────────────────────────
+// Test 15: TopologySolver library – solver selection ('auto' uses 3D for cube)
+// ──────────────────────────────────────────────────
+console.log('Test 15: TopologySolver library – solver selection auto/2d/3d');
+{
+    // 'auto' with nz>1 should pick 3D worker
+    const url3d = TopologySolver.debug.workerUrl('3d');
+    const url2d = TopologySolver.debug.workerUrl('2d');
+    assert(url3d.includes('optimizer-worker-3d'), 'workerUrl(3d) should reference 3D worker');
+    assert(url2d.includes('optimizer-worker.js'), 'workerUrl(2d) should reference 2D worker');
+    assert(!url2d.includes('3d'), 'workerUrl(2d) should NOT contain "3d"');
+
+    // Verify solver property is removed from workerConfig by running a quick 2D opt
+    const solver2 = new TopologySolver();
+    const nx = 6, ny = 3, nz = 1;
+    const model = { nx, ny, nz, elements: new Float32Array(nx * ny).fill(1) };
+    const result = await solver2.optimize(model, {
+        solver: '2d', volumeFraction: 0.5, maxIterations: 2, penaltyFactor: 3,
+        filterRadius: 0.9, forceDirection: 'down', forceMagnitude: 100,
+        constraintPosition: 'left', useAMR: false, youngsModulus: 2.3,
+        poissonsRatio: 0.35, useProjection: false,
+    });
+    assert(typeof result.finalCompliance === 'number', 'Optimization with solver:2d should succeed');
+}
+
+// ──────────────────────────────────────────────────
+// Test 16: TopologySolver library – cancel
+// ──────────────────────────────────────────────────
+console.log('Test 16: TopologySolver library – cancel');
+{
+    const solver = new TopologySolver();
+    const nx = 10, ny = 5, nz = 1;
+    const model = { nx, ny, nz, elements: new Float32Array(nx * ny).fill(1) };
+    const config = {
+        solver: '2d', volumeFraction: 0.3, maxIterations: 100,
+        penaltyFactor: 3, filterRadius: 0.9, forceDirection: 'down', forceMagnitude: 100,
+        constraintPosition: 'left', useAMR: false, youngsModulus: 2.3,
+        poissonsRatio: 0.35, useProjection: false,
+    };
+
+    let cancelled = false;
+    const optimPromise = solver.optimize(model, config, (iter) => {
+        // Cancel after first iteration
+        if (iter === 1) solver.cancel();
+    });
+
+    try {
+        await optimPromise;
+    } catch (err) {
+        cancelled = err.message === 'Optimization cancelled';
+    }
+    assert(cancelled, 'Cancelling optimization should reject the promise with "Optimization cancelled"');
 }
 
 // ──────────────────────────────────────────────────

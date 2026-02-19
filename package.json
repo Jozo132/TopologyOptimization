@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "A minimalistic but fully functional web-based topology optimization application using vanilla JavaScript and ES6 modules.",
   "type": "module",
+  "main": "./lib/topology-solver.js",
   "scripts": {
     "asbuild:debug": "asc assembly/index.ts --target debug --outFile build/optimized.debug.wasm --textFile build/optimized.debug.wat --sourceMap",
     "asbuild:release": "asc assembly/index.ts --target release --outFile build/optimized.release.wasm --textFile build/optimized.release.wat --sourceMap --optimize",
@@ -28,8 +29,9 @@
   },
   "exports": {
     ".": {
-      "import": "./build/release.js",
-      "types": "./build/release.d.ts"
-    }
+      "import": "./lib/topology-solver.js"
+    },
+    "./lib/topology-solver.js": "./lib/topology-solver.js",
+    "./js/optimizer.js": "./js/optimizer.js"
   }
 }

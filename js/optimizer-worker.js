@@ -1,10 +1,25 @@
 // Web Worker for topology optimization using SIMP algorithm
 // This runs in a separate thread so the UI stays responsive.
+// Supports both Web Worker (browser) and worker_threads (Node.js) environments.
+
+// Node.js / browser environment compatibility shim
+if (typeof self === 'undefined') {
+    const { parentPort } = await import('worker_threads');
+    globalThis.self = globalThis;
+    globalThis.postMessage = (data) => parentPort.postMessage(data);
+    parentPort.on('message', (data) => {
+        if (typeof globalThis.onmessage === 'function') globalThis.onmessage({ data });
+    });
+}
 
 const EPSILON = 1e-12;
 const CG_TOLERANCE = 1e-8;
 const CG_TOLERANCE_COARSE = 1e-2;
 const MAX_CG_ITERATIONS = 2000;
+
+// Yield to the full event loop so pending messages (cancel/pause/updateConfig) can be processed.
+// Uses setTimeout(0) to advance past the I/O phase in Node.js and browsers alike.
+const _yieldToLoop = () => new Promise(r => setTimeout(r, 0));
 
 // WASM Module for high-performance operations
 let wasmModule = null;
@@ -12,12 +27,19 @@ let wasmLoaded = false;
 
 async function loadWasmModule() {
     try {
-        // Resolve WASM path relative to the document root, not the worker script location.
-        // Workers resolve fetch() URLs relative to their own script URL (inside js/),
-        // so we go up one level to reach the project root where wasm/ lives.
-        const baseUrl = new URL('..', self.location.href).href;
-        const response = await fetch(new URL('wasm/matrix-ops.wasm', baseUrl).href);
-        const buffer = await response.arrayBuffer();
+        // Resolve WASM path relative to this worker module (works in browser and Node.js)
+        const wasmUrl = new URL('../wasm/matrix-ops.wasm', import.meta.url);
+        let buffer;
+        try {
+            // fetch() works in browsers and Node.js 18+
+            const response = await fetch(wasmUrl.href);
+            buffer = await response.arrayBuffer();
+        } catch (_fetchErr) {
+            // Fallback for older Node.js: use fs
+            const { readFile } = await import('fs/promises');
+            const { fileURLToPath } = await import('url');
+            buffer = (await readFile(fileURLToPath(wasmUrl))).buffer;
+        }
         const module = await WebAssembly.compile(buffer);
         
         wasmModule = await WebAssembly.instantiate(module, {
@@ -208,6 +230,11 @@ class TopologyOptimizerWorker {
         this.nu = 0.3;
         this.cancelled = false;
         this.useWasm = false;
+        // Pause / resume state
+        this._paused = false;
+        this._resumeResolve = null;
+        // Pending config update (applied at next iteration boundary)
+        this._pendingConfig = null;
     }
 
     _flattenKE(KE, size) {
@@ -329,12 +356,14 @@ class TopologyOptimizerWorker {
         const nelx = nx;
         const nely = ny;
         const nelz = nz;
-        const volfrac = config.volumeFraction;
-        const maxIterations = config.maxIterations;
+        // Declared as `let` so updateConfig() can mutate them during optimization
+        let volfrac = config.volumeFraction;
+        let maxIterations = config.maxIterations;
 
         this.penal = config.penaltyFactor;
         this.rmin = config.filterRadius;
         this.cancelled = false;
+        this._paused = false;
 
         // Apply material properties from config if provided
         if (config.youngsModulus) {
@@ -448,9 +477,28 @@ class TopologyOptimizerWorker {
         const startTime = performance.now();
 
         while (change > 0.01 && loop < maxIterations) {
+            // Yield to the event loop so pending messages (cancel/pause/updateConfig) are processed
+            await _yieldToLoop();
+
             if (this.cancelled) {
                 postMessage({ type: 'cancelled', iteration: loop });
                 return;
+            }
+
+            // Apply pending config updates at the start of each iteration
+            if (this._pendingConfig) {
+                const patch = this._pendingConfig;
+                this._pendingConfig = null;
+                if (patch.penaltyFactor !== undefined) this.penal = patch.penaltyFactor;
+                if (patch.filterRadius !== undefined) this.rmin = patch.filterRadius;
+                if (patch.volumeFraction !== undefined) volfrac = patch.volumeFraction;
+                if (patch.maxIterations !== undefined) maxIterations = patch.maxIterations;
+            }
+
+            // Pause between iterations if requested
+            if (this._paused) {
+                postMessage({ type: 'paused', iteration: loop });
+                await new Promise(resolve => { this._resumeResolve = resolve; });
             }
 
             loop++;
@@ -1373,8 +1421,18 @@ self.onmessage = async function(e) {
 
     if (type === 'start') {
         optimizer.cancelled = false;
+        optimizer._paused = false;
         await optimizer.optimize(model, config);
     } else if (type === 'cancel') {
         optimizer.cancelled = true;
+        // Unblock any pending pause so the cancellation check is reached
+        if (optimizer._resumeResolve) { optimizer._resumeResolve(); optimizer._resumeResolve = null; }
+    } else if (type === 'pause') {
+        optimizer._paused = true;
+    } else if (type === 'resume') {
+        optimizer._paused = false;
+        if (optimizer._resumeResolve) { optimizer._resumeResolve(); optimizer._resumeResolve = null; }
+    } else if (type === 'updateConfig') {
+        optimizer._pendingConfig = e.data.config;
     }
 };

@@ -1,7 +1,7 @@
 // Main application entry point
 import { Viewer3D } from './viewer.js';
 import { ModelImporter } from './importer.js';
-import { TopologyOptimizer } from './optimizer.js';
+import { TopologySolver } from '../lib/topology-solver.js';
 import { ModelExporter } from './exporter.js';
 import { WorkflowManager } from './workflow.js';
 
@@ -21,6 +21,7 @@ class TopologyApp {
         
         this.currentModel = null;
         this.optimizedModel = null;
+        this._optimizationPaused = false;
         this.config = {
             volumeFraction: 0.1,
             forceDirection: 'down',
@@ -61,7 +62,7 @@ class TopologyApp {
         await this.viewer.init();
         
         this.importer = new ModelImporter();
-        this.optimizer = new TopologyOptimizer();
+        this.optimizer = new TopologySolver();
         this.exporter = new ModelExporter();
         this.workflow = new WorkflowManager();
         this.workflow.init();
@@ -367,6 +368,10 @@ class TopologyApp {
         document.getElementById('cancelOptimization').addEventListener('click', () => {
             this.cancelOptimization();
         });
+
+        document.getElementById('pauseOptimization').addEventListener('click', () => {
+            this.togglePauseOptimization();
+        });
         
         // Step 4: Export
         document.getElementById('downloadSTL').addEventListener('click', () => {
@@ -542,11 +547,14 @@ class TopologyApp {
         const progressText = document.getElementById('progressText');
         const complianceText = document.getElementById('complianceText');
         
-        // Toggle buttons: hide Run, show Cancel
+        // Toggle buttons: hide Run, show Cancel + Pause
         const runButton = document.getElementById('runOptimization');
         const cancelButton = document.getElementById('cancelOptimization');
+        const pauseButton = document.getElementById('pauseOptimization');
         runButton.classList.add('hidden');
         cancelButton.classList.remove('hidden');
+        if (pauseButton) { pauseButton.classList.remove('hidden'); pauseButton.textContent = 'Pause'; }
+        this._optimizationPaused = false;
         
         try {
             // Include painted constraint/force data in config
@@ -646,12 +654,32 @@ class TopologyApp {
         } finally {
             runButton.classList.remove('hidden');
             cancelButton.classList.add('hidden');
+            // Reset pause state
+            this._optimizationPaused = false;
+            const pauseButton = document.getElementById('pauseOptimization');
+            if (pauseButton) { pauseButton.classList.add('hidden'); pauseButton.textContent = 'Pause'; }
         }
     }
 
     cancelOptimization() {
         console.log('Cancelling optimization...');
+        this._optimizationPaused = false;
         this.optimizer.cancel();
+    }
+
+    togglePauseOptimization() {
+        const pauseButton = document.getElementById('pauseOptimization');
+        if (this._optimizationPaused) {
+            this._optimizationPaused = false;
+            this.optimizer.resume();
+            if (pauseButton) pauseButton.textContent = 'Pause';
+            console.log('Optimization resumed');
+        } else {
+            this._optimizationPaused = true;
+            this.optimizer.pause();
+            if (pauseButton) pauseButton.textContent = 'Resume';
+            console.log('Optimization paused');
+        }
     }
 
     exportSTL() {
@@ -679,6 +707,7 @@ class TopologyApp {
         
         // Cancel any running optimization
         this.optimizer.cancel();
+        this._optimizationPaused = false;
         
         this.currentModel = null;
         this.optimizedModel = null;
@@ -689,6 +718,8 @@ class TopologyApp {
         document.getElementById('fileInput').value = '';
         document.getElementById('runOptimization').classList.remove('hidden');
         document.getElementById('cancelOptimization').classList.add('hidden');
+        const pauseBtn = document.getElementById('pauseOptimization');
+        if (pauseBtn) { pauseBtn.classList.add('hidden'); pauseBtn.textContent = 'Pause'; }
         document.getElementById('strainSliderContainer').classList.add('hidden');
         document.getElementById('transformControls').classList.add('hidden');
         
