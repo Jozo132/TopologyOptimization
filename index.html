@@ -75,116 +75,155 @@
                 </div>
                 <div class="step-content">
                     <div class="assignment-controls">
-                        <div class="control-group">
-                            <label>Material</label>
-                            <select id="materialSelect">
-                                <option value="custom">Custom</option>
-                                <option value="plastic" selected>Plastic (ABS)</option>
-                                <option value="aluminum">Aluminum</option>
-                                <option value="steel">Steel</option>
-                            </select>
-                        </div>
-                        <div class="control-group">
-                            <label>Young's Modulus (GPa)</label>
-                            <input type="number" id="youngsModulus" value="2.3" min="0.001" step="0.1">
-                        </div>
-                        <div class="control-group">
-                            <label>Poisson's Ratio</label>
-                            <input type="number" id="poissonsRatio" value="0.35" min="0.01" max="0.49" step="0.01">
-                        </div>
-                        <div class="control-group">
-                            <label>Volume Fraction (target material %)</label>
-                            <input type="range" id="volumeFraction" min="0.1" max="0.9" step="0.05" value="0.1">
-                            <span id="volumeFractionValue">10%</span>
-                        </div>
-                        <div class="control-group">
-                            <label>Force Direction</label>
-                            <select id="forceDirection">
-                                <option value="down">Down (-Y)</option>
-                                <option value="up">Up (+Y)</option>
-                                <option value="left">Left (-X)</option>
-                                <option value="right">Right (+X)</option>
-                                <option value="custom">Custom Vector</option>
-                            </select>
-                        </div>
-                        <div id="forceVectorControls" class="control-group">
-                            <label>Force Vector (X, Y, Z)</label>
-                            <div style="display: flex; gap: 0.5rem;">
-                                <input type="number" id="forceVectorX" value="0" step="0.1" style="width: 4rem;">
-                                <input type="number" id="forceVectorY" value="-1" step="0.1" style="width: 4rem;">
-                                <input type="number" id="forceVectorZ" value="0" step="0.1" style="width: 4rem;">
+                        <!-- Material Sub-Panel -->
+                        <div class="sub-panel" id="materialPanel">
+                            <div class="sub-panel-header" data-toggle="materialPanel">
+                                <span>🧱 Material Properties</span>
+                                <span class="sub-panel-toggle">▼</span>
                             </div>
-                            <small style="display: block; color: #666; margin-top: 0.25rem;">Custom force direction components</small>
-                        </div>
-                        <div class="control-group">
-                            <label>Force Type</label>
-                            <select id="forceType">
-                                <option value="total" selected>Total (distributed over group)</option>
-                                <option value="pressure">Pressure (per face)</option>
-                            </select>
-                            <small style="display: block; color: #666; margin-top: 0.25rem;">Total: force spread across selected faces. Pressure: force applied per face.</small>
-                        </div>
-                        <div class="control-group">
-                            <label id="forceMagnitudeLabel">Force Magnitude (N)</label>
-                            <input type="number" id="forceMagnitude" value="1000" min="1" step="100">
-                        </div>
-                        <div class="control-group">
-                            <label>Constraint DOFs</label>
-                            <select id="constraintDOFs">
-                                <option value="all" selected>All (XYZ)</option>
-                                <option value="xy">XY only</option>
-                                <option value="xz">XZ only</option>
-                                <option value="yz">YZ only</option>
-                                <option value="x">X only</option>
-                                <option value="y">Y only</option>
-                                <option value="z">Z only</option>
-                            </select>
-                        </div>
-                        <div id="dofPreview" class="dof-preview">
-                            <small><strong>DOF Preview:</strong> <span id="dofPreviewText">Fixed: X ✓ Y ✓ Z ✓ — Fully constrained</span></small>
-                        </div>
-                        <div class="control-group">
-                            <label>Constraint Position</label>
-                            <select id="constraintPosition">
-                                <option value="left">Left Edge</option>
-                                <option value="right">Right Edge</option>
-                                <option value="bottom">Bottom Edge</option>
-                                <option value="top">Top Edge</option>
-                            </select>
-                        </div>
-                        <div class="paint-toolbar">
-                            <button id="paintConstraint" class="btn-secondary" title="Click faces on the model to mark them as fixed constraints">🖌 Paint Constraints</button>
-                            <button id="paintForce" class="btn-secondary" title="Click faces on the model to apply forces (arrows show direction)">🖌 Paint Forces</button>
-                            <button id="clearPaint" class="btn-secondary" title="Exit paint mode">✋ Stop Painting</button>
-                            <div class="control-group" style="margin-top: 0.5rem;">
-                                <label>
-                                    <input type="checkbox" id="useAngleSelection">
-                                    Angle-based surface selection
-                                </label>
-                                <small style="display: block; color: #666; margin-top: 0.25rem;">Click a face to select connected surfaces within angle tolerance</small>
-                            </div>
-                            <div id="angleToleranceControls" class="control-group" style="margin-top: 0.5rem; display: none;">
-                                <label>Angle Tolerance (°)</label>
-                                <div class="slider-with-input">
-                                    <input type="range" id="angleTolerance" min="1" max="180" step="1" value="45">
-                                    <input type="number" id="angleToleranceInput" min="1" max="180" step="1" value="45">
-                                    <span>°</span>
+                            <div class="sub-panel-body">
+                                <div class="control-group">
+                                    <label>Material</label>
+                                    <select id="materialSelect">
+                                        <option value="custom">Custom</option>
+                                        <option value="plastic" selected>Plastic (ABS)</option>
+                                        <option value="aluminum">Aluminum</option>
+                                        <option value="steel">Steel</option>
+                                    </select>
+                                </div>
+                                <div class="control-group">
+                                    <label>Young's Modulus (GPa)</label>
+                                    <input type="number" id="youngsModulus" value="2.3" min="0.001" step="0.1">
+                                </div>
+                                <div class="control-group">
+                                    <label>Poisson's Ratio</label>
+                                    <input type="number" id="poissonsRatio" value="0.35" min="0.01" max="0.49" step="0.01">
+                                </div>
+                                <div class="control-group">
+                                    <label>Volume Fraction (target material %)</label>
+                                    <input type="range" id="volumeFraction" min="0.1" max="0.9" step="0.05" value="0.1">
+                                    <span id="volumeFractionValue">10%</span>
                                 </div>
                             </div>
-                            <div class="control-group" style="margin-top: 0.5rem;">
-                                <label>Brush Size</label>
-                                <input type="range" id="brushSize" min="1" max="10" step="1" value="1">
-                                <span id="brushSizeValue">1</span>
+                        </div>
+
+                        <!-- Forces Sub-Panel -->
+                        <div class="sub-panel" id="forcesPanel">
+                            <div class="sub-panel-header" data-toggle="forcesPanel">
+                                <span>⬇ Forces</span>
+                                <span class="sub-panel-toggle">▼</span>
+                            </div>
+                            <div class="sub-panel-body">
+                                <div class="control-group">
+                                    <label>Force Direction</label>
+                                    <select id="forceDirection">
+                                        <option value="down">Down (-Y)</option>
+                                        <option value="up">Up (+Y)</option>
+                                        <option value="left">Left (-X)</option>
+                                        <option value="right">Right (+X)</option>
+                                        <option value="custom">Custom Vector</option>
+                                    </select>
+                                </div>
+                                <div id="forceVectorControls" class="control-group">
+                                    <label>Force Vector (X, Y, Z)</label>
+                                    <div style="display: flex; gap: 0.5rem;">
+                                        <input type="number" id="forceVectorX" value="0" step="0.1" style="width: 4rem;">
+                                        <input type="number" id="forceVectorY" value="-1" step="0.1" style="width: 4rem;">
+                                        <input type="number" id="forceVectorZ" value="0" step="0.1" style="width: 4rem;">
+                                    </div>
+                                    <small style="display: block; color: #666; margin-top: 0.25rem;">Custom force direction components</small>
+                                </div>
+                                <div class="control-group">
+                                    <label>Force Type</label>
+                                    <select id="forceType">
+                                        <option value="total" selected>Total (distributed over group)</option>
+                                        <option value="pressure">Pressure (per face)</option>
+                                    </select>
+                                    <small style="display: block; color: #666; margin-top: 0.25rem;">Total: force spread across selected faces. Pressure: force applied per face.</small>
+                                </div>
+                                <div class="control-group">
+                                    <label id="forceMagnitudeLabel">Force Magnitude (N)</label>
+                                    <input type="number" id="forceMagnitude" value="1000" min="1" step="100">
+                                </div>
                             </div>
                         </div>
-                        <!-- Selection Groups -->
-                        <div class="groups-toolbar" style="margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--border-color);">
-                            <label style="font-weight: 600; font-size: 0.875rem;">Selection Groups</label>
-                            <small style="display: block; color: #666; margin-bottom: 0.5rem;">Create a group, then select its type and paint faces</small>
-                            <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-                                <button id="addGroup" class="btn-secondary" style="font-size: 0.75rem;">+ Add Group</button>
+
+                        <!-- Constraints Sub-Panel -->
+                        <div class="sub-panel" id="constraintsPanel">
+                            <div class="sub-panel-header" data-toggle="constraintsPanel">
+                                <span>📌 Constraints</span>
+                                <span class="sub-panel-toggle">▼</span>
                             </div>
-                            <div id="selectionGroupsList" style="margin-top: 0.5rem;"></div>
+                            <div class="sub-panel-body">
+                                <div class="control-group">
+                                    <label>Constraint DOFs</label>
+                                    <select id="constraintDOFs">
+                                        <option value="all" selected>All (XYZ)</option>
+                                        <option value="xy">XY only</option>
+                                        <option value="xz">XZ only</option>
+                                        <option value="yz">YZ only</option>
+                                        <option value="x">X only</option>
+                                        <option value="y">Y only</option>
+                                        <option value="z">Z only</option>
+                                    </select>
+                                </div>
+                                <div id="dofPreview" class="dof-preview">
+                                    <small><strong>DOF Preview:</strong> <span id="dofPreviewText">Fixed: X ✓ Y ✓ Z ✓ — Fully constrained</span></small>
+                                </div>
+                                <div class="control-group">
+                                    <label>Constraint Position</label>
+                                    <select id="constraintPosition">
+                                        <option value="left">Left Edge</option>
+                                        <option value="right">Right Edge</option>
+                                        <option value="bottom">Bottom Edge</option>
+                                        <option value="top">Top Edge</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Paint Tools Sub-Panel -->
+                        <div class="sub-panel" id="paintPanel">
+                            <div class="sub-panel-header" data-toggle="paintPanel">
+                                <span>🖌 Paint Tools</span>
+                                <span class="sub-panel-toggle">▼</span>
+                            </div>
+                            <div class="sub-panel-body">
+                                <div class="paint-toolbar">
+                                    <button id="paintConstraint" class="btn-secondary" title="Click faces on the model to mark them as fixed constraints">🖌 Paint Constraints</button>
+                                    <button id="paintForce" class="btn-secondary" title="Click faces on the model to apply forces (arrows show direction)">🖌 Paint Forces</button>
+                                    <button id="clearPaint" class="btn-secondary" title="Exit paint mode">✋ Stop Painting</button>
+                                    <div class="control-group" style="margin-top: 0.5rem;">
+                                        <label>
+                                            <input type="checkbox" id="useAngleSelection">
+                                            Angle-based surface selection
+                                        </label>
+                                        <small style="display: block; color: #666; margin-top: 0.25rem;">Click a face to select connected surfaces within angle tolerance</small>
+                                    </div>
+                                    <div id="angleToleranceControls" class="control-group" style="margin-top: 0.5rem; display: none;">
+                                        <label>Angle Tolerance (°)</label>
+                                        <div class="slider-with-input">
+                                            <input type="range" id="angleTolerance" min="1" max="180" step="1" value="45">
+                                            <input type="number" id="angleToleranceInput" min="1" max="180" step="1" value="45">
+                                            <span>°</span>
+                                        </div>
+                                    </div>
+                                    <div class="control-group" style="margin-top: 0.5rem;">
+                                        <label>Brush Size</label>
+                                        <input type="range" id="brushSize" min="1" max="10" step="1" value="1">
+                                        <span id="brushSizeValue">1</span>
+                                    </div>
+                                </div>
+                                <!-- Selection Groups -->
+                                <div class="groups-toolbar" style="margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--border-color);">
+                                    <label style="font-weight: 600; font-size: 0.875rem;">Selection Groups</label>
+                                    <small style="display: block; color: #666; margin-bottom: 0.5rem;">Create a group, then select its type and paint faces</small>
+                                    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                                        <button id="addGroup" class="btn-secondary" style="font-size: 0.75rem;">+ Add Group</button>
+                                    </div>
+                                    <div id="selectionGroupsList" style="margin-top: 0.5rem;"></div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -206,6 +245,8 @@
                                 <option value="3d">3D SIMP</option>
                                 <option value="mgpcg">3D MGPCG (fastest 3D)</option>
                                 <option value="cg">3D Jacobi-CG</option>
+                                <option value="fea">FEA Only (stress analysis)</option>
+                                <option value="genetic">Genetic Algorithm</option>
                             </select>
                         </div>
                         <div class="control-group">
@@ -220,43 +261,158 @@
                             <label>Filter Radius</label>
                             <input type="number" id="filterRadius" value="0.9" min="0.1" max="5" step="0.1">
                         </div>
-                        <div class="control-group">
-                            <label>
-                                <input type="checkbox" id="constrainToSolid">
-                                Constrain to initial solid space
-                            </label>
-                            <small style="display: block; color: #666; margin-top: 0.25rem;">Prevent material from appearing outside the original model shape</small>
-                        </div>
-                        <div class="control-group">
-                            <label>
-                                <input type="checkbox" id="preventVoids">
-                                Prevent internal voids
-                            </label>
-                            <small style="display: block; color: #666; margin-top: 0.25rem;">Fill enclosed air bubbles that are not connected to the boundary</small>
-                        </div>
-                        <div class="control-group">
-                            <label>
-                                <input type="checkbox" id="manufacturingConstraint">
-                                Manufacturing constraint
-                            </label>
-                            <small style="display: block; color: #666; margin-top: 0.25rem;">Enforce support for overhangs to ensure manufacturability (CNC, mold, 3D printing)</small>
-                        </div>
-                        <div class="control-group" id="manufacturingControls" style="display: none;">
-                            <label>Overhang Angle (°)</label>
-                            <div class="slider-with-input">
-                                <input type="range" id="manufacturingAngle" min="30" max="90" step="1" value="90">
-                                <input type="number" id="manufacturingAngleInput" min="30" max="90" step="1" value="90">
-                                <span>°</span>
+
+                        <!-- Genetic Algorithm Parameters -->
+                        <div class="sub-panel collapsed" id="geneticPanel" style="display: none;">
+                            <div class="sub-panel-header" data-toggle="geneticPanel">
+                                <span>🧬 Genetic Algorithm Parameters</span>
+                                <span class="sub-panel-toggle">▼</span>
                             </div>
-                            <small style="display: block; color: #666; margin-top: 0.25rem;">90° = CNC machining (no overhangs), 88° = mold tools, lower = more permissive</small>
-                            <label style="margin-top: 0.5rem;">Min Pocket Corner Radius</label>
-                            <input type="number" id="manufacturingMinRadius" value="0" min="0" max="10" step="0.5">
-                            <small style="display: block; color: #666; margin-top: 0.25rem;">Minimum corner radius for pockets (grid units). 0 = no constraint. Matches CNC tool radius.</small>
-                            <label style="margin-top: 0.5rem;">Max Depth</label>
-                            <input type="number" id="manufacturingMaxDepth" value="0" min="0" max="100" step="1">
-                            <small style="display: block; color: #666; margin-top: 0.25rem;">Maximum milling depth from the top surface (grid units). 0 = no limit.</small>
+                            <div class="sub-panel-body">
+                                <div class="control-group">
+                                    <label>Population Size</label>
+                                    <input type="number" id="populationSize" value="20" min="4" max="200" step="2">
+                                    <small style="display: block; color: #666; margin-top: 0.25rem;">Number of individuals per generation</small>
+                                </div>
+                                <div class="control-group">
+                                    <label>Elite Count</label>
+                                    <input type="number" id="eliteCount" value="2" min="1" max="20" step="1">
+                                    <small style="display: block; color: #666; margin-top: 0.25rem;">Top individuals kept unchanged</small>
+                                </div>
+                                <div class="control-group">
+                                    <label>Mutation Rate</label>
+                                    <input type="number" id="mutationRate" value="0.02" min="0.001" max="0.5" step="0.005">
+                                    <small style="display: block; color: #666; margin-top: 0.25rem;">Per-element mutation probability</small>
+                                </div>
+                                <div class="control-group">
+                                    <label>Crossover Rate</label>
+                                    <input type="number" id="crossoverRate" value="0.8" min="0.1" max="1" step="0.05">
+                                    <small style="display: block; color: #666; margin-top: 0.25rem;">Probability of crossover vs clone</small>
+                                </div>
+                                <div class="control-group">
+                                    <label>Tournament Size</label>
+                                    <input type="number" id="tournamentSize" value="3" min="2" max="10" step="1">
+                                    <small style="display: block; color: #666; margin-top: 0.25rem;">Tournament selection size</small>
+                                </div>
+                                <div class="control-group">
+                                    <label>Volume Penalty</label>
+                                    <input type="number" id="volumePenalty" value="2.0" min="0.1" max="10" step="0.1">
+                                    <small style="display: block; color: #666; margin-top: 0.25rem;">Weight for volume constraint penalty</small>
+                                </div>
+                            </div>
                         </div>
-                        <button id="openAdvanced" class="btn-secondary" style="width: 100%; margin-bottom: 0.5rem;">⚙ Advanced</button>
+
+                        <!-- Manufacturing Constraints Sub-Panel -->
+                        <div class="sub-panel collapsed" id="manufacturingPanel">
+                            <div class="sub-panel-header" data-toggle="manufacturingPanel">
+                                <span>🏭 Manufacturing Constraints</span>
+                                <span class="sub-panel-toggle">▼</span>
+                            </div>
+                            <div class="sub-panel-body">
+                                <div class="control-group">
+                                    <label>
+                                        <input type="checkbox" id="constrainToSolid">
+                                        Constrain to initial solid space
+                                    </label>
+                                    <small style="display: block; color: #666; margin-top: 0.25rem;">Prevent material from appearing outside the original model shape</small>
+                                </div>
+                                <div class="control-group">
+                                    <label>
+                                        <input type="checkbox" id="preventVoids">
+                                        Prevent internal voids
+                                    </label>
+                                    <small style="display: block; color: #666; margin-top: 0.25rem;">Fill enclosed air bubbles that are not connected to the boundary</small>
+                                </div>
+                                <div class="control-group">
+                                    <label>
+                                        <input type="checkbox" id="manufacturingConstraint">
+                                        Manufacturing constraint
+                                    </label>
+                                    <small style="display: block; color: #666; margin-top: 0.25rem;">Enforce support for overhangs to ensure manufacturability (CNC, mold, 3D printing)</small>
+                                </div>
+                                <div class="control-group" id="manufacturingControls" style="display: none;">
+                                    <label>Overhang Angle (°)</label>
+                                    <div class="slider-with-input">
+                                        <input type="range" id="manufacturingAngle" min="30" max="90" step="1" value="90">
+                                        <input type="number" id="manufacturingAngleInput" min="30" max="90" step="1" value="90">
+                                        <span>°</span>
+                                    </div>
+                                    <small style="display: block; color: #666; margin-top: 0.25rem;">90° = CNC machining (no overhangs), 88° = mold tools, lower = more permissive</small>
+                                    <label style="margin-top: 0.5rem;">Min Pocket Corner Radius</label>
+                                    <input type="number" id="manufacturingMinRadius" value="0" min="0" max="10" step="0.5">
+                                    <small style="display: block; color: #666; margin-top: 0.25rem;">Minimum corner radius for pockets (grid units). 0 = no constraint. Matches CNC tool radius.</small>
+                                    <label style="margin-top: 0.5rem;">Max Depth</label>
+                                    <input type="number" id="manufacturingMaxDepth" value="0" min="0" max="100" step="1">
+                                    <small style="display: block; color: #666; margin-top: 0.25rem;">Maximum milling depth from the top surface (grid units). 0 = no limit.</small>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Advanced Parameters Sub-Panel -->
+                        <div class="sub-panel collapsed" id="advancedPanel">
+                            <div class="sub-panel-header" data-toggle="advancedPanel">
+                                <span>⚙ Advanced Parameters</span>
+                                <span class="sub-panel-toggle">▼</span>
+                            </div>
+                            <div class="sub-panel-body">
+                                <div class="control-group">
+                                    <label>Min Cross-Section (elements)</label>
+                                    <input type="number" id="minCrossSection" value="0" min="0" max="5" step="0.5">
+                                    <small style="display: block; color: #666; margin-top: 0.25rem;">0 = disabled, enforces minimum feature size</small>
+                                </div>
+                                <div class="control-group">
+                                    <label>Penalty Start</label>
+                                    <input type="number" id="penalStart" value="1.5" min="1" max="10" step="0.1">
+                                    <small style="display: block; color: #666; margin-top: 0.25rem;">Initial penalty value for continuation ramp</small>
+                                </div>
+                                <div class="control-group">
+                                    <label>Continuation Iterations</label>
+                                    <input type="number" id="continuationIters" value="20" min="1" max="200" step="1">
+                                    <small style="display: block; color: #666; margin-top: 0.25rem;">Number of iterations to ramp penalty from start to target</small>
+                                </div>
+                                <div class="control-group">
+                                    <label>
+                                        <input type="checkbox" id="useProjection" checked>
+                                        Heaviside Projection
+                                    </label>
+                                    <small style="display: block; color: #666; margin-top: 0.25rem;">Apply Heaviside projection for crisp 0/1 designs</small>
+                                </div>
+                                <div class="control-group" id="projectionControls">
+                                    <label>Beta Max</label>
+                                    <input type="number" id="betaMax" value="64" min="1" max="256" step="1">
+                                    <small style="display: block; color: #666; margin-top: 0.25rem;">Maximum projection sharpness (higher = more binary)</small>
+                                </div>
+                                <div class="control-group" id="projectionControls2">
+                                    <label>Beta Interval</label>
+                                    <input type="number" id="betaInterval" value="5" min="1" max="50" step="1">
+                                    <small style="display: block; color: #666; margin-top: 0.25rem;">Double beta every N iterations</small>
+                                </div>
+                                <hr style="border: none; border-top: 1px solid var(--border-color); margin: 1rem 0;">
+                                <div class="control-group">
+                                    <label>
+                                        <input type="checkbox" id="useAMR" checked>
+                                        Adaptive Mesh Refinement (AMR)
+                                    </label>
+                                    <small style="display: block; color: #666; margin-top: 0.25rem;">Dynamically refine high-stress areas</small>
+                                </div>
+                                <div class="control-group" id="amrControls">
+                                    <label>Min Granule Size</label>
+                                    <input type="number" id="minGranuleSize" value="0.02" min="0.01" max="2" step="0.01">
+                                    <small style="display: block; color: #666; margin-top: 0.25rem;">Smallest voxel size in high-stress areas</small>
+                                </div>
+                                <div class="control-group" id="amrControls2">
+                                    <label>Max Granule Size</label>
+                                    <input type="number" id="maxGranuleSize" value="2" min="1" max="8" step="0.5">
+                                    <small style="display: block; color: #666; margin-top: 0.25rem;">Largest voxel size in low-stress areas</small>
+                                </div>
+                                <div class="control-group" id="amrControls3">
+                                    <label>AMR Recalculation Interval</label>
+                                    <input type="number" id="amrInterval" value="3" min="1" max="50" step="1">
+                                    <small style="display: block; color: #666; margin-top: 0.25rem;">Recalculate dynamic grain sizes every N iterations</small>
+                                </div>
+                            </div>
+                        </div>
+
                         <button id="runOptimization" class="btn-primary">Run Optimization</button>
                         <button id="pauseOptimization" class="btn-secondary hidden">Pause</button>
                         <button id="cancelOptimization" class="btn-cancel hidden">Cancel</button>
@@ -359,73 +515,6 @@
                 <div class="strain-slider-values">
                     <span id="strainMinValue">0 MPa</span>
                     <span id="strainMaxValue">0 MPa</span>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Advanced Parameters Modal -->
-    <div id="advancedModal" class="modal-overlay hidden">
-        <div class="modal">
-            <div class="modal-header">
-                <h3>Advanced Parameters</h3>
-                <button id="closeAdvancedModal" class="modal-close">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div class="control-group">
-                    <label>Min Cross-Section (elements)</label>
-                    <input type="number" id="minCrossSection" value="0" min="0" max="5" step="0.5">
-                    <small style="display: block; color: #666; margin-top: 0.25rem;">0 = disabled, enforces minimum feature size</small>
-                </div>
-                <div class="control-group">
-                    <label>Penalty Start</label>
-                    <input type="number" id="penalStart" value="1.5" min="1" max="10" step="0.1">
-                    <small style="display: block; color: #666; margin-top: 0.25rem;">Initial penalty value for continuation ramp</small>
-                </div>
-                <div class="control-group">
-                    <label>Continuation Iterations</label>
-                    <input type="number" id="continuationIters" value="20" min="1" max="200" step="1">
-                    <small style="display: block; color: #666; margin-top: 0.25rem;">Number of iterations to ramp penalty from start to target</small>
-                </div>
-                <div class="control-group">
-                    <label>
-                        <input type="checkbox" id="useProjection" checked>
-                        Heaviside Projection
-                    </label>
-                    <small style="display: block; color: #666; margin-top: 0.25rem;">Apply Heaviside projection for crisp 0/1 designs</small>
-                </div>
-                <div class="control-group" id="projectionControls">
-                    <label>Beta Max</label>
-                    <input type="number" id="betaMax" value="64" min="1" max="256" step="1">
-                    <small style="display: block; color: #666; margin-top: 0.25rem;">Maximum projection sharpness (higher = more binary)</small>
-                </div>
-                <div class="control-group" id="projectionControls2">
-                    <label>Beta Interval</label>
-                    <input type="number" id="betaInterval" value="5" min="1" max="50" step="1">
-                    <small style="display: block; color: #666; margin-top: 0.25rem;">Double beta every N iterations</small>
-                </div>
-                <hr style="border: none; border-top: 1px solid var(--border-color); margin: 1rem 0;">
-                <div class="control-group">
-                    <label>
-                        <input type="checkbox" id="useAMR" checked>
-                        Adaptive Mesh Refinement (AMR)
-                    </label>
-                    <small style="display: block; color: #666; margin-top: 0.25rem;">Dynamically refine high-stress areas</small>
-                </div>
-                <div class="control-group" id="amrControls">
-                    <label>Min Granule Size</label>
-                    <input type="number" id="minGranuleSize" value="0.02" min="0.01" max="2" step="0.01">
-                    <small style="display: block; color: #666; margin-top: 0.25rem;">Smallest voxel size in high-stress areas</small>
-                </div>
-                <div class="control-group" id="amrControls2">
-                    <label>Max Granule Size</label>
-                    <input type="number" id="maxGranuleSize" value="2" min="1" max="8" step="0.5">
-                    <small style="display: block; color: #666; margin-top: 0.25rem;">Largest voxel size in low-stress areas</small>
-                </div>
-                <div class="control-group" id="amrControls3">
-                    <label>AMR Recalculation Interval</label>
-                    <input type="number" id="amrInterval" value="3" min="1" max="50" step="1">
-                    <small style="display: block; color: #666; margin-top: 0.25rem;">Recalculate dynamic grain sizes every N iterations</small>
                 </div>
             </div>
         </div>
