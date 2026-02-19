@@ -250,6 +250,12 @@
                                 <span>°</span>
                             </div>
                             <small style="display: block; color: #666; margin-top: 0.25rem;">90° = CNC machining (no overhangs), 88° = mold tools, lower = more permissive</small>
+                            <label style="margin-top: 0.5rem;">Min Pocket Corner Radius</label>
+                            <input type="number" id="manufacturingMinRadius" value="0" min="0" max="10" step="0.5">
+                            <small style="display: block; color: #666; margin-top: 0.25rem;">Minimum corner radius for pockets (grid units). 0 = no constraint. Matches CNC tool radius.</small>
+                            <label style="margin-top: 0.5rem;">Max Depth</label>
+                            <input type="number" id="manufacturingMaxDepth" value="0" min="0" max="100" step="1">
+                            <small style="display: block; color: #666; margin-top: 0.25rem;">Maximum milling depth from the top surface (grid units). 0 = no limit.</small>
                         </div>
                         <button id="openAdvanced" class="btn-secondary" style="width: 100%; margin-bottom: 0.5rem;">⚙ Advanced</button>
                         <button id="runOptimization" class="btn-primary">Run Optimization</button>
