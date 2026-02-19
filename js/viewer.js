@@ -47,6 +47,7 @@ const MESH_FRAGMENT_SHADER = `
 
     uniform vec3 uLightDir;
     uniform float uAmbient;
+    uniform float uAlpha;
     uniform float uClipEnabled;
     uniform vec3 uClipNormal;
     uniform float uClipOffset;
@@ -57,7 +58,8 @@ const MESH_FRAGMENT_SHADER = `
         float diffuse = abs(dot(normal, uLightDir));
         float light = uAmbient + (1.0 - uAmbient) * diffuse;
         vec3 color = vColor * light;
-        gl_FragColor = vec4(color, 1.0);
+        float alpha = uAlpha > 0.0 ? uAlpha : 1.0;
+        gl_FragColor = vec4(color, alpha);
     }
 `;
 
@@ -285,6 +287,11 @@ export class Viewer3D {
         this._meshBuffers = null;
         this._edgeBuffers = null;
         this._gridBuffers = null;
+
+        // Reference model: original high-res mesh from STL/STEP import
+        this.referenceVertices = null; // flat array of {x,y,z} triangle vertices
+        this.showReference = true;     // toggle for reference model visibility
+        this._referenceBuffers = null; // GPU buffers for reference mesh
 
         this._needsRebuild = true;
         this._lastMeshData = null;
@@ -951,6 +958,15 @@ export class Viewer3D {
         this.paintedConstraintFaces = new Set();
         this.paintedForceFaces = new Set();
         this._needsRebuild = true;
+
+        // Store original mesh vertices as reference model if available
+        if (model && model.originalVertices && model.originalVertices.length >= 3) {
+            this.setReferenceModel(model.originalVertices, model.bounds);
+        } else {
+            this.referenceVertices = null;
+            this._referenceBuffers = null;
+        }
+
         this.draw();
     }
 
@@ -1003,6 +1019,11 @@ export class Viewer3D {
         // Draw edges: always for AMR triangle mesh (to show block boundaries), wireframe-only otherwise
         if (this.meshVisible && this._edgeBuffers && this._edgeBuffers.count > 0 && (this.wireframe || this.meshData)) {
             this._drawEdges(gl, projection, modelView);
+        }
+
+        // Draw reference model (original high-res STL/STEP mesh) as semi-transparent overlay
+        if (this.showReference && this._referenceBuffers && this._referenceBuffers.count > 0) {
+            this._drawReference(gl, projection, modelView, normalMatrix);
         }
 
         // Draw section plane visualization and cross-section cap
@@ -1076,6 +1097,7 @@ export class Viewer3D {
             this._buildVoxelBuffers(nx, ny, nz);
         }
         this._buildGridBuffers(nx, ny, nz);
+        this._buildReferenceBuffers();
     }
 
     /**
@@ -1355,6 +1377,135 @@ export class Viewer3D {
         };
     }
 
+    /**
+     * Build GPU buffers for the original high-res reference mesh.
+     * The reference mesh is the imported STL/STEP triangle surface,
+     * rendered as a semi-transparent overlay.
+     */
+    _buildReferenceBuffers() {
+        const gl = this.gl;
+        if (this._referenceBuffers) {
+            gl.deleteBuffer(this._referenceBuffers.position);
+            gl.deleteBuffer(this._referenceBuffers.normal);
+            gl.deleteBuffer(this._referenceBuffers.color);
+            this._referenceBuffers = null;
+        }
+
+        if (!this.referenceVertices || this.referenceVertices.length < 3) return;
+
+        const verts = this.referenceVertices;
+        const model = this.model;
+        if (!model) return;
+
+        const bounds = this._referenceBounds || model.bounds;
+        if (!bounds) return;
+
+        const { nx, ny, nz } = model;
+        const voxelSize = model.voxelSize || 1;
+
+        // Transform original mesh coordinates to voxel grid coordinates
+        const positions = [];
+        const normals = [];
+        const colors = [];
+        const refColor = [0.5, 0.7, 0.9]; // Light blue-grey reference color
+
+        const numTris = Math.floor(verts.length / 3);
+        for (let t = 0; t < numTris; t++) {
+            const v0 = verts[t * 3];
+            const v1 = verts[t * 3 + 1];
+            const v2 = verts[t * 3 + 2];
+
+            // Transform to voxel space: (v - min) / voxelSize
+            const p0 = [(v0.x - bounds.minX) / voxelSize, (v0.y - bounds.minY) / voxelSize, (v0.z - bounds.minZ) / voxelSize];
+            const p1 = [(v1.x - bounds.minX) / voxelSize, (v1.y - bounds.minY) / voxelSize, (v1.z - bounds.minZ) / voxelSize];
+            const p2 = [(v2.x - bounds.minX) / voxelSize, (v2.y - bounds.minY) / voxelSize, (v2.z - bounds.minZ) / voxelSize];
+
+            // Compute face normal
+            const e1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+            const e2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+            let fnx = e1[1] * e2[2] - e1[2] * e2[1];
+            let fny = e1[2] * e2[0] - e1[0] * e2[2];
+            let fnz = e1[0] * e2[1] - e1[1] * e2[0];
+            const len = Math.sqrt(fnx * fnx + fny * fny + fnz * fnz);
+            if (len > 0) { fnx /= len; fny /= len; fnz /= len; }
+
+            positions.push(...p0, ...p1, ...p2);
+            normals.push(fnx, fny, fnz, fnx, fny, fnz, fnx, fny, fnz);
+            colors.push(...refColor, ...refColor, ...refColor);
+        }
+
+        if (positions.length === 0) return;
+
+        const posBuf = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
+        const normBuf = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, normBuf);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(normals), gl.STATIC_DRAW);
+        const colBuf = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, colBuf);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.STATIC_DRAW);
+
+        this._referenceBuffers = {
+            position: posBuf,
+            normal: normBuf,
+            color: colBuf,
+            count: positions.length / 3
+        };
+    }
+
+    /**
+     * Draw the reference mesh as a semi-transparent overlay.
+     */
+    _drawReference(gl, projection, modelView, normalMatrix) {
+        if (!this._referenceBuffers || this._referenceBuffers.count === 0) return;
+
+        const prog = this._meshProgram;
+        gl.useProgram(prog);
+
+        gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uProjection'), false, projection);
+        gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uModelView'), false, modelView);
+        gl.uniformMatrix3fv(gl.getUniformLocation(prog, 'uNormalMatrix'), false, normalMatrix);
+
+        const lightDir = vec3Normalize([0.3, 0.5, 0.8]);
+        gl.uniform3fv(gl.getUniformLocation(prog, 'uLightDir'), lightDir);
+        gl.uniform1f(gl.getUniformLocation(prog, 'uAmbient'), 0.5);
+        gl.uniform1f(gl.getUniformLocation(prog, 'uAlpha'), 0.25);
+        this._setClipUniforms(gl, prog);
+
+        // Enable blending for transparency
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        gl.depthMask(false);
+
+        const posLoc = gl.getAttribLocation(prog, 'aPosition');
+        const normLoc = gl.getAttribLocation(prog, 'aNormal');
+        const colLoc = gl.getAttribLocation(prog, 'aColor');
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, this._referenceBuffers.position);
+        gl.enableVertexAttribArray(posLoc);
+        gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, this._referenceBuffers.normal);
+        gl.enableVertexAttribArray(normLoc);
+        gl.vertexAttribPointer(normLoc, 3, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, this._referenceBuffers.color);
+        gl.enableVertexAttribArray(colLoc);
+        gl.vertexAttribPointer(colLoc, 3, gl.FLOAT, false, 0, 0);
+
+        gl.drawArrays(gl.TRIANGLES, 0, this._referenceBuffers.count);
+
+        gl.disableVertexAttribArray(posLoc);
+        gl.disableVertexAttribArray(normLoc);
+        gl.disableVertexAttribArray(colLoc);
+
+        // Restore state
+        gl.depthMask(true);
+        gl.disable(gl.BLEND);
+        gl.uniform1f(gl.getUniformLocation(prog, 'uAlpha'), 0.0);
+    }
+
     // ─── Draw calls ─────────────────────────────────────────────────────────
 
     _drawMesh(gl, projection, modelView, normalMatrix) {
@@ -1368,6 +1519,7 @@ export class Viewer3D {
         const lightDir = vec3Normalize([0.3, 0.5, 0.8]);
         gl.uniform3fv(gl.getUniformLocation(prog, 'uLightDir'), lightDir);
         gl.uniform1f(gl.getUniformLocation(prog, 'uAmbient'), 0.4);
+        gl.uniform1f(gl.getUniformLocation(prog, 'uAlpha'), 0.0);
         this._setClipUniforms(gl, prog);
 
         const posLoc = gl.getAttribLocation(prog, 'aPosition');
@@ -2317,6 +2469,26 @@ export class Viewer3D {
         this.draw();
     }
 
+    /**
+     * Set the reference model from original STL/STEP vertices.
+     * The reference mesh is rendered as a semi-transparent overlay.
+     * @param {Array} vertices - Array of {x,y,z} objects (every 3 = 1 triangle)
+     * @param {object} [bounds] - Bounding box {minX,minY,minZ,maxX,maxY,maxZ}
+     */
+    setReferenceModel(vertices, bounds) {
+        this.referenceVertices = vertices;
+        this._referenceBounds = bounds || null;
+        this._needsRebuild = true;
+    }
+
+    /**
+     * Toggle visibility of the reference model overlay.
+     */
+    toggleReference() {
+        this.showReference = !this.showReference;
+        this.draw();
+    }
+
     toggleSection() {
         this.sectionEnabled = !this.sectionEnabled;
         if (this.sectionEnabled && this.model && !this._sectionInitialized) {
@@ -2346,6 +2518,10 @@ export class Viewer3D {
         this._hoverScreenPos = null;
         this.viewMode = 'auto';
         this.meshVisible = true;
+        this.showReference = true;
+        this.referenceVertices = null;
+        this._referenceBounds = null;
+        this._referenceBuffers = null;
         this.sectionEnabled = false;
         this.sectionNormal = [1, 0, 0];
         this.sectionOffset = 0;

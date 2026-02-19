@@ -1,5 +1,7 @@
 // Model exporter for STL and JSON
+// Uses AMR boundary-face meshing for watertight STL export
 import { DENSITY_THRESHOLD } from './constants.js';
+import { generateUniformSurfaceMesh, indexedMeshToTriangles } from './amr-surface-mesh.js';
 
 export class ModelExporter {
     constructor() {}
@@ -7,7 +9,7 @@ export class ModelExporter {
     exportSTL(optimizedModel, filename) {
         const { densities, nx, ny, nz } = optimizedModel;
         
-        // Generate STL from density field
+        // Generate STL from density field using AMR boundary-face meshing
         const stl = this.generateSTL(densities, nx, ny, nz);
         
         // Create blob and download
@@ -41,22 +43,15 @@ export class ModelExporter {
         console.log('JSON exported:', filename);
     }
 
+    /**
+     * Generate a binary STL from the density field using AMR boundary-face meshing.
+     * Produces a watertight closed surface by extracting only boundary faces
+     * (between active and inactive voxels) with vertex deduplication.
+     */
     generateSTL(densities, nx, ny, nz) {
-        // Generate binary STL file
-        const triangles = [];
-        
-        // Convert density field to mesh (marching cubes simplified)
-        for (let x = 0; x < nx; x++) {
-            for (let y = 0; y < ny; y++) {
-                for (let z = 0; z < nz; z++) {
-                    const index = x + y * nx + z * nx * ny;
-                    if (densities[index] > DENSITY_THRESHOLD) {
-                        // Add cube faces as triangles
-                        this.addCubeTriangles(triangles, x, y, z);
-                    }
-                }
-            }
-        }
+        // Generate watertight surface mesh via AMR boundary-face extraction
+        const mesh = generateUniformSurfaceMesh({ densities, nx, ny, nz });
+        const triangles = indexedMeshToTriangles(mesh);
         
         // Create binary STL
         const buffer = new ArrayBuffer(84 + triangles.length * 50);
@@ -94,46 +89,6 @@ export class ModelExporter {
         });
         
         return buffer;
-    }
-
-    addCubeTriangles(triangles, x, y, z) {
-        const size = 1;
-        
-        // Define 8 vertices of the cube
-        const v = [
-            [x, y, z],
-            [x + size, y, z],
-            [x + size, y + size, z],
-            [x, y + size, z],
-            [x, y, z + size],
-            [x + size, y, z + size],
-            [x + size, y + size, z + size],
-            [x, y + size, z + size]
-        ];
-        
-        // Define 6 faces (each with 2 triangles)
-        const faces = [
-            // Front face (z = 0)
-            { vertices: [v[0], v[1], v[2]], normal: [0, 0, -1] },
-            { vertices: [v[0], v[2], v[3]], normal: [0, 0, -1] },
-            // Back face (z = size)
-            { vertices: [v[5], v[4], v[7]], normal: [0, 0, 1] },
-            { vertices: [v[5], v[7], v[6]], normal: [0, 0, 1] },
-            // Left face (x = 0)
-            { vertices: [v[4], v[0], v[3]], normal: [-1, 0, 0] },
-            { vertices: [v[4], v[3], v[7]], normal: [-1, 0, 0] },
-            // Right face (x = size)
-            { vertices: [v[1], v[5], v[6]], normal: [1, 0, 0] },
-            { vertices: [v[1], v[6], v[2]], normal: [1, 0, 0] },
-            // Bottom face (y = 0)
-            { vertices: [v[4], v[5], v[1]], normal: [0, -1, 0] },
-            { vertices: [v[4], v[1], v[0]], normal: [0, -1, 0] },
-            // Top face (y = size)
-            { vertices: [v[3], v[2], v[6]], normal: [0, 1, 0] },
-            { vertices: [v[3], v[6], v[7]], normal: [0, 1, 0] }
-        ];
-        
-        faces.forEach(face => triangles.push(face));
     }
 
     downloadBlob(blob, filename) {
