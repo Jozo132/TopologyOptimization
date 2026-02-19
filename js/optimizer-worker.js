@@ -575,6 +575,11 @@ class TopologyOptimizerWorker {
                 this._fillInternalVoids(xnew, nelx, nely);
             }
 
+            // Apply manufacturing overhang constraint if enabled
+            if (config.manufacturingConstraint && config.manufacturingAngle != null) {
+                this._applyOverhangConstraint(xnew, nelx, nely, config.manufacturingAngle);
+            }
+
             change = 0;
             for (let i = 0; i < nel; i++) {
                 change = Math.max(change, Math.abs(xnew[i] - xold[i]));
@@ -1075,6 +1080,51 @@ class TopologyOptimizerWorker {
         for (let i = 0; i < nel; i++) {
             if (x[i] < threshold && !visited[i]) {
                 x[i] = 1.0;
+            }
+        }
+    }
+
+    /**
+     * Manufacturing overhang constraint (2D).
+     * Sweeps bottom-to-top (build direction = +Y). For each row, an element
+     * is only allowed to be solid if it is supported from below within the
+     * permitted overhang cone defined by `angleDeg`.
+     *  - 90° means vertical walls only (CNC machining — no overhangs).
+     *  - 88° allows a very slight overhang (mold tooling).
+     *  - Lower angles allow steeper overhangs.
+     *
+     * Uses 2D column-major indexing: idx = ey + ex * nely.
+     */
+    _applyOverhangConstraint(x, nelx, nely, angleDeg, threshold = 0.3) {
+        // Convert angle to horizontal reach per row: how many columns an
+        // unsupported overhang can extend.  At 90° the reach is 0 (pure vertical).
+        const angleRad = angleDeg * Math.PI / 180;
+        const reach = Math.min(Math.tan(Math.PI / 2 - angleRad), nelx); // clamp to grid size
+
+        // Build a support map: sweep from bottom row (ey=nely-1) upward (ey=0)
+        // bottom row is always self-supported
+        for (let ey = nely - 2; ey >= 0; ey--) {
+            for (let ex = 0; ex < nelx; ex++) {
+                const idx = ey + ex * nely; // column-major
+                if (x[idx] < threshold) continue; // void element, skip
+
+                // Check if there is any solid element below within the reach cone
+                const belowRow = ey + 1;
+                let supported = false;
+                const span = Math.floor(reach) + 1; // +1 for the element directly below
+                for (let dx = -span; dx <= span; dx++) {
+                    const sx = ex + dx;
+                    if (sx < 0 || sx >= nelx) continue;
+                    const belowIdx = belowRow + sx * nely;
+                    if (x[belowIdx] >= threshold) {
+                        supported = true;
+                        break;
+                    }
+                }
+
+                if (!supported) {
+                    x[idx] = 0.0; // remove unsupported material
+                }
             }
         }
     }

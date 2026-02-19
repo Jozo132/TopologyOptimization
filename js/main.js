@@ -23,6 +23,7 @@ class TopologyApp {
         this.optimizedModel = null;
         this._optimizationPaused = false;
         this.config = {
+            solver: 'auto',
             volumeFraction: 0.1,
             forceDirection: 'down',
             forceVector: null, // Custom force vector [fx, fy, fz]
@@ -36,6 +37,8 @@ class TopologyApp {
             minCrossSection: 0,
             constrainToSolid: false,
             preventVoids: false,
+            manufacturingConstraint: false,
+            manufacturingAngle: 90,
             useAMR: true,
             amrInterval: 3,
             minGranuleSize: 0.02,
@@ -345,6 +348,10 @@ class TopologyApp {
         });
         
         // Step 3: Solve
+        document.getElementById('solverSelect').addEventListener('change', (e) => {
+            this.config.solver = e.target.value;
+        });
+
         document.getElementById('maxIterations').addEventListener('input', (e) => {
             this.config.maxIterations = parseInt(e.target.value);
         });
@@ -367,6 +374,36 @@ class TopologyApp {
 
         document.getElementById('preventVoids').addEventListener('change', (e) => {
             this.config.preventVoids = e.target.checked;
+        });
+
+        // Manufacturing constraint controls
+        document.getElementById('manufacturingConstraint').addEventListener('change', (e) => {
+            this.config.manufacturingConstraint = e.target.checked;
+            document.getElementById('manufacturingControls').style.display = e.target.checked ? '' : 'none';
+        });
+
+        const angleSlider = document.getElementById('manufacturingAngle');
+        const angleInput = document.getElementById('manufacturingAngleInput');
+        angleSlider.addEventListener('input', (e) => {
+            this.config.manufacturingAngle = parseFloat(e.target.value);
+            angleInput.value = e.target.value;
+        });
+        angleInput.addEventListener('input', (e) => {
+            this.config.manufacturingAngle = parseFloat(e.target.value);
+            angleSlider.value = e.target.value;
+        });
+
+        // Advanced modal controls
+        document.getElementById('openAdvanced').addEventListener('click', () => {
+            document.getElementById('advancedModal').classList.remove('hidden');
+        });
+        document.getElementById('closeAdvancedModal').addEventListener('click', () => {
+            document.getElementById('advancedModal').classList.add('hidden');
+        });
+        document.getElementById('advancedModal').addEventListener('click', (e) => {
+            if (e.target === e.currentTarget) {
+                e.currentTarget.classList.add('hidden');
+            }
         });
         
         // AMR controls
