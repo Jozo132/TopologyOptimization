@@ -1912,7 +1912,7 @@ class TopologyOptimizerWorker3D {
      */
     _applyOverhangConstraint(x, nelx, nely, nelz, angleDeg, threshold = 0.3) {
         const angleRad = angleDeg * Math.PI / 180;
-        const reach = Math.tan(Math.PI / 2 - angleRad); // 0 at 90°
+        const reach = Math.min(Math.tan(Math.PI / 2 - angleRad), Math.max(nelx, nelz)); // clamp to grid size
         const span = Math.floor(reach) + 1;
 
         const idx3 = (ex, ey, ez) => ex + ey * nelx + ez * nelx * nely;

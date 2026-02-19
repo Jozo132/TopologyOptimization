@@ -1099,7 +1099,7 @@ class TopologyOptimizerWorker {
         // Convert angle to horizontal reach per row: how many columns an
         // unsupported overhang can extend.  At 90° the reach is 0 (pure vertical).
         const angleRad = angleDeg * Math.PI / 180;
-        const reach = Math.tan(Math.PI / 2 - angleRad); // 0 at 90°
+        const reach = Math.min(Math.tan(Math.PI / 2 - angleRad), nelx); // clamp to grid size
 
         // Build a support map: sweep from bottom row (ey=nely-1) upward (ey=0)
         // bottom row is always self-supported
