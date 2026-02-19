@@ -273,6 +273,7 @@ export class Viewer3D {
         this._isSectionDragging = false;
         this._sectionPlaneBuffer = null;
         this._sectionCapBuffer = null;
+        this._sectionCapEdgeBuffer = null;
         this.onSectionChange = null; // callback when section plane changes
 
         // Stress bar drag handles
@@ -1581,6 +1582,7 @@ export class Viewer3D {
         const edges = [[0,1],[2,3],[4,5],[6,7],[0,2],[1,3],[4,6],[5,7],[0,4],[1,5],[2,6],[3,7]];
 
         const positions = [];
+        const lineColors = [];
 
         // Build local 2D basis on the plane (computed once)
         let up = Math.abs(n[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
@@ -1637,9 +1639,11 @@ export class Viewer3D {
                         return angleA - angleB;
                     });
 
-                    // Fan triangulation
-                    for (let i = 1; i < pts.length - 1; i++) {
-                        positions.push(...pts[0], ...pts[i], ...pts[i + 1]);
+                    // Build outline as line segments (closed polygon)
+                    for (let i = 0; i < pts.length; i++) {
+                        const next = (i + 1) % pts.length;
+                        positions.push(...pts[i], ...pts[next]);
+                        lineColors.push(0.3, 0.5, 0.8, 0.3, 0.5, 0.8);
                     }
                 }
             }
@@ -1647,12 +1651,13 @@ export class Viewer3D {
 
         if (positions.length === 0) return;
 
-        const prog = this._overlayProgram;
+        const prog = this._lineProgram;
         gl.useProgram(prog);
 
         gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uProjection'), false, projection);
         gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uModelView'), false, modelView);
-        // Do not clip the plane quads themselves
+        gl.uniform1f(gl.getUniformLocation(prog, 'uAlpha'), 0.5);
+        // Do not clip the plane outline itself
         gl.uniform1f(gl.getUniformLocation(prog, 'uClipEnabled'), 0.0);
 
         gl.enable(gl.BLEND);
@@ -1661,18 +1666,24 @@ export class Viewer3D {
         gl.disable(gl.CULL_FACE);
 
         const posLoc = gl.getAttribLocation(prog, 'aPosition');
+        const colLoc = gl.getAttribLocation(prog, 'aColor');
         if (!this._sectionPlaneBuffer) {
-            this._sectionPlaneBuffer = gl.createBuffer();
+            this._sectionPlaneBuffer = { position: gl.createBuffer(), color: gl.createBuffer() };
         }
-        gl.bindBuffer(gl.ARRAY_BUFFER, this._sectionPlaneBuffer);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this._sectionPlaneBuffer.position);
         gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.DYNAMIC_DRAW);
         gl.enableVertexAttribArray(posLoc);
         gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
 
-        gl.uniform4fv(gl.getUniformLocation(prog, 'uColor'), [0.3, 0.5, 0.8, 0.12]);
-        gl.drawArrays(gl.TRIANGLES, 0, positions.length / 3);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this._sectionPlaneBuffer.color);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(lineColors), gl.DYNAMIC_DRAW);
+        gl.enableVertexAttribArray(colLoc);
+        gl.vertexAttribPointer(colLoc, 3, gl.FLOAT, false, 0, 0);
+
+        gl.drawArrays(gl.LINES, 0, positions.length / 3);
 
         gl.disableVertexAttribArray(posLoc);
+        gl.disableVertexAttribArray(colLoc);
 
         gl.depthMask(true);
         gl.disable(gl.BLEND);
@@ -1739,6 +1750,8 @@ export class Viewer3D {
         const positions = [];
         const normals = [];
         const colors = [];
+        const edgePositions = [];
+        const edgeColors = [];
         const capNormal = [-n[0], -n[1], -n[2]]; // face toward the camera (opposite to clip discard direction)
 
         for (let x = 0; x < nx; x++) {
@@ -1816,6 +1829,14 @@ export class Viewer3D {
                         normals.push(...capNormal, ...capNormal, ...capNormal);
                         colors.push(cr, cg, cb, cr, cg, cb, cr, cg, cb);
                     }
+
+                    // Build outline edges for this voxel's cap polygon
+                    const ec = WIREFRAME_EDGE_COLOR;
+                    for (let i = 0; i < pts.length; i++) {
+                        const next = (i + 1) % pts.length;
+                        edgePositions.push(...pts[i], ...pts[next]);
+                        edgeColors.push(ec, ec, ec, ec, ec, ec);
+                    }
                 }
             }
         }
@@ -1866,6 +1887,44 @@ export class Viewer3D {
         gl.disableVertexAttribArray(posLoc);
         gl.disableVertexAttribArray(normLoc);
         gl.disableVertexAttribArray(colLoc);
+
+        // Draw outline edges around each voxel's cap polygon
+        if (edgePositions.length > 0) {
+            if (!this._sectionCapEdgeBuffer) {
+                this._sectionCapEdgeBuffer = { position: gl.createBuffer(), color: gl.createBuffer() };
+            }
+            const sce = this._sectionCapEdgeBuffer;
+
+            const lineProg = this._lineProgram;
+            gl.useProgram(lineProg);
+            gl.uniformMatrix4fv(gl.getUniformLocation(lineProg, 'uProjection'), false, projection);
+            gl.uniformMatrix4fv(gl.getUniformLocation(lineProg, 'uModelView'), false, modelView);
+            gl.uniform1f(gl.getUniformLocation(lineProg, 'uAlpha'), 0.6);
+            gl.uniform1f(gl.getUniformLocation(lineProg, 'uClipEnabled'), 0.0);
+
+            gl.enable(gl.POLYGON_OFFSET_FILL);
+            gl.polygonOffset(-1, -1);
+
+            const eposLoc = gl.getAttribLocation(lineProg, 'aPosition');
+            const ecolLoc = gl.getAttribLocation(lineProg, 'aColor');
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, sce.position);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(edgePositions), gl.DYNAMIC_DRAW);
+            gl.enableVertexAttribArray(eposLoc);
+            gl.vertexAttribPointer(eposLoc, 3, gl.FLOAT, false, 0, 0);
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, sce.color);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(edgeColors), gl.DYNAMIC_DRAW);
+            gl.enableVertexAttribArray(ecolLoc);
+            gl.vertexAttribPointer(ecolLoc, 3, gl.FLOAT, false, 0, 0);
+
+            gl.drawArrays(gl.LINES, 0, edgePositions.length / 3);
+
+            gl.disableVertexAttribArray(eposLoc);
+            gl.disableVertexAttribArray(ecolLoc);
+            gl.disable(gl.POLYGON_OFFSET_FILL);
+        }
+
         gl.enable(gl.CULL_FACE);
     }
 
