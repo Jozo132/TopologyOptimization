@@ -208,8 +208,20 @@ export class Viewer3D {
         this.forceDirection = 'down';
         this.forceVector = null; // Custom force vector [fx, fy, fz], overrides forceDirection
         this.forceMagnitude = 1000;
+        this.forceType = 'total'; // 'total' or 'pressure'
         this.isPainting = false;
         this._paintErasing = false;
+
+        // Angle tolerance surface selection
+        this.angleTolerance = 45; // degrees
+        this.useAngleSelection = false;
+        this._seedFaceKey = null; // seed face for angle-based flood-fill
+        this._seedFaceNormal = null;
+
+        // Selection groups: each group has { id, name, type: 'force'|'constraint', faces: Set, params: {} }
+        this.selectionGroups = [];
+        this._nextGroupId = 1;
+        this.activeGroupId = null;
 
         // 3D brush
         this.brushSize = 1;
@@ -218,6 +230,7 @@ export class Viewer3D {
 
         // Cached boundary faces for picking
         this._boundaryFaces = [];
+        this._boundaryFaceMap = {}; // key → face object for quick lookup
 
         // WebGL resources
         this._meshProgram = null;
@@ -375,8 +388,8 @@ export class Viewer3D {
                 this.lastMousePos = { x: e.clientX, y: e.clientY };
                 this.draw();
             } else if (this.isDragging) {
-                this.rotation.y -= dx * 0.01;
-                this.rotation.x -= dy * 0.01;
+                this.rotation.y += dx * 0.01;
+                this.rotation.x += dy * 0.01;
                 this.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, this.rotation.x));
                 this.lastMousePos = { x: e.clientX, y: e.clientY };
                 this.draw();
@@ -426,14 +439,35 @@ export class Viewer3D {
         if (!this.model || this._boundaryFaces.length === 0) return;
 
         const facesInBrush = this._findFacesInBrush(mx, my);
-        const targetSet = this.paintMode === 'constraint' ? this.paintedConstraintFaces : this.paintedForceFaces;
 
-        for (const face of facesInBrush) {
-            if (this._paintErasing) {
-                targetSet.delete(face.key);
-            } else {
-                targetSet.add(face.key);
+        // Determine target: active group or flat set
+        const activeGroup = this.getActiveGroup();
+        const targetSet = activeGroup
+            ? activeGroup.faces
+            : (this.paintMode === 'constraint' ? this.paintedConstraintFaces : this.paintedForceFaces);
+
+        if (this.useAngleSelection && facesInBrush.length > 0 && !this._paintErasing) {
+            // Angle-based selection: use first hit as seed, flood-fill
+            const seedFace = facesInBrush[0];
+            this._seedFaceKey = seedFace.key;
+            this._seedFaceNormal = seedFace.normal;
+            const selected = this.selectConnectedByAngle(seedFace.key, this.angleTolerance);
+            targetSet.clear();
+            for (const key of selected) {
+                targetSet.add(key);
             }
+        } else {
+            for (const face of facesInBrush) {
+                if (this._paintErasing) {
+                    targetSet.delete(face.key);
+                } else {
+                    targetSet.add(face.key);
+                }
+            }
+        }
+
+        if (activeGroup) {
+            this._syncGroupsToFaceSets();
         }
 
         if (facesInBrush.length > 0) {
@@ -457,6 +491,174 @@ export class Viewer3D {
 
         this._hoverFaces = this._findFacesInBrush(mx, my);
         this.draw();
+    }
+
+    /**
+     * Select connected faces by angle tolerance from a seed face.
+     * Uses flood-fill: starting from seedKey, expand to adjacent boundary faces
+     * whose normals are within angleTolerance degrees of the seed normal.
+     */
+    selectConnectedByAngle(seedKey, angleTolerance) {
+        const seedFace = this._boundaryFaceMap[seedKey];
+        if (!seedFace || !seedFace.normal) return new Set();
+
+        const toleranceRad = (angleTolerance * Math.PI) / 180;
+        const cosTolerance = Math.cos(toleranceRad);
+        const seedNormal = seedFace.normal;
+
+        const selected = new Set();
+        const visited = new Set();
+        const queue = [seedKey];
+
+        while (queue.length > 0) {
+            const currentKey = queue.shift();
+            if (visited.has(currentKey)) continue;
+            visited.add(currentKey);
+
+            const face = this._boundaryFaceMap[currentKey];
+            if (!face || !face.normal) continue;
+
+            // Check angle between face normal and seed normal
+            const dot = seedNormal[0] * face.normal[0] + seedNormal[1] * face.normal[1] + seedNormal[2] * face.normal[2];
+            if (dot < cosTolerance) continue;
+
+            selected.add(currentKey);
+
+            // Find adjacent boundary faces (share an edge = same voxel axis-aligned neighbor)
+            const [x, y, z] = face.voxel;
+            const fi = face.faceIndex;
+
+            // Adjacent faces: same face index on neighboring voxels, or adjacent face indices on same voxel
+            const neighbors = this._getAdjacentFaceKeys(x, y, z, fi);
+            for (const nk of neighbors) {
+                if (!visited.has(nk)) {
+                    queue.push(nk);
+                }
+            }
+        }
+
+        return selected;
+    }
+
+    /**
+     * Get keys of adjacent boundary faces that share an edge with face (x,y,z,fi).
+     */
+    _getAdjacentFaceKeys(x, y, z, fi) {
+        const keys = [];
+        // For each face, determine which neighbor voxels share edges
+        // fi: 0=-X, 1=+X, 2=-Y, 3=+Y, 4=-Z, 5=+Z
+        const adjacencyMap = {
+            0: [  // -X face: neighbors along Y and Z edges
+                [x,y-1,z,0], [x,y+1,z,0], [x,y,z-1,0], [x,y,z+1,0],
+                [x,y,z,2], [x,y,z,3], [x,y,z,4], [x,y,z,5]
+            ],
+            1: [  // +X face
+                [x,y-1,z,1], [x,y+1,z,1], [x,y,z-1,1], [x,y,z+1,1],
+                [x,y,z,2], [x,y,z,3], [x,y,z,4], [x,y,z,5]
+            ],
+            2: [  // -Y face
+                [x-1,y,z,2], [x+1,y,z,2], [x,y,z-1,2], [x,y,z+1,2],
+                [x,y,z,0], [x,y,z,1], [x,y,z,4], [x,y,z,5]
+            ],
+            3: [  // +Y face
+                [x-1,y,z,3], [x+1,y,z,3], [x,y,z-1,3], [x,y,z+1,3],
+                [x,y,z,0], [x,y,z,1], [x,y,z,4], [x,y,z,5]
+            ],
+            4: [  // -Z face
+                [x-1,y,z,4], [x+1,y,z,4], [x,y-1,z,4], [x,y+1,z,4],
+                [x,y,z,0], [x,y,z,1], [x,y,z,2], [x,y,z,3]
+            ],
+            5: [  // +Z face
+                [x-1,y,z,5], [x+1,y,z,5], [x,y-1,z,5], [x,y+1,z,5],
+                [x,y,z,0], [x,y,z,1], [x,y,z,2], [x,y,z,3]
+            ]
+        };
+
+        for (const [nx, ny, nz, nfi] of adjacencyMap[fi]) {
+            const key = `${nx},${ny},${nz},${nfi}`;
+            if (this._boundaryFaceMap[key]) {
+                keys.push(key);
+            }
+        }
+        return keys;
+    }
+
+    /**
+     * Update angle-based selection: re-run flood-fill from the stored seed face
+     * with the current angle tolerance and update the active group or paint set.
+     */
+    updateAngleSelection() {
+        if (!this._seedFaceKey || !this.useAngleSelection) return;
+
+        const selected = this.selectConnectedByAngle(this._seedFaceKey, this.angleTolerance);
+
+        if (this.activeGroupId !== null) {
+            const group = this.selectionGroups.find(g => g.id === this.activeGroupId);
+            if (group) {
+                group.faces = selected;
+                this._syncGroupsToFaceSets();
+            }
+        } else {
+            const targetSet = this.paintMode === 'constraint' ? this.paintedConstraintFaces : this.paintedForceFaces;
+            targetSet.clear();
+            for (const key of selected) {
+                targetSet.add(key);
+            }
+        }
+
+        this._needsRebuild = true;
+        this.draw();
+    }
+
+    // ─── Selection Group Management ─────────────────────────────────────────
+
+    addSelectionGroup(type, name) {
+        const id = this._nextGroupId++;
+        const group = {
+            id,
+            name: name || `${type} ${id}`,
+            type, // 'force' or 'constraint'
+            faces: new Set(),
+            params: type === 'force'
+                ? { direction: 'down', vector: null, magnitude: 1000, forceType: 'total', dofs: 'all' }
+                : { dofs: 'all' }
+        };
+        this.selectionGroups.push(group);
+        this.activeGroupId = group.id;
+        return group;
+    }
+
+    removeSelectionGroup(groupId) {
+        this.selectionGroups = this.selectionGroups.filter(g => g.id !== groupId);
+        if (this.activeGroupId === groupId) {
+            this.activeGroupId = this.selectionGroups.length > 0 ? this.selectionGroups[0].id : null;
+        }
+        this._syncGroupsToFaceSets();
+        this._needsRebuild = true;
+        this.draw();
+    }
+
+    setActiveGroup(groupId) {
+        this.activeGroupId = groupId;
+    }
+
+    getActiveGroup() {
+        return this.selectionGroups.find(g => g.id === this.activeGroupId) || null;
+    }
+
+    /**
+     * Sync selection groups back to the flat paintedConstraintFaces/paintedForceFaces sets
+     * for rendering compatibility.
+     */
+    _syncGroupsToFaceSets() {
+        this.paintedConstraintFaces.clear();
+        this.paintedForceFaces.clear();
+        for (const group of this.selectionGroups) {
+            const targetSet = group.type === 'constraint' ? this.paintedConstraintFaces : this.paintedForceFaces;
+            for (const key of group.faces) {
+                targetSet.add(key);
+            }
+        }
     }
 
     _findFacesInBrush(mx, my) {
@@ -725,8 +927,7 @@ export class Viewer3D {
         const edgeColors = [];
 
         this._boundaryFaces = [];
-
-        // Process triangles in consecutive pairs (each face = 2 triangles sharing a diagonal).
+        this._boundaryFaceMap = {};
         // For merged AMR blocks (blockSize > 1) emit the 4 perimeter edges of the quad.
         // For individual-element triangles (blockSize === 1) emit no edges (no visible grid clutter).
         for (let ti = 0; ti < this.meshData.length; ti++) {
@@ -813,6 +1014,7 @@ export class Viewer3D {
         ];
 
         this._boundaryFaces = [];
+        this._boundaryFaceMap = {};
 
         for (let x = 0; x < nx; x++) {
             for (let y = 0; y < ny; y++) {
@@ -858,11 +1060,16 @@ export class Viewer3D {
 
                         // Cache boundary face for paint picking
                         const key = `${x},${y},${z},${fi}`;
-                        this._boundaryFaces.push({
+                        const faceObj = {
                             key,
                             projVerts: verts.map(v => ({ x: v[0], y: v[1], z: v[2] })),
+                            normal: n,
+                            voxel: [x, y, z],
+                            faceIndex: fi,
                             avgDepth: 0
-                        });
+                        };
+                        this._boundaryFaces.push(faceObj);
+                        this._boundaryFaceMap[key] = faceObj;
                     }
                 }
             }
@@ -1303,7 +1510,13 @@ export class Viewer3D {
         this.paintedForceFaces = new Set();
         this.paintMode = null;
         this._boundaryFaces = [];
+        this._boundaryFaceMap = {};
         this._hoverFaces = [];
+        this._seedFaceKey = null;
+        this._seedFaceNormal = null;
+        this.selectionGroups = [];
+        this._nextGroupId = 1;
+        this.activeGroupId = null;
         this._needsRebuild = true;
         this.draw();
     }
