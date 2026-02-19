@@ -385,3 +385,81 @@ export function computeDiagonal(
   }
 }
 
+/**
+ * Element-by-element matrix-vector multiply for 3D multigrid applyA.
+ * Uses raw memory pointers (byte offsets into WASM linear memory) to avoid
+ * AssemblyScript typed-array wrapper overhead on the hot path.
+ *
+ * @param kePtr       - KEflat: 24×24 f64 element stiffness (576 entries)
+ * @param edofsPtr    - edofs: i32 element DOF indices (nel * 24)
+ * @param evalsPtr    - E_vals: f64 per-element stiffness values
+ * @param activePtr   - active: i32 indices of active elements
+ * @param activeCount - number of active elements
+ * @param pPtr        - p: f64 input vector (ndof)
+ * @param apPtr       - Ap: f64 output vector (ndof), will be zeroed
+ * @param ndof        - total degrees of freedom
+ * @param scratchPtr  - scratch: f64 workspace (>=24 entries)
+ */
+export function applyAEbe3D(
+  kePtr: usize,
+  edofsPtr: usize,
+  evalsPtr: usize,
+  activePtr: usize,
+  activeCount: i32,
+  pPtr: usize,
+  apPtr: usize,
+  ndof: i32,
+  scratchPtr: usize
+): void {
+  // Zero output vector
+  memory.fill(apPtr, 0, <usize>ndof << 3);
+
+  for (let ai: i32 = 0; ai < activeCount; ai++) {
+    const e: i32 = load<i32>(activePtr + (<usize>ai << 2));
+    const E: f64 = load<f64>(evalsPtr + (<usize>e << 3));
+    const edofsBase: usize = edofsPtr + (<usize>(e * 24) << 2);
+
+    // Gather 24 local DOFs into scratch buffer
+    for (let j: i32 = 0; j < 24; j++) {
+      const gj: i32 = load<i32>(edofsBase + (<usize>j << 2));
+      store<f64>(scratchPtr + (<usize>j << 3), load<f64>(pPtr + (<usize>gj << 3)));
+    }
+
+    // Compute local matvec and scatter-add to Ap
+    for (let i: i32 = 0; i < 24; i++) {
+      const gi: i32 = load<i32>(edofsBase + (<usize>i << 2));
+      let sum: f64 = 0.0;
+      const rowBase: usize = kePtr + (<usize>(i * 24) << 3);
+      for (let j: i32 = 0; j < 24; j++) {
+        sum += load<f64>(rowBase + (<usize>j << 3)) * load<f64>(scratchPtr + (<usize>j << 3));
+      }
+      store<f64>(apPtr + (<usize>gi << 3), load<f64>(apPtr + (<usize>gi << 3)) + E * sum);
+    }
+  }
+}
+
+/**
+ * Dense matrix-vector multiply using raw memory pointers.
+ * result[i] = sum_j( K[i*n + j] * p[j] )
+ *
+ * @param kPtr  - K: f64 dense matrix (n x n, row-major)
+ * @param pPtr  - p: f64 input vector (n)
+ * @param apPtr - Ap: f64 output vector (n)
+ * @param n     - dimension
+ */
+export function denseMatVecRaw(
+  kPtr: usize,
+  pPtr: usize,
+  apPtr: usize,
+  n: i32
+): void {
+  for (let i: i32 = 0; i < n; i++) {
+    let s: f64 = 0.0;
+    const rowBase: usize = kPtr + (<usize>(i * n) << 3);
+    for (let j: i32 = 0; j < n; j++) {
+      s += load<f64>(rowBase + (<usize>j << 3)) * load<f64>(pPtr + (<usize>j << 3));
+    }
+    store<f64>(apPtr + (<usize>i << 3), s);
+  }
+}
+
