@@ -618,48 +618,12 @@ class TopologyApp {
         sectionElevation.addEventListener('input', applySectionSliders);
         sectionOffsetSlider.addEventListener('input', applySectionSliders);
 
-        // Strain range slider
-        const strainMinInput = document.getElementById('strainMin');
-        const strainMaxInput = document.getElementById('strainMax');
-        const strainMinValue = document.getElementById('strainMinValue');
-        const strainMaxValue = document.getElementById('strainMaxValue');
-        const strainFill = document.getElementById('strainSliderFill');
 
-        const updateStrainSlider = () => {
-            let min = parseFloat(strainMinInput.value);
-            let max = parseFloat(strainMaxInput.value);
-            // Ensure min <= max
-            if (min > max) {
-                if (this._lastStrainInput === 'min') {
-                    max = min;
-                    strainMaxInput.value = max;
-                } else {
-                    min = max;
-                    strainMinInput.value = min;
-                }
-            }
-            const maxStress = this.viewer.maxStress || 0;
-            if (maxStress > 0) {
-                strainMinValue.textContent = `${(min * maxStress).toFixed(2)} MPa`;
-                strainMaxValue.textContent = `${(max * maxStress).toFixed(2)} MPa`;
-            } else {
-                strainMinValue.textContent = `${Math.round(min * 100)}%`;
-                strainMaxValue.textContent = `${Math.round(max * 100)}%`;
-            }
-            // Update fill bar position
-            strainFill.style.left = `${min * 100}%`;
-            strainFill.style.width = `${(max - min) * 100}%`;
-            this.viewer.setStrainRange(min, max);
+        // Strain range is now controlled by dragging handles on the stress scale bar
+        // in the viewer. Register callback to stay in sync.
+        this.viewer.onStrainRangeChange = (min, max) => {
+            // Optional: external sync point
         };
-
-        strainMinInput.addEventListener('input', () => {
-            this._lastStrainInput = 'min';
-            updateStrainSlider();
-        });
-        strainMaxInput.addEventListener('input', () => {
-            this._lastStrainInput = 'max';
-            updateStrainSlider();
-        });
     }
 
     _updateForceVector() {
@@ -932,8 +896,6 @@ class TopologyApp {
                     // Update visualization with triangle mesh
                     if (meshData) {
                         this.viewer.updateMesh(meshData, maxStress);
-                        // Show strain slider when mesh data is available
-                        document.getElementById('strainSliderContainer').classList.remove('hidden');
                     }
                 }
             );
@@ -943,7 +905,6 @@ class TopologyApp {
             // Update viewer with final mesh
             if (result.meshData) {
                 this.viewer.updateMesh(result.meshData, result.maxStress);
-                document.getElementById('strainSliderContainer').classList.remove('hidden');
             }
             
             // Show results
@@ -1065,7 +1026,6 @@ class TopologyApp {
         document.getElementById('cancelOptimization').classList.add('hidden');
         const pauseBtn = document.getElementById('pauseOptimization');
         if (pauseBtn) { pauseBtn.classList.add('hidden'); pauseBtn.textContent = 'Pause'; }
-        document.getElementById('strainSliderContainer').classList.add('hidden');
         document.getElementById('transformControls').classList.add('hidden');
         
         // Reset transform inputs
@@ -1073,14 +1033,6 @@ class TopologyApp {
         document.getElementById('rotateX').value = 0;
         document.getElementById('rotateY').value = 0;
         document.getElementById('rotateZ').value = 0;
-        
-        // Reset strain slider values
-        document.getElementById('strainMin').value = 0;
-        document.getElementById('strainMax').value = 1;
-        document.getElementById('strainMinValue').textContent = '0 MPa';
-        document.getElementById('strainMaxValue').textContent = '0 MPa';
-        document.getElementById('strainSliderFill').style.left = '0%';
-        document.getElementById('strainSliderFill').style.width = '100%';
         
         // Reset viewer control button states
         document.getElementById('toggleViewMode').classList.remove('active-tool');
