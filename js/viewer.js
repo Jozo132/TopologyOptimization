@@ -269,8 +269,11 @@ export class Viewer3D {
         this.sectionEnabled = false;
         this.sectionNormal = [1, 0, 0];
         this.sectionOffset = 0;
+        this._sectionInitialized = false;
         this._isSectionDragging = false;
         this._sectionPlaneBuffer = null;
+        this._sectionCapBuffer = null;
+        this.onSectionChange = null; // callback when section plane changes
 
         // Cached GPU buffers
         this._meshBuffers = null;
@@ -427,6 +430,7 @@ export class Viewer3D {
                 this._rotateSectionPlane(dx, dy);
                 this.lastMousePos = { x: e.clientX, y: e.clientY };
                 this.draw();
+                if (this.onSectionChange) this.onSectionChange();
             } else if (this.isPanning) {
                 const panScale = 0.003 / this.zoom;
                 this.pan.x += dx * panScale;
@@ -471,6 +475,7 @@ export class Viewer3D {
                 const maxDim = Math.max(this.model.nx, this.model.ny, this.model.nz);
                 this.sectionOffset -= e.deltaY * 0.005 * maxDim;
                 this.draw();
+                if (this.onSectionChange) this.onSectionChange();
             } else {
                 this.zoom *= (1 - e.deltaY * 0.001);
                 this.zoom = Math.max(0.1, Math.min(10, this.zoom));
@@ -1889,9 +1894,10 @@ export class Viewer3D {
 
     toggleSection() {
         this.sectionEnabled = !this.sectionEnabled;
-        if (this.sectionEnabled && this.model) {
+        if (this.sectionEnabled && this.model && !this._sectionInitialized) {
             this.sectionNormal = [1, 0, 0];
             this.sectionOffset = this.model.nx / 2;
+            this._sectionInitialized = true;
         }
         this.draw();
     }
@@ -1918,6 +1924,7 @@ export class Viewer3D {
         this.sectionEnabled = false;
         this.sectionNormal = [1, 0, 0];
         this.sectionOffset = 0;
+        this._sectionInitialized = false;
         this.paintedConstraintFaces = new Set();
         this.paintedForceFaces = new Set();
         this.paintMode = null;

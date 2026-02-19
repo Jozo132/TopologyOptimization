@@ -86,6 +86,7 @@ class TopologyApp {
         // Initialize modules
         this.viewer = new Viewer3D('viewer3D');
         await this.viewer.init();
+        this.viewer.onSectionChange = () => this._updateSectionSliders();
         
         this.importer = new ModelImporter();
         this.optimizer = new TopologySolver();
@@ -580,12 +581,42 @@ class TopologyApp {
             this.viewer.toggleSection();
             const btn = document.getElementById('toggleSection');
             btn.classList.toggle('active-tool', this.viewer.sectionEnabled);
+            this._updateSectionSliders();
         });
         
         document.getElementById('resetCamera').addEventListener('click', () => {
             this.viewer.resetCamera();
             document.getElementById('toggleSection').classList.remove('active-tool');
+            this._updateSectionSliders();
         });
+
+        // Section plane sliders
+        const sectionAzimuth = document.getElementById('sectionAzimuth');
+        const sectionElevation = document.getElementById('sectionElevation');
+        const sectionOffsetSlider = document.getElementById('sectionOffsetSlider');
+        const sectionAzimuthValue = document.getElementById('sectionAzimuthValue');
+        const sectionElevationValue = document.getElementById('sectionElevationValue');
+        const sectionOffsetValue = document.getElementById('sectionOffsetValue');
+
+        const applySectionSliders = () => {
+            const az = parseFloat(sectionAzimuth.value) * Math.PI / 180;
+            const el = parseFloat(sectionElevation.value) * Math.PI / 180;
+            // Spherical to Cartesian (Y-up): azimuth rotates in XZ plane, elevation tilts toward Y
+            const cosEl = Math.cos(el);
+            this.viewer.sectionNormal = [cosEl * Math.sin(az), Math.sin(el), cosEl * Math.cos(az)];
+            if (this.viewer.model) {
+                const maxDim = Math.max(this.viewer.model.nx, this.viewer.model.ny, this.viewer.model.nz);
+                this.viewer.sectionOffset = parseFloat(sectionOffsetSlider.value) / 100 * maxDim;
+            }
+            sectionAzimuthValue.textContent = `${sectionAzimuth.value}°`;
+            sectionElevationValue.textContent = `${sectionElevation.value}°`;
+            sectionOffsetValue.textContent = `${sectionOffsetSlider.value}%`;
+            this.viewer.draw();
+        };
+
+        sectionAzimuth.addEventListener('input', applySectionSliders);
+        sectionElevation.addEventListener('input', applySectionSliders);
+        sectionOffsetSlider.addEventListener('input', applySectionSliders);
 
         // Strain range slider
         const strainMinInput = document.getElementById('strainMin');
@@ -637,6 +668,33 @@ class TopologyApp {
         const fz = parseFloat(document.getElementById('forceVectorZ').value) || 0;
         this.config.forceVector = [fx, fy, fz];
         this.viewer.forceVector = [fx, fy, fz];
+    }
+
+    _updateSectionSliders() {
+        const container = document.getElementById('sectionSliderContainer');
+        if (this.viewer.sectionEnabled) {
+            container.classList.remove('hidden');
+            // Convert current normal to azimuth/elevation
+            const [nx, ny, nz] = this.viewer.sectionNormal;
+            const elevation = Math.asin(Math.max(-1, Math.min(1, ny)));
+            const azimuth = Math.atan2(nx, nz);
+            const azDeg = ((azimuth * 180 / Math.PI) + 360) % 360;
+            const elDeg = elevation * 180 / Math.PI;
+
+            document.getElementById('sectionAzimuth').value = Math.round(azDeg);
+            document.getElementById('sectionElevation').value = Math.round(elDeg);
+            document.getElementById('sectionAzimuthValue').textContent = `${Math.round(azDeg)}°`;
+            document.getElementById('sectionElevationValue').textContent = `${Math.round(elDeg)}°`;
+
+            if (this.viewer.model) {
+                const maxDim = Math.max(this.viewer.model.nx, this.viewer.model.ny, this.viewer.model.nz);
+                const pct = maxDim > 0 ? (this.viewer.sectionOffset / maxDim) * 100 : 50;
+                document.getElementById('sectionOffsetSlider').value = pct;
+                document.getElementById('sectionOffsetValue').textContent = `${Math.round(pct)}%`;
+            }
+        } else {
+            container.classList.add('hidden');
+        }
     }
 
     _updateDOFPreview(dofValue) {
@@ -1031,6 +1089,7 @@ class TopologyApp {
         
         // Reset viewer
         this.viewer.clear();
+        this._updateSectionSliders();
         
         // Reset workflow
         this.workflow.reset();
