@@ -135,14 +135,16 @@ function solveFEA_JS(nelx, nely, densities, KEflat, edofArray, F, freedofs, E0, 
 
     for (let i = 0; i < nfree; i++) r[i] = F[freedofs[i]];
     let rz = 0;
+    let r0norm2 = 0;
     for (let i = 0; i < nfree; i++) {
         z[i] = invDiag[i] * r[i];
         p[i] = z[i];
         rz += r[i] * z[i];
+        r0norm2 += r[i] * r[i];
     }
 
     const maxIter = Math.min(nfree, MAX_CG_ITERATIONS);
-    const tolSq = CG_TOLERANCE * CG_TOLERANCE;
+    const tolSq = CG_TOLERANCE * CG_TOLERANCE * Math.max(r0norm2, 1e-30);
 
     for (let iter = 0; iter < maxIter; iter++) {
         let rnorm2 = 0;
@@ -213,6 +215,7 @@ function solveFEA_WASM(wasmMod, nelx, nely, densities, KEflat, edofArray, F, fre
     new Float64Array(mem.buffer, keOff, edofSize * edofSize).set(KEflat);
     new Int32Array(mem.buffer, edofsOff, nel * edofSize).set(edofArray);
     new Float64Array(mem.buffer, fOff, ndof).set(F);
+    new Float64Array(mem.buffer, uOff, ndof).fill(0);  // Zero U (no warm-start in tests)
     new Int32Array(mem.buffer, freedofsOff, nfree).set(freedofs);
 
     const iterations = wasmMod.exports.ebePCG(

@@ -2768,9 +2768,136 @@ class TopologyOptimizerWorker3D {
         return xPhys;
     }
 
+    /**
+     * Allocate WASM memory buffers for full-solve ebePCG.
+     * Re-allocates only when problem dimensions change.
+     */
+    _initWasmPCGBuffers(nel, ndof, nfree) {
+        if (this._wasmPCG &&
+            this._wasmPCG.nel === nel &&
+            this._wasmPCG.ndof === ndof &&
+            this._wasmPCG.nfree === nfree) return true;
+
+        if (!wasmModule || !wasmModule.exports.ebePCG) return false;
+
+        try {
+            const mem = wasmModule.exports.memory;
+            const edofSize = 24;
+            const align8 = (v) => (v + 7) & ~7;
+
+            // Input buffers
+            const densSize    = nel * 8;           // f64[nel]
+            const keSize      = 576 * 8;           // f64[24*24]
+            const edofsSize   = nel * 24 * 4;      // i32[nel*24]
+            const fSize       = ndof * 8;          // f64[ndof]
+            const uSize       = ndof * 8;          // f64[ndof]
+            const freedofsSize = nfree * 4;         // i32[nfree]
+
+            // Workspace: E_vals[nel] + active[nel as i32] + diag[ndof] +
+            //   Uf[nfree] + r[nfree] + z[nfree] + p[nfree] + Ap[nfree] +
+            //   pfull[ndof] + apfull[ndof] + scratch[edofSize] + invDiagSafe[nfree]
+            const workSize = nel * 8 + nel * 4 + ndof * 8 +
+                nfree * 8 * 5 + ndof * 8 * 2 + edofSize * 8 + nfree * 8;
+
+            const totalBytes = densSize + keSize + edofsSize + fSize + uSize + freedofsSize + workSize + 1024;
+
+            const neededPages = Math.ceil(totalBytes / 65536) + 1;
+            const dataStart = mem.buffer.byteLength;
+            const growResult = mem.grow(neededPages);
+            if (growResult === -1) return false;
+
+            let off = dataStart;
+
+            const densOff = off;      off += densSize;
+            const keOff = off;        off += keSize;
+            const edofsOff = off;     off += edofsSize; off = align8(off);
+            const fOff = off;         off += fSize;
+            const uOff = off;         off += uSize;
+            const freedofsOff = off;  off += freedofsSize; off = align8(off);
+            const workOff = off;
+
+            this._wasmPCG = { nel, ndof, nfree, densOff, keOff, edofsOff, fOff, uOff, freedofsOff, workOff };
+            return true;
+        } catch (e) {
+            console.warn('Failed to allocate WASM PCG buffers:', e);
+            return false;
+        }
+    }
+
+    /**
+     * Full FEA solve using the WASM ebePCG kernel.
+     * The entire Jacobi-PCG loop runs in WASM with zero per-iteration
+     * JS↔WASM boundary crossings.
+     */
+    _solveWithWasmPCG(nelx, nely, nelz, x, penal, KEflat, edofArray, F, freedofs, iteration, maxIterations) {
+        const ndof = 3 * (nelx + 1) * (nely + 1) * (nelz + 1);
+        const nel = nelx * nely * nelz;
+        const nfree = freedofs.length;
+
+        if (!this._initWasmPCGBuffers(nel, ndof, nfree)) return null;
+
+        const mem = wasmModule.exports.memory;
+        const w = this._wasmPCG;
+
+        // Copy inputs to WASM memory
+        new Float64Array(mem.buffer, w.densOff, nel).set(x.subarray(0, nel));
+        new Float64Array(mem.buffer, w.keOff, 576).set(KEflat);
+        new Int32Array(mem.buffer, w.edofsOff, nel * 24).set(edofArray);
+        new Float64Array(mem.buffer, w.fOff, ndof).set(F);
+        new Int32Array(mem.buffer, w.freedofsOff, nfree).set(freedofs);
+
+        // Warm-start: copy previous U (or zero if first iteration)
+        const uWasm = new Float64Array(mem.buffer, w.uOff, ndof);
+        if (iteration > 1 && this._U_prev) {
+            uWasm.set(this._U_prev);
+        } else {
+            uWasm.fill(0);
+        }
+
+        // Schedule CG tolerance
+        const progress = maxIterations > 1 ? (iteration - 1) / (maxIterations - 1) : 1;
+        const tolerance = Math.exp(
+            Math.log(CG_TOL_START) + progress * (Math.log(CG_TOL_END) - Math.log(CG_TOL_START))
+        );
+        const maxIter = Math.min(nfree, MAX_CG_ITERATIONS);
+
+        // Call full WASM FEA solver
+        const cgIters = wasmModule.exports.ebePCG(
+            w.densOff, w.keOff, w.edofsOff, w.fOff, w.uOff, w.freedofsOff,
+            nel, 24, ndof, nfree,
+            this.Emin, this.E0, penal, maxIter, tolerance, w.workOff
+        );
+
+        // Allocate / reuse output buffers
+        if (!this._U || this._U.length !== ndof) {
+            this._U = new Float64Array(ndof);
+            this._U_prev = new Float64Array(ndof);
+        }
+
+        // Read U back from WASM
+        const U = this._U;
+        U.set(new Float64Array(mem.buffer, w.uOff, ndof));
+
+        // Save for warm-start
+        this._U_prev.set(U);
+
+        // Compute compliance
+        let c = 0;
+        for (let i = 0; i < ndof; i++) c += F[i] * U[i];
+
+        return { U, c, solverStats: { cgIterations: cgIters, tolerance } };
+    }
+
     FE(nelx, nely, nelz, x, penal, KEflat, edofArray, F, freedofs, fixedMask, config, iteration, maxIterations, fixeddofs) {
         const ndof = 3 * (nelx + 1) * (nely + 1) * (nelz + 1);
         const nel = nelx * nely * nelz;
+
+        // ── Full WASM FEA solve (Jacobi-PCG, zero per-iteration JS↔WASM crossings) ──
+        if (this.linearSolver !== 'mgpcg' && wasmLoaded && wasmModule?.exports?.ebePCG) {
+            const result = this._solveWithWasmPCG(nelx, nely, nelz, x, penal, KEflat, edofArray, F, freedofs, iteration, maxIterations);
+            if (result) return result;
+            // Fall through to JS solver if WASM allocation failed
+        }
 
         // Schedule CG tolerance: looser early, tighter late
         const progress = maxIterations > 1 ? (iteration - 1) / (maxIterations - 1) : 1;

@@ -484,7 +484,7 @@ export function denseMatVecRaw(
  * @param kePtr      - KEflat: f64[edofSize*edofSize] reference element stiffness
  * @param edofsPtr   - edofs: i32[nel*edofSize] element DOF connectivity
  * @param fPtr       - F: f64[ndof] global force vector
- * @param uPtr       - U: f64[ndof] output displacement vector (will be zeroed & filled)
+ * @param uPtr       - U: f64[ndof] displacement vector (input for warm-start, output with solution)
  * @param freedofsPtr - freedofs: i32[nfree] indices of free (unconstrained) DOFs
  * @param nel        - number of elements
  * @param edofSize   - DOFs per element (8 for 2D quad, 24 for 3D hex)
@@ -577,20 +577,54 @@ export function ebePCG(
   const invDiagSafePtr: usize = scratchPtr + (<usize>edofSize << 3);
   memory.copy(invDiagSafePtr, invDiagTempPtr, <usize>nfree << 3);
 
-  // ── Step 3: Initialize CG ─────────────────────────────────────────
-  // Zero U output
-  memory.fill(uPtr, 0, <usize>ndof << 3);
-  // Zero Uf
-  memory.fill(ufPtr, 0, <usize>nfree << 3);
-
-  // r = F_free (initial residual since U_0 = 0)
+  // ── Step 3: Initialize CG (warm-start aware) ──────────────────────
+  // Extract Uf from caller-provided U (supports warm-starting:
+  // caller writes previous solution into uPtr before calling, or zeros it)
   for (let i: i32 = 0; i < nfree; i++) {
     const fi: i32 = load<i32>(freedofsPtr + (<usize>i << 2));
-    store<f64>(rPtr + (<usize>i << 3), load<f64>(fPtr + (<usize>fi << 3)));
+    store<f64>(ufPtr + (<usize>i << 3), load<f64>(uPtr + (<usize>fi << 3)));
+  }
+
+  // Compute initial residual: r = F_free - (K * U)_free
+  // Scatter Uf → p_full (reuse buffer)
+  memory.fill(pfullPtr, 0, <usize>ndof << 3);
+  for (let i: i32 = 0; i < nfree; i++) {
+    const fi: i32 = load<i32>(freedofsPtr + (<usize>i << 2));
+    store<f64>(pfullPtr + (<usize>fi << 3), load<f64>(ufPtr + (<usize>i << 3)));
+  }
+
+  // EbE matvec: ap_full = K * p_full
+  memory.fill(apfullPtr, 0, <usize>ndof << 3);
+  for (let ai: i32 = 0; ai < activeCount; ai++) {
+    const e0: i32 = load<i32>(activePtr + (<usize>ai << 2));
+    const E0r: f64 = load<f64>(evalsPtr + (<usize>e0 << 3));
+    const eOff0: usize = edofsPtr + (<usize>(e0 * edofSize) << 2);
+    for (let j: i32 = 0; j < edofSize; j++) {
+      const gj: i32 = load<i32>(eOff0 + (<usize>j << 2));
+      store<f64>(scratchPtr + (<usize>j << 3), load<f64>(pfullPtr + (<usize>gj << 3)));
+    }
+    for (let i: i32 = 0; i < edofSize; i++) {
+      const gi: i32 = load<i32>(eOff0 + (<usize>i << 2));
+      let sum: f64 = 0.0;
+      const rowBase: usize = kePtr + (<usize>(i * edofSize) << 3);
+      for (let j: i32 = 0; j < edofSize; j++) {
+        sum += load<f64>(rowBase + (<usize>j << 3)) * load<f64>(scratchPtr + (<usize>j << 3));
+      }
+      store<f64>(apfullPtr + (<usize>gi << 3),
+        load<f64>(apfullPtr + (<usize>gi << 3)) + E0r * sum);
+    }
+  }
+
+  // r = F_free - Ap_free
+  for (let i: i32 = 0; i < nfree; i++) {
+    const fi: i32 = load<i32>(freedofsPtr + (<usize>i << 2));
+    store<f64>(rPtr + (<usize>i << 3),
+      load<f64>(fPtr + (<usize>fi << 3)) - load<f64>(apfullPtr + (<usize>fi << 3)));
   }
 
   // z = M^{-1} r; p = z; rz = r^T z
   let rz: f64 = 0.0;
+  let r0norm2: f64 = 0.0;
   for (let i: i32 = 0; i < nfree; i++) {
     const invD: f64 = load<f64>(invDiagSafePtr + (<usize>i << 3));
     const ri: f64 = load<f64>(rPtr + (<usize>i << 3));
@@ -598,9 +632,11 @@ export function ebePCG(
     store<f64>(zPtr + (<usize>i << 3), zi);
     store<f64>(pPtr + (<usize>i << 3), zi);
     rz += ri * zi;
+    r0norm2 += ri * ri;
   }
 
-  const tolSq: f64 = tolerance * tolerance;
+  // Relative tolerance: ||r||² < tol² · ||r₀||²
+  const tolSq: f64 = tolerance * tolerance * (r0norm2 > 1e-30 ? r0norm2 : <f64>1e-30);
   const cgMax: i32 = maxIter < nfree ? maxIter : nfree;
 
   // ── Step 4: CG iterations ─────────────────────────────────────────
@@ -686,6 +722,8 @@ export function ebePCG(
   }
 
   // ── Step 5: Write solution to U ───────────────────────────────────
+  // Zero full U first (ensures fixed DOFs remain zero)
+  memory.fill(uPtr, 0, <usize>ndof << 3);
   for (let i: i32 = 0; i < nfree; i++) {
     const fi: i32 = load<i32>(freedofsPtr + (<usize>i << 2));
     store<f64>(uPtr + (<usize>fi << 3), load<f64>(ufPtr + (<usize>i << 3)));
