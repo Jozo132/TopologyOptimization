@@ -2888,9 +2888,194 @@ class TopologyOptimizerWorker3D {
         return { U, c, solverStats: { cgIterations: cgIters, tolerance } };
     }
 
+    /**
+     * Serialize JS multigrid levels into WASM linear memory and call ebeMGPCG.
+     * Returns null if WASM MGPCG is unavailable.
+     *
+     * WASM level descriptor layout (80 bytes / level):
+     *   0: nelx   4: nely   8: nelz   12: ndof  16: nel  20: nfree
+     *  24: activeCount  28: hasDenseK  32: edofsPtr  36: evalsPtr
+     *  40: activePtr    44: fixedMaskPtr 48: freeDofsPtr 52: invDiagPtr
+     *  56: denseKPtr    60: AuPtr       64: resPtr      68: bPtr
+     *  72: xPtr         76: scratchPtr
+     */
+    _solveWithWasmMGPCG(nelx, nely, nelz, x, penal, KEflat, edofArray, F, freedofs, fixedMask, iteration, maxIterations) {
+        if (!wasmLoaded || !wasmModule?.exports?.ebeMGPCG) return null;
+
+        // Ensure MG hierarchy is built & updated
+        if (!this._mg) {
+            this._mg = new MGPrecond3D(KEflat);
+        }
+        this._mg.ensure(nelx, nely, nelz, edofArray, fixedMask, freedofs);
+        this._mg.updateFromFine(x, penal, this.E0, this.Emin);
+
+        const levels = this._mg.levels;
+        const numLevels = levels.length;
+        const ndof0 = levels[0].ndof;
+        const MG_LEVEL_STRIDE = 80;
+        const align8 = (v) => (v + 7) & ~7;
+
+        // ── Calculate total WASM memory needed ──
+        let totalBytes = 0;
+        totalBytes += 576 * 8;                     // KEflat (shared)
+        totalBytes += MG_LEVEL_STRIDE * numLevels; // level descriptors
+        totalBytes += ndof0 * 8 * 4;               // CG workspace: r, z, p, Ap
+        totalBytes += ndof0 * 8;                   // F (force vector)
+        totalBytes += ndof0 * 8;                   // U (displacement)
+        totalBytes += ndof0;                       // fixedMask (u8)
+        totalBytes += 64;                          // alignment padding
+
+        for (const level of levels) {
+            totalBytes += level.nel * 24 * 4 + 8;          // edofs + align
+            totalBytes += level.nel * 8;                    // E_vals
+            totalBytes += level.nel * 4 + 8;                // active + align
+            totalBytes += level.ndof + 8;                   // fixedMask + align
+            totalBytes += level.freeDofs.length * 4 + 8;    // freeDofs + align
+            totalBytes += level.ndof * 8;                   // invDiag
+            totalBytes += level.ndof * 8 * 4;               // Au, res, b, x
+            totalBytes += 24 * 8;                           // scratch
+            if (level.denseK) {
+                totalBytes += level.ndof * level.ndof * 8;
+            }
+        }
+
+        const mem = wasmModule.exports.memory;
+        const neededPages = Math.ceil(totalBytes / 65536) + 2;
+        const dataStart = mem.buffer.byteLength;
+        const growResult = mem.grow(neededPages);
+        if (growResult === -1) return null;
+
+        let off = dataStart;
+
+        // ── Write KEflat ──
+        const keOff = off; off += 576 * 8;
+        new Float64Array(mem.buffer, keOff, 576).set(KEflat);
+
+        // ── Write F ──
+        const fOff = off; off += ndof0 * 8;
+        new Float64Array(mem.buffer, fOff, ndof0).set(F);
+
+        // ── Write U ──
+        const uOff = off; off += ndof0 * 8;
+        new Float64Array(mem.buffer, uOff, ndof0).fill(0);
+
+        // ── Write finest fixedMask (u8) ──
+        const fixedMask0Off = off; off += ndof0; off = align8(off);
+        new Uint8Array(mem.buffer, fixedMask0Off, ndof0).set(fixedMask);
+
+        // ── CG workspace ──
+        const cgWorkOff = off; off += ndof0 * 8 * 4;
+
+        // ── Level descriptors ──
+        const levelsOff = off; off += MG_LEVEL_STRIDE * numLevels;
+
+        // ── Per-level data ──
+        for (let li = 0; li < numLevels; li++) {
+            const level = levels[li];
+            const descOff = levelsOff + li * MG_LEVEL_STRIDE;
+
+            // Allocate per-level arrays
+            const edofsOff = off; off += level.nel * 24 * 4; off = align8(off);
+            const evalsOff = off; off += level.nel * 8;
+            const activeOff = off; off += level.nel * 4; off = align8(off);
+            const fmOff = off; off += level.ndof; off = align8(off);
+            const freeOff = off; off += level.freeDofs.length * 4; off = align8(off);
+            const invDiagOff = off; off += level.ndof * 8;
+            let denseKOff = 0;
+            if (level.denseK) {
+                denseKOff = off; off += level.ndof * level.ndof * 8;
+            }
+            const auOff = off; off += level.ndof * 8;
+            const resOff = off; off += level.ndof * 8;
+            const bOff = off; off += level.ndof * 8;
+            const xOff = off; off += level.ndof * 8;
+            const scratchOff = off; off += 24 * 8;
+
+            // Copy data
+            new Int32Array(mem.buffer, edofsOff, level.edofArray.length).set(level.edofArray);
+            new Float64Array(mem.buffer, evalsOff, level.nel).set(level.E_vals);
+            new Int32Array(mem.buffer, activeOff, level.activeCount).set(level.active.subarray(0, level.activeCount));
+            new Uint8Array(mem.buffer, fmOff, level.ndof).set(level.fixedMask);
+            new Int32Array(mem.buffer, freeOff, level.freeDofs.length).set(level.freeDofs);
+            new Float64Array(mem.buffer, invDiagOff, level.ndof).set(level.invDiag);
+            if (level.denseK) {
+                new Float64Array(mem.buffer, denseKOff, level.ndof * level.ndof).set(level.denseK);
+            }
+            // Zero work vectors
+            new Float64Array(mem.buffer, auOff, level.ndof).fill(0);
+            new Float64Array(mem.buffer, resOff, level.ndof).fill(0);
+            new Float64Array(mem.buffer, bOff, level.ndof).fill(0);
+            new Float64Array(mem.buffer, xOff, level.ndof).fill(0);
+
+            // Write level descriptor (80 bytes)
+            const desc = new DataView(mem.buffer, descOff, MG_LEVEL_STRIDE);
+            desc.setInt32(0, level.nelx, true);
+            desc.setInt32(4, level.nely, true);
+            desc.setInt32(8, level.nelz, true);
+            desc.setInt32(12, level.ndof, true);
+            desc.setInt32(16, level.nel, true);
+            desc.setInt32(20, level.freeDofs.length, true);
+            desc.setInt32(24, level.activeCount, true);
+            desc.setInt32(28, level.denseK ? 1 : 0, true);
+            desc.setUint32(32, edofsOff, true);
+            desc.setUint32(36, evalsOff, true);
+            desc.setUint32(40, activeOff, true);
+            desc.setUint32(44, fmOff, true);
+            desc.setUint32(48, freeOff, true);
+            desc.setUint32(52, invDiagOff, true);
+            desc.setUint32(56, denseKOff, true);
+            desc.setUint32(60, auOff, true);
+            desc.setUint32(64, resOff, true);
+            desc.setUint32(68, bOff, true);
+            desc.setUint32(72, xOff, true);
+            desc.setUint32(76, scratchOff, true);
+        }
+
+        // Schedule CG tolerance
+        const progress = maxIterations > 1 ? (iteration - 1) / (maxIterations - 1) : 1;
+        const tolerance = Math.exp(
+            Math.log(CG_TOL_START) + progress * (Math.log(CG_TOL_END) - Math.log(CG_TOL_START))
+        );
+        const nfree = freedofs.length;
+        const maxIter = Math.min(nfree, MAX_CG_ITERATIONS);
+
+        // Call full WASM MGPCG solver
+        const cgIters = wasmModule.exports.ebeMGPCG(
+            levelsOff, numLevels, keOff,
+            fOff, uOff, fixedMask0Off,
+            ndof0, maxIter, tolerance, cgWorkOff
+        );
+
+        // Allocate / reuse output buffers
+        if (!this._U || this._U.length !== ndof0) {
+            this._U = new Float64Array(ndof0);
+            this._U_prev = new Float64Array(ndof0);
+        }
+
+        // Read U back from WASM
+        const U = this._U;
+        U.set(new Float64Array(mem.buffer, uOff, ndof0));
+
+        // Save for warm-start
+        this._U_prev.set(U);
+
+        // Compute compliance
+        let c2 = 0;
+        for (let i = 0; i < ndof0; i++) c2 += F[i] * U[i];
+
+        return { U, c: c2, solverStats: { cgIterations: cgIters, tolerance } };
+    }
+
     FE(nelx, nely, nelz, x, penal, KEflat, edofArray, F, freedofs, fixedMask, config, iteration, maxIterations, fixeddofs) {
         const ndof = 3 * (nelx + 1) * (nely + 1) * (nelz + 1);
         const nel = nelx * nely * nelz;
+
+        // ── Full WASM MGPCG solve (entire V-cycle + CG in WASM, zero per-iteration crossings) ──
+        if (this.linearSolver === 'mgpcg' && wasmLoaded && wasmModule?.exports?.ebeMGPCG) {
+            const result = this._solveWithWasmMGPCG(nelx, nely, nelz, x, penal, KEflat, edofArray, F, freedofs, fixedMask, iteration, maxIterations);
+            if (result) return result;
+            // Fall through to JS MGPCG if WASM allocation failed
+        }
 
         // ── Full WASM FEA solve (Jacobi-PCG, zero per-iteration JS↔WASM crossings) ──
         if (this.linearSolver !== 'mgpcg' && wasmLoaded && wasmModule?.exports?.ebePCG) {
