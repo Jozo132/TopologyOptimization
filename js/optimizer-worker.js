@@ -570,6 +570,11 @@ class TopologyOptimizerWorker {
             
             xnew = this.OC(nelx, nely, x, volfrac, dcnWeighted, preservedElements, voidElements);
 
+            // Fill internal voids if enabled
+            if (config.preventVoids) {
+                this._fillInternalVoids(xnew, nelx, nely);
+            }
+
             change = 0;
             for (let i = 0; i < nel; i++) {
                 change = Math.max(change, Math.abs(xnew[i] - xold[i]));
@@ -1017,6 +1022,61 @@ class TopologyOptimizerWorker {
         }
 
         return xnew;
+    }
+
+    /**
+     * Fill internal voids (enclosed air bubbles) in the density field.
+     * Uses flood-fill from boundary void elements to identify exterior voids;
+     * any void not reachable from the boundary is considered internal and filled.
+     * @param {Float32Array} x - density array (modified in place)
+     * @param {number} nelx
+     * @param {number} nely
+     * @param {number} [threshold=0.3] - density below this is considered void
+     */
+    _fillInternalVoids(x, nelx, nely, threshold = 0.3) {
+        const nel = nelx * nely;
+        // visited[i] = true if element is solid or reachable from boundary
+        const visited = new Uint8Array(nel);
+        const queue = [];
+
+        // Seed: all boundary elements that are void
+        for (let ex = 0; ex < nelx; ex++) {
+            for (let ey = 0; ey < nely; ey++) {
+                if (ex === 0 || ex === nelx - 1 || ey === 0 || ey === nely - 1) {
+                    const idx = ey + ex * nely; // column-major
+                    if (x[idx] < threshold) {
+                        visited[idx] = 1;
+                        queue.push(idx);
+                    }
+                }
+            }
+        }
+
+        // Flood-fill from boundary voids
+        while (queue.length > 0) {
+            const idx = queue.pop();
+            const ex = Math.floor(idx / nely);
+            const ey = idx % nely;
+            const neighbors = [
+                ey > 0 ? (ey - 1) + ex * nely : -1,
+                ey < nely - 1 ? (ey + 1) + ex * nely : -1,
+                ex > 0 ? ey + (ex - 1) * nely : -1,
+                ex < nelx - 1 ? ey + (ex + 1) * nely : -1,
+            ];
+            for (const ni of neighbors) {
+                if (ni >= 0 && !visited[ni] && x[ni] < threshold) {
+                    visited[ni] = 1;
+                    queue.push(ni);
+                }
+            }
+        }
+
+        // Fill internal voids: any void element not visited from boundary
+        for (let i = 0; i < nel; i++) {
+            if (x[i] < threshold && !visited[i]) {
+                x[i] = 1.0;
+            }
+        }
     }
 
     lk() {

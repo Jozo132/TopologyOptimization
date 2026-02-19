@@ -475,6 +475,80 @@ console.log('Test 16: TopologySolver library – cancel');
 }
 
 // ──────────────────────────────────────────────────
+// Test 17: TopologySolver library – preventVoids parameter
+// ──────────────────────────────────────────────────
+console.log('Test 17: TopologySolver library – preventVoids parameter');
+{
+    const solver = new TopologySolver();
+    const nx = 8, ny = 4, nz = 1;
+    const model = { nx, ny, nz, type: 'beam', elements: new Float32Array(nx * ny).fill(1) };
+    const config = {
+        solver: '2d',
+        volumeFraction: 0.3,
+        maxIterations: 3,
+        penaltyFactor: 3,
+        filterRadius: 0.9,
+        forceDirection: 'down',
+        forceMagnitude: 100,
+        constraintPosition: 'left',
+        useAMR: false,
+        youngsModulus: 2.3,
+        poissonsRatio: 0.35,
+        penalStart: 1.5,
+        continuationIters: 3,
+        useProjection: false,
+        preventVoids: true,
+    };
+
+    const result = await solver.optimize(model, config, () => {});
+
+    assert(result.iterations >= 1, `preventVoids: should complete at least 1 iteration, got ${result.iterations}`);
+    assert(typeof result.finalCompliance === 'number' && result.finalCompliance > 0, 'preventVoids: finalCompliance should be a positive number');
+    assert(result.densities instanceof Float32Array, 'preventVoids: result.densities should be a Float32Array');
+
+    // Verify no internal voids: flood-fill from boundary voids and check
+    // that all low-density elements are reachable from the boundary
+    const densities = result.densities;
+    const threshold = 0.3;
+    // 2D worker uses column-major: ey + ex * ny
+    const visited = new Uint8Array(nx * ny);
+    const queue = [];
+    for (let ex = 0; ex < nx; ex++) {
+        for (let ey = 0; ey < ny; ey++) {
+            if (ex === 0 || ex === nx - 1 || ey === 0 || ey === ny - 1) {
+                const idx = ey + ex * ny;
+                if (densities[idx] < threshold) {
+                    visited[idx] = 1;
+                    queue.push(idx);
+                }
+            }
+        }
+    }
+    while (queue.length > 0) {
+        const idx = queue.pop();
+        const ex = Math.floor(idx / ny);
+        const ey = idx % ny;
+        const neighbors = [
+            ey > 0 ? (ey - 1) + ex * ny : -1,
+            ey < ny - 1 ? (ey + 1) + ex * ny : -1,
+            ex > 0 ? ey + (ex - 1) * ny : -1,
+            ex < nx - 1 ? ey + (ex + 1) * ny : -1,
+        ];
+        for (const ni of neighbors) {
+            if (ni >= 0 && !visited[ni] && densities[ni] < threshold) {
+                visited[ni] = 1;
+                queue.push(ni);
+            }
+        }
+    }
+    let internalVoids = 0;
+    for (let i = 0; i < nx * ny; i++) {
+        if (densities[i] < threshold && !visited[i]) internalVoids++;
+    }
+    assert(internalVoids === 0, `preventVoids: should have no internal voids, found ${internalVoids}`);
+}
+
+// ──────────────────────────────────────────────────
 // Summary
 // ──────────────────────────────────────────────────
 console.log(`\nResults: ${passed} passed, ${failed} failed`);

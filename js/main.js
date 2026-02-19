@@ -33,6 +33,7 @@ class TopologyApp {
             voxelSizeMM: 5,
             minCrossSection: 0,
             constrainToSolid: false,
+            preventVoids: false,
             useAMR: true,
             amrInterval: 3,
             minGranuleSize: 0.02,
@@ -333,6 +334,10 @@ class TopologyApp {
         document.getElementById('constrainToSolid').addEventListener('change', (e) => {
             this.config.constrainToSolid = e.target.checked;
         });
+
+        document.getElementById('preventVoids').addEventListener('change', (e) => {
+            this.config.preventVoids = e.target.checked;
+        });
         
         // AMR controls
         document.getElementById('useAMR').addEventListener('change', (e) => {
@@ -359,6 +364,31 @@ class TopologyApp {
         
         document.getElementById('amrInterval').addEventListener('input', (e) => {
             this.config.amrInterval = parseInt(e.target.value);
+        });
+
+        // Advanced parameters
+        document.getElementById('penalStart').addEventListener('input', (e) => {
+            this.config.penalStart = parseFloat(e.target.value);
+        });
+
+        document.getElementById('continuationIters').addEventListener('input', (e) => {
+            this.config.continuationIters = parseInt(e.target.value);
+        });
+
+        document.getElementById('useProjection').addEventListener('change', (e) => {
+            this.config.useProjection = e.target.checked;
+            const projControls = document.getElementById('projectionControls');
+            const projControls2 = document.getElementById('projectionControls2');
+            if (projControls) projControls.style.display = e.target.checked ? '' : 'none';
+            if (projControls2) projControls2.style.display = e.target.checked ? '' : 'none';
+        });
+
+        document.getElementById('betaMax').addEventListener('input', (e) => {
+            this.config.betaMax = parseInt(e.target.value);
+        });
+
+        document.getElementById('betaInterval').addEventListener('input', (e) => {
+            this.config.betaInterval = parseInt(e.target.value);
         });
         
         document.getElementById('runOptimization').addEventListener('click', () => {

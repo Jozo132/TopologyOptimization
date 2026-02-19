@@ -1302,6 +1302,11 @@ class TopologyOptimizerWorker3D {
             
             this.OC(nelx, nely, nelz, x, volfrac, dcnWeighted, preservedMask, voidMask, xnew);
 
+            // Fill internal voids if enabled
+            if (config.preventVoids) {
+                this._fillInternalVoids(xnew, nelx, nely, nelz);
+            }
+
             change = 0;
             for (let i = 0; i < nel; i++) {
                 change = Math.max(change, Math.abs(xnew[i] - xold[i]));
@@ -1819,6 +1824,72 @@ class TopologyOptimizerWorker3D {
                 l1 = lmid;
             } else {
                 l2 = lmid;
+            }
+        }
+    }
+
+    /**
+     * Fill internal voids (enclosed air bubbles) in the 3D density field.
+     * Uses flood-fill from boundary void elements to identify exterior voids;
+     * any void not reachable from the boundary is considered internal and filled.
+     * @param {Float32Array} x - density array (modified in place)
+     * @param {number} nelx
+     * @param {number} nely
+     * @param {number} nelz
+     * @param {number} [threshold=0.3] - density below this is considered void
+     */
+    _fillInternalVoids(x, nelx, nely, nelz, threshold = 0.3) {
+        const nel = nelx * nely * nelz;
+        const visited = new Uint8Array(nel);
+        const queue = [];
+
+        // Helper to convert (ex, ey, ez) to flat index (x-major: x + y*nelx + z*nelx*nely)
+        const idx3 = (ex, ey, ez) => ex + ey * nelx + ez * nelx * nely;
+
+        // Seed: all boundary elements that are void
+        for (let ex = 0; ex < nelx; ex++) {
+            for (let ey = 0; ey < nely; ey++) {
+                for (let ez = 0; ez < nelz; ez++) {
+                    if (ex === 0 || ex === nelx - 1 ||
+                        ey === 0 || ey === nely - 1 ||
+                        ez === 0 || ez === nelz - 1) {
+                        const i = idx3(ex, ey, ez);
+                        if (x[i] < threshold) {
+                            visited[i] = 1;
+                            queue.push(i);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Flood-fill from boundary voids
+        while (queue.length > 0) {
+            const i = queue.pop();
+            const ez = Math.floor(i / (nelx * nely));
+            const rem = i % (nelx * nely);
+            const ey = Math.floor(rem / nelx);
+            const ex = rem % nelx;
+            const neighbors = [
+                ex > 0 ? idx3(ex - 1, ey, ez) : -1,
+                ex < nelx - 1 ? idx3(ex + 1, ey, ez) : -1,
+                ey > 0 ? idx3(ex, ey - 1, ez) : -1,
+                ey < nely - 1 ? idx3(ex, ey + 1, ez) : -1,
+                ez > 0 ? idx3(ex, ey, ez - 1) : -1,
+                ez < nelz - 1 ? idx3(ex, ey, ez + 1) : -1,
+            ];
+            for (const ni of neighbors) {
+                if (ni >= 0 && !visited[ni] && x[ni] < threshold) {
+                    visited[ni] = 1;
+                    queue.push(ni);
+                }
+            }
+        }
+
+        // Fill internal voids: any void element not visited from boundary
+        for (let i = 0; i < nel; i++) {
+            if (x[i] < threshold && !visited[i]) {
+                x[i] = 1.0;
             }
         }
     }
