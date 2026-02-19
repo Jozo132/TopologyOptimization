@@ -337,7 +337,7 @@ async function runTests() {
         for (let i = 0; i < ndof; i++) {
             maxDiff = Math.max(maxDiff, Math.abs(Ap_js[i] - Ap_wasm[i]));
         }
-        assert(maxDiff < 1e-8, `WASM matches JS on large mesh, max diff = ${maxDiff.toExponential(3)}`);
+        assert(maxDiff < 1e-10, `WASM matches JS on large mesh, max diff = ${maxDiff.toExponential(3)}`);
     }
 
     // ─── Test 8: denseMatVecRaw correctness ───
