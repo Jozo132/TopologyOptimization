@@ -11,6 +11,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const { ModelImporter } = await import(join(__dirname, '..', 'js', 'importer.js'));
+const { STEPParser } = await import(join(__dirname, '..', 'js', 'step-parser.js'));
 const { TopologySolver } = await import(join(__dirname, '..', 'lib', 'topology-solver.js'));
 
 const importer = new ModelImporter();
@@ -1036,6 +1037,453 @@ console.log('Test 27: 3D manufacturing max depth counts from top (ey=nely-1)');
         }
     }
     assert(deepVoids === 0, `3dMaxDepth: no voids below depth ${maxDepth} from top, found ${deepVoids}`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 28: STEP parser – protocol detection (AP203)
+// ──────────────────────────────────────────────────
+console.log('Test 28: STEP parser – protocol detection (AP203)');
+{
+    const parser = new STEPParser();
+    const stepText = `ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION((''), '2;1');
+FILE_NAME('test.stp', '2024-01-01', (''), (''), '', '', '');
+FILE_SCHEMA(('CONFIG_CONTROL_DESIGN'));
+ENDSEC;
+DATA;
+ENDSEC;
+END-ISO-10303-21;`;
+    const result = parser._detectProtocol(stepText);
+    assert(result === 'AP203', `AP203 protocol should be detected from CONFIG_CONTROL_DESIGN, got '${result}'`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 29: STEP parser – protocol detection (AP214)
+// ──────────────────────────────────────────────────
+console.log('Test 29: STEP parser – protocol detection (AP214)');
+{
+    const parser = new STEPParser();
+    const stepText = `ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION((''), '2;1');
+FILE_NAME('test.stp', '2024-01-01', (''), (''), '', '', '');
+FILE_SCHEMA(('AUTOMOTIVE_DESIGN'));
+ENDSEC;
+DATA;
+ENDSEC;
+END-ISO-10303-21;`;
+    const result = parser._detectProtocol(stepText);
+    assert(result === 'AP214', `AP214 protocol should be detected from AUTOMOTIVE_DESIGN, got '${result}'`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 30: STEP parser – parse cube B-Rep (AP203)
+//   A 10×10×10 cube described as STEP B-Rep should produce triangles
+// ──────────────────────────────────────────────────
+console.log('Test 30: STEP parser – parse cube B-Rep (AP203)');
+{
+    // Minimal STEP file describing a cube [0,10]^3 with 6 planar faces
+    const stepText = `ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION((''), '2;1');
+FILE_NAME('cube.stp', '2024-01-01', (''), (''), '', 'AP203', '');
+FILE_SCHEMA(('CONFIG_CONTROL_DESIGN'));
+ENDSEC;
+DATA;
+#1 = CARTESIAN_POINT('Origin', (0.0, 0.0, 0.0));
+#2 = CARTESIAN_POINT('', (10.0, 0.0, 0.0));
+#3 = CARTESIAN_POINT('', (10.0, 10.0, 0.0));
+#4 = CARTESIAN_POINT('', (0.0, 10.0, 0.0));
+#5 = CARTESIAN_POINT('', (0.0, 0.0, 10.0));
+#6 = CARTESIAN_POINT('', (10.0, 0.0, 10.0));
+#7 = CARTESIAN_POINT('', (10.0, 10.0, 10.0));
+#8 = CARTESIAN_POINT('', (0.0, 10.0, 10.0));
+#10 = DIRECTION('', (0.0, 0.0, 1.0));
+#11 = DIRECTION('', (1.0, 0.0, 0.0));
+#12 = DIRECTION('', (0.0, 1.0, 0.0));
+#13 = DIRECTION('', (0.0, 0.0, -1.0));
+#14 = DIRECTION('', (-1.0, 0.0, 0.0));
+#15 = DIRECTION('', (0.0, -1.0, 0.0));
+#20 = VERTEX_POINT('', #1);
+#21 = VERTEX_POINT('', #2);
+#22 = VERTEX_POINT('', #3);
+#23 = VERTEX_POINT('', #4);
+#24 = VERTEX_POINT('', #5);
+#25 = VERTEX_POINT('', #6);
+#26 = VERTEX_POINT('', #7);
+#27 = VERTEX_POINT('', #8);
+#30 = LINE('', #1, #40);
+#31 = LINE('', #2, #41);
+#32 = LINE('', #3, #42);
+#33 = LINE('', #4, #43);
+#34 = LINE('', #1, #44);
+#35 = LINE('', #2, #45);
+#36 = LINE('', #3, #46);
+#37 = LINE('', #4, #47);
+#38 = LINE('', #5, #48);
+#39 = LINE('', #6, #49);
+#40 = VECTOR('', #11, 10.0);
+#41 = VECTOR('', #12, 10.0);
+#42 = VECTOR('', #14, 10.0);
+#43 = VECTOR('', #15, 10.0);
+#44 = VECTOR('', #10, 10.0);
+#45 = VECTOR('', #10, 10.0);
+#46 = VECTOR('', #10, 10.0);
+#47 = VECTOR('', #10, 10.0);
+#48 = VECTOR('', #11, 10.0);
+#49 = VECTOR('', #12, 10.0);
+#50 = EDGE_CURVE('', #20, #21, #30, .T.);
+#51 = EDGE_CURVE('', #21, #22, #31, .T.);
+#52 = EDGE_CURVE('', #22, #23, #32, .T.);
+#53 = EDGE_CURVE('', #23, #20, #33, .T.);
+#54 = EDGE_CURVE('', #20, #24, #34, .T.);
+#55 = EDGE_CURVE('', #21, #25, #35, .T.);
+#56 = EDGE_CURVE('', #22, #26, #36, .T.);
+#57 = EDGE_CURVE('', #23, #27, #37, .T.);
+#58 = EDGE_CURVE('', #24, #25, #38, .T.);
+#59 = EDGE_CURVE('', #25, #26, #39, .T.);
+#60 = EDGE_CURVE('', #26, #27, #32, .T.);
+#61 = EDGE_CURVE('', #27, #24, #33, .T.);
+#70 = ORIENTED_EDGE('', *, *, #50, .T.);
+#71 = ORIENTED_EDGE('', *, *, #51, .T.);
+#72 = ORIENTED_EDGE('', *, *, #52, .T.);
+#73 = ORIENTED_EDGE('', *, *, #53, .T.);
+#74 = ORIENTED_EDGE('', *, *, #50, .F.);
+#75 = ORIENTED_EDGE('', *, *, #54, .T.);
+#76 = ORIENTED_EDGE('', *, *, #58, .T.);
+#77 = ORIENTED_EDGE('', *, *, #55, .F.);
+#78 = ORIENTED_EDGE('', *, *, #51, .F.);
+#79 = ORIENTED_EDGE('', *, *, #55, .T.);
+#80 = ORIENTED_EDGE('', *, *, #59, .T.);
+#81 = ORIENTED_EDGE('', *, *, #56, .F.);
+#82 = ORIENTED_EDGE('', *, *, #52, .F.);
+#83 = ORIENTED_EDGE('', *, *, #56, .T.);
+#84 = ORIENTED_EDGE('', *, *, #60, .T.);
+#85 = ORIENTED_EDGE('', *, *, #57, .F.);
+#86 = ORIENTED_EDGE('', *, *, #53, .F.);
+#87 = ORIENTED_EDGE('', *, *, #57, .T.);
+#88 = ORIENTED_EDGE('', *, *, #61, .T.);
+#89 = ORIENTED_EDGE('', *, *, #54, .F.);
+#90 = ORIENTED_EDGE('', *, *, #58, .T.);
+#91 = ORIENTED_EDGE('', *, *, #59, .T.);
+#92 = ORIENTED_EDGE('', *, *, #60, .T.);
+#93 = ORIENTED_EDGE('', *, *, #61, .T.);
+#100 = EDGE_LOOP('', (#70, #71, #72, #73));
+#101 = EDGE_LOOP('', (#74, #75, #76, #77));
+#102 = EDGE_LOOP('', (#78, #79, #80, #81));
+#103 = EDGE_LOOP('', (#82, #83, #84, #85));
+#104 = EDGE_LOOP('', (#86, #87, #88, #89));
+#105 = EDGE_LOOP('', (#90, #91, #92, #93));
+#110 = FACE_OUTER_BOUND('', #100, .T.);
+#111 = FACE_OUTER_BOUND('', #101, .T.);
+#112 = FACE_OUTER_BOUND('', #102, .T.);
+#113 = FACE_OUTER_BOUND('', #103, .T.);
+#114 = FACE_OUTER_BOUND('', #104, .T.);
+#115 = FACE_OUTER_BOUND('', #105, .T.);
+#120 = AXIS2_PLACEMENT_3D('', #1, #13, #11);
+#121 = AXIS2_PLACEMENT_3D('', #1, #15, #11);
+#122 = AXIS2_PLACEMENT_3D('', #2, #11, #12);
+#123 = AXIS2_PLACEMENT_3D('', #3, #12, #14);
+#124 = AXIS2_PLACEMENT_3D('', #4, #14, #15);
+#125 = AXIS2_PLACEMENT_3D('', #5, #10, #11);
+#130 = PLANE('', #120);
+#131 = PLANE('', #121);
+#132 = PLANE('', #122);
+#133 = PLANE('', #123);
+#134 = PLANE('', #124);
+#135 = PLANE('', #125);
+#140 = ADVANCED_FACE('', (#110), #130, .T.);
+#141 = ADVANCED_FACE('', (#111), #131, .T.);
+#142 = ADVANCED_FACE('', (#112), #132, .T.);
+#143 = ADVANCED_FACE('', (#113), #133, .T.);
+#144 = ADVANCED_FACE('', (#114), #134, .T.);
+#145 = ADVANCED_FACE('', (#115), #135, .T.);
+#150 = CLOSED_SHELL('', (#140, #141, #142, #143, #144, #145));
+ENDSEC;
+END-ISO-10303-21;`;
+
+    const parser = new STEPParser();
+    const result = parser.parse(stepText);
+
+    assert(result.protocol === 'AP203', `Protocol should be AP203, got '${result.protocol}'`);
+    assert(result.vertices.length > 0, `Should produce triangles from cube, got ${result.vertices.length} vertices`);
+    assert(result.vertices.length % 3 === 0, `Vertex count should be multiple of 3 (triangles), got ${result.vertices.length}`);
+
+    const numTriangles = result.vertices.length / 3;
+    // A cube has 6 faces × 4 vertices per face → 6 × 2 triangles = 12 triangles minimum
+    assert(numTriangles >= 12, `Should have at least 12 triangles for a cube, got ${numTriangles}`);
+
+    // Verify vertices are in the expected range [0, 10]
+    let allInRange = true;
+    for (const v of result.vertices) {
+        if (v.x < -0.1 || v.x > 10.1 || v.y < -0.1 || v.y > 10.1 || v.z < -0.1 || v.z > 10.1) {
+            allInRange = false;
+            break;
+        }
+    }
+    assert(allInRange, 'All vertices should be within [0, 10] range for cube');
+}
+
+// ──────────────────────────────────────────────────
+// Test 31: STEP parser – isSTEP static method
+// ──────────────────────────────────────────────────
+console.log('Test 31: STEP parser – isSTEP detection');
+{
+    assert(STEPParser.isSTEP('ISO-10303-21; HEADER; DATA; ENDSEC;') === true, 'Should detect STEP from ISO-10303-21');
+    assert(STEPParser.isSTEP('solid cube\nfacet normal') === false, 'Should not detect STL as STEP');
+    assert(STEPParser.isSTEP('FILE_SCHEMA(("AP203")); DATA;') === true, 'Should detect STEP from FILE_SCHEMA + DATA');
+}
+
+// ──────────────────────────────────────────────────
+// Test 32: STEP parser – argument splitting
+// ──────────────────────────────────────────────────
+console.log('Test 32: STEP parser – argument splitting');
+{
+    const parser = new STEPParser();
+    const args1 = parser._splitArgs("'label', (1.0, 2.0, 3.0)");
+    assert(args1.length === 2, `Should split into 2 args, got ${args1.length}`);
+    assert(args1[0] === "'label'", `First arg should be the label, got '${args1[0]}'`);
+    assert(args1[1] === '(1.0, 2.0, 3.0)', `Second arg should be the coord list, got '${args1[1]}'`);
+
+    const args2 = parser._splitArgs("'', (#1, #2, #3), #4, .T.");
+    assert(args2.length === 4, `Should split into 4 args, got ${args2.length}`);
+    assert(args2[1] === '(#1, #2, #3)', `Second arg should be ref list, got '${args2[1]}'`);
+    assert(args2[3] === '.T.', `Fourth arg should be .T., got '${args2[3]}'`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 33: STEP parser – CARTESIAN_POINT parsing
+// ──────────────────────────────────────────────────
+console.log('Test 33: STEP parser – CARTESIAN_POINT parsing');
+{
+    const parser = new STEPParser();
+    parser.rawEntities[1] = { type: 'CARTESIAN_POINT', args: "'Origin', (5.5, 3.2, 7.1)" };
+    const pt = parser._resolve(1);
+    assert(pt.type === 'CARTESIAN_POINT', `Type should be CARTESIAN_POINT, got '${pt.type}'`);
+    assert(Math.abs(pt.x - 5.5) < 1e-6, `x should be 5.5, got ${pt.x}`);
+    assert(Math.abs(pt.y - 3.2) < 1e-6, `y should be 3.2, got ${pt.y}`);
+    assert(Math.abs(pt.z - 7.1) < 1e-6, `z should be 7.1, got ${pt.z}`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 34: STEP parser – AP214 protocol detection with schema
+// ──────────────────────────────────────────────────
+console.log('Test 34: STEP parser – AP214 with explicit schema identifier');
+{
+    const stepText = `ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION((''), '2;1');
+FILE_NAME('test.stp', '2024-01-01', (''), (''), '', '', '');
+FILE_SCHEMA(('AP214IS'));
+ENDSEC;
+DATA;
+#1 = CARTESIAN_POINT('', (0.0, 0.0, 0.0));
+ENDSEC;
+END-ISO-10303-21;`;
+
+    const parser = new STEPParser();
+    const protocol = parser._detectProtocol(stepText);
+    assert(protocol === 'AP214', `Should detect AP214 from AP214IS, got '${protocol}'`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 35: ModelImporter.parseSTEP – voxelizes STEP cube
+// ──────────────────────────────────────────────────
+console.log('Test 35: ModelImporter.parseSTEP – voxelizes STEP cube');
+{
+    // Minimal STEP cube with a single planar face (a triangle)
+    const stepText = `ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('AP203'));
+ENDSEC;
+DATA;
+#1 = CARTESIAN_POINT('', (0.0, 0.0, 0.0));
+#2 = CARTESIAN_POINT('', (10.0, 0.0, 0.0));
+#3 = CARTESIAN_POINT('', (10.0, 10.0, 0.0));
+#4 = CARTESIAN_POINT('', (0.0, 10.0, 0.0));
+#5 = CARTESIAN_POINT('', (0.0, 0.0, 10.0));
+#6 = CARTESIAN_POINT('', (10.0, 0.0, 10.0));
+#7 = CARTESIAN_POINT('', (10.0, 10.0, 10.0));
+#8 = CARTESIAN_POINT('', (0.0, 10.0, 10.0));
+#10 = DIRECTION('', (0.0, 0.0, 1.0));
+#11 = DIRECTION('', (1.0, 0.0, 0.0));
+#12 = DIRECTION('', (0.0, 1.0, 0.0));
+#13 = DIRECTION('', (0.0, 0.0, -1.0));
+#14 = DIRECTION('', (-1.0, 0.0, 0.0));
+#15 = DIRECTION('', (0.0, -1.0, 0.0));
+#20 = VERTEX_POINT('', #1);
+#21 = VERTEX_POINT('', #2);
+#22 = VERTEX_POINT('', #3);
+#23 = VERTEX_POINT('', #4);
+#24 = VERTEX_POINT('', #5);
+#25 = VERTEX_POINT('', #6);
+#26 = VERTEX_POINT('', #7);
+#27 = VERTEX_POINT('', #8);
+#30 = LINE('', #1, #40);
+#31 = LINE('', #2, #41);
+#32 = LINE('', #3, #42);
+#33 = LINE('', #4, #43);
+#34 = LINE('', #1, #44);
+#35 = LINE('', #2, #45);
+#36 = LINE('', #3, #46);
+#37 = LINE('', #4, #47);
+#38 = LINE('', #5, #48);
+#39 = LINE('', #6, #49);
+#40 = VECTOR('', #11, 10.0);
+#41 = VECTOR('', #12, 10.0);
+#42 = VECTOR('', #14, 10.0);
+#43 = VECTOR('', #15, 10.0);
+#44 = VECTOR('', #10, 10.0);
+#45 = VECTOR('', #10, 10.0);
+#46 = VECTOR('', #10, 10.0);
+#47 = VECTOR('', #10, 10.0);
+#48 = VECTOR('', #11, 10.0);
+#49 = VECTOR('', #12, 10.0);
+#50 = EDGE_CURVE('', #20, #21, #30, .T.);
+#51 = EDGE_CURVE('', #21, #22, #31, .T.);
+#52 = EDGE_CURVE('', #22, #23, #32, .T.);
+#53 = EDGE_CURVE('', #23, #20, #33, .T.);
+#54 = EDGE_CURVE('', #20, #24, #34, .T.);
+#55 = EDGE_CURVE('', #21, #25, #35, .T.);
+#56 = EDGE_CURVE('', #22, #26, #36, .T.);
+#57 = EDGE_CURVE('', #23, #27, #37, .T.);
+#58 = EDGE_CURVE('', #24, #25, #38, .T.);
+#59 = EDGE_CURVE('', #25, #26, #39, .T.);
+#60 = EDGE_CURVE('', #26, #27, #32, .T.);
+#61 = EDGE_CURVE('', #27, #24, #33, .T.);
+#70 = ORIENTED_EDGE('', *, *, #50, .T.);
+#71 = ORIENTED_EDGE('', *, *, #51, .T.);
+#72 = ORIENTED_EDGE('', *, *, #52, .T.);
+#73 = ORIENTED_EDGE('', *, *, #53, .T.);
+#74 = ORIENTED_EDGE('', *, *, #50, .F.);
+#75 = ORIENTED_EDGE('', *, *, #54, .T.);
+#76 = ORIENTED_EDGE('', *, *, #58, .T.);
+#77 = ORIENTED_EDGE('', *, *, #55, .F.);
+#78 = ORIENTED_EDGE('', *, *, #51, .F.);
+#79 = ORIENTED_EDGE('', *, *, #55, .T.);
+#80 = ORIENTED_EDGE('', *, *, #59, .T.);
+#81 = ORIENTED_EDGE('', *, *, #56, .F.);
+#82 = ORIENTED_EDGE('', *, *, #52, .F.);
+#83 = ORIENTED_EDGE('', *, *, #56, .T.);
+#84 = ORIENTED_EDGE('', *, *, #60, .T.);
+#85 = ORIENTED_EDGE('', *, *, #57, .F.);
+#86 = ORIENTED_EDGE('', *, *, #53, .F.);
+#87 = ORIENTED_EDGE('', *, *, #57, .T.);
+#88 = ORIENTED_EDGE('', *, *, #61, .T.);
+#89 = ORIENTED_EDGE('', *, *, #54, .F.);
+#90 = ORIENTED_EDGE('', *, *, #58, .T.);
+#91 = ORIENTED_EDGE('', *, *, #59, .T.);
+#92 = ORIENTED_EDGE('', *, *, #60, .T.);
+#93 = ORIENTED_EDGE('', *, *, #61, .T.);
+#100 = EDGE_LOOP('', (#70, #71, #72, #73));
+#101 = EDGE_LOOP('', (#74, #75, #76, #77));
+#102 = EDGE_LOOP('', (#78, #79, #80, #81));
+#103 = EDGE_LOOP('', (#82, #83, #84, #85));
+#104 = EDGE_LOOP('', (#86, #87, #88, #89));
+#105 = EDGE_LOOP('', (#90, #91, #92, #93));
+#110 = FACE_OUTER_BOUND('', #100, .T.);
+#111 = FACE_OUTER_BOUND('', #101, .T.);
+#112 = FACE_OUTER_BOUND('', #102, .T.);
+#113 = FACE_OUTER_BOUND('', #103, .T.);
+#114 = FACE_OUTER_BOUND('', #104, .T.);
+#115 = FACE_OUTER_BOUND('', #105, .T.);
+#120 = AXIS2_PLACEMENT_3D('', #1, #13, #11);
+#121 = AXIS2_PLACEMENT_3D('', #1, #15, #11);
+#122 = AXIS2_PLACEMENT_3D('', #2, #11, #12);
+#123 = AXIS2_PLACEMENT_3D('', #3, #12, #14);
+#124 = AXIS2_PLACEMENT_3D('', #4, #14, #15);
+#125 = AXIS2_PLACEMENT_3D('', #5, #10, #11);
+#130 = PLANE('', #120);
+#131 = PLANE('', #121);
+#132 = PLANE('', #122);
+#133 = PLANE('', #123);
+#134 = PLANE('', #124);
+#135 = PLANE('', #125);
+#140 = ADVANCED_FACE('', (#110), #130, .T.);
+#141 = ADVANCED_FACE('', (#111), #131, .T.);
+#142 = ADVANCED_FACE('', (#112), #132, .T.);
+#143 = ADVANCED_FACE('', (#113), #133, .T.);
+#144 = ADVANCED_FACE('', (#114), #134, .T.);
+#145 = ADVANCED_FACE('', (#115), #135, .T.);
+#150 = CLOSED_SHELL('', (#140, #141, #142, #143, #144, #145));
+ENDSEC;
+END-ISO-10303-21;`;
+
+    const model = importer.parseSTEP(stepText);
+    assert(model.sourceFormat === 'STEP', `sourceFormat should be 'STEP', got '${model.sourceFormat}'`);
+    assert(model.protocol === 'AP203', `protocol should be 'AP203', got '${model.protocol}'`);
+    assert(model.nx > 0 && model.ny > 0 && model.nz > 0, 'Voxelized model should have positive dimensions');
+    assert(model.originalVertices.length > 0, 'Should have original vertices');
+
+    // Verify some voxels are solid
+    let solidCount = 0;
+    for (let i = 0; i < model.elements.length; i++) {
+        if (model.elements[i] > 0.5) solidCount++;
+    }
+    assert(solidCount > 0, `Should have some solid voxels from STEP cube, got ${solidCount}`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 36: STEP parser – DATA section error handling
+// ──────────────────────────────────────────────────
+console.log('Test 36: STEP parser – DATA section error handling');
+{
+    const parser = new STEPParser();
+    let threwError = false;
+    try {
+        parser.parse('This is not a STEP file at all');
+    } catch (e) {
+        threwError = true;
+        assert(e.message.includes('No DATA section'), `Error should mention DATA section, got '${e.message}'`);
+    }
+    assert(threwError, 'Should throw error for invalid STEP file');
+}
+
+// ──────────────────────────────────────────────────
+// Test 37: STEP parser – empty geometry error
+// ──────────────────────────────────────────────────
+console.log('Test 37: STEP parser – empty geometry error');
+{
+    const stepText = `ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('AP203'));
+ENDSEC;
+DATA;
+#1 = CARTESIAN_POINT('', (0.0, 0.0, 0.0));
+ENDSEC;
+END-ISO-10303-21;`;
+
+    let threwError = false;
+    try {
+        importer.parseSTEP(stepText);
+    } catch (e) {
+        threwError = true;
+        assert(e.message.includes('No geometry'), `Error should mention no geometry, got '${e.message}'`);
+    }
+    assert(threwError, 'Should throw error when no triangulable geometry is found');
+}
+
+// ──────────────────────────────────────────────────
+// Test 38: STEP parser – vector math helpers
+// ──────────────────────────────────────────────────
+console.log('Test 38: STEP parser – vector math helpers');
+{
+    const parser = new STEPParser();
+    const n = parser._normalize({ x: 3, y: 0, z: 4 });
+    assert(Math.abs(n.x - 0.6) < 1e-6, `Normalized x should be 0.6, got ${n.x}`);
+    assert(Math.abs(n.z - 0.8) < 1e-6, `Normalized z should be 0.8, got ${n.z}`);
+
+    const c = parser._cross({ x: 1, y: 0, z: 0 }, { x: 0, y: 1, z: 0 });
+    assert(Math.abs(c.x) < 1e-6, `Cross x should be 0, got ${c.x}`);
+    assert(Math.abs(c.y) < 1e-6, `Cross y should be 0, got ${c.y}`);
+    assert(Math.abs(c.z - 1) < 1e-6, `Cross z should be 1, got ${c.z}`);
+
+    const d = parser._dot({ x: 1, y: 2, z: 3 }, { x: 4, y: 5, z: 6 });
+    assert(Math.abs(d - 32) < 1e-6, `Dot product should be 32, got ${d}`);
+
+    const dist = parser._distance({ x: 0, y: 0, z: 0 }, { x: 3, y: 4, z: 0 });
+    assert(Math.abs(dist - 5) < 1e-6, `Distance should be 5, got ${dist}`);
 }
 
 // ──────────────────────────────────────────────────

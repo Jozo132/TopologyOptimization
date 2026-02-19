@@ -1,9 +1,25 @@
-// Model importer for STL files and template generation
+// Model importer for STL and STEP (AP203/AP214) files and template generation
+import { STEPParser } from './step-parser.js';
+
 export class ModelImporter {
     constructor() {
         this.reader = new FileReader();
         this.resolution = 20;
         this.voxelSizeMM = 1; // default voxel size in mm
+    }
+
+    /**
+     * Import a file (STL or STEP) based on its extension.
+     * @param {File} file
+     * @param {number|null} resolution
+     * @returns {Promise<object>}
+     */
+    async importFile(file, resolution) {
+        const name = (file.name || '').toLowerCase();
+        if (name.endsWith('.stp') || name.endsWith('.step')) {
+            return this.importSTEP(file, resolution);
+        }
+        return this.importSTL(file, resolution);
     }
 
     async importSTL(file, resolution) {
@@ -25,6 +41,51 @@ export class ModelImporter {
             
             this.reader.readAsArrayBuffer(file);
         });
+    }
+
+    /**
+     * Import a STEP file (AP203 or AP214).
+     * @param {File} file
+     * @param {number|null} resolution
+     * @returns {Promise<object>}
+     */
+    async importSTEP(file, resolution) {
+        this.resolution = resolution || 20;
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const text = e.target.result;
+                    const model = this.parseSTEP(text);
+                    resolve(model);
+                } catch (error) {
+                    reject(error);
+                }
+            };
+            reader.onerror = () => {
+                reject(new Error('Failed to read STEP file'));
+            };
+            reader.readAsText(file);
+        });
+    }
+
+    /**
+     * Parse STEP file text and return a voxelized model.
+     * @param {string} text - STEP file content
+     * @returns {object} Voxelized model
+     */
+    parseSTEP(text) {
+        const parser = new STEPParser();
+        const { vertices, protocol } = parser.parse(text);
+
+        if (!vertices || vertices.length < 3) {
+            throw new Error('No geometry found in STEP file');
+        }
+
+        const model = this.voxelizeVertices(vertices);
+        model.sourceFormat = 'STEP';
+        model.protocol = protocol;
+        return model;
     }
 
     /**
