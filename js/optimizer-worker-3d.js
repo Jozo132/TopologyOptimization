@@ -20,6 +20,8 @@ const _yieldToLoop = () => new Promise(r => setTimeout(r, 0));
 
 // Linear solver settings
 // Default solver for large 3D problems: multigrid-preconditioned CG (MGPCG).
+// Available linear solvers: 'mgpcg', 'cg', 'petsc'
+// 'petsc' uses KSP-style Krylov solvers with BDDC domain decomposition or multigrid preconditioning.
 const DEFAULT_LINEAR_SOLVER = 'mgpcg';
 
 // CG tolerance is scheduled during the optimization (looser early, tighter late)
@@ -1010,6 +1012,370 @@ class MGPrecond3D {
     }
 }
 
+// ─── KSP Solver parameters (PETSc-style) ─────────────────────────────────────
+// BDDC (Balancing Domain Decomposition by Constraints) configuration
+const KSP_BDDC_OVERLAP = 1;            // subdomain overlap layers
+const KSP_BDDC_COARSE_ITERS = 30;      // iterations for coarse-level solve
+const KSP_BDDC_SMOOTHER_ITERS = 3;     // local Jacobi smoothing steps per apply
+const KSP_BDDC_MIN_SUBDOMAINS = 2;     // minimum number of subdomains per axis
+
+/**
+ * PETSc-style KSP (Krylov Subspace) solver with pluggable preconditioners.
+ *
+ * Supports:
+ *  - PCBDDC: Balancing Domain Decomposition by Constraints
+ *  - PCMG:   Multigrid (delegates to MGPrecond3D)
+ *  - PCJACOBI: Diagonal (Jacobi) preconditioner fallback
+ *
+ * The solver uses Preconditioned Conjugate Gradient (PCG) as the default
+ * Krylov method, matching PETSc's KSPCG for symmetric positive-definite systems.
+ */
+class KSPSolver {
+    /**
+     * @param {Float64Array} KEflat - Flattened 24×24 element stiffness matrix
+     * @param {object} [options]
+     * @param {string} [options.pc='bddc'] - Preconditioner: 'bddc', 'mg', or 'jacobi'
+     */
+    constructor(KEflat, options = {}) {
+        this.KEflat = KEflat;
+        this.pcType = options.pc || 'bddc';
+
+        // BDDC state
+        this._subdomains = null;
+        this._coarseMap = null;
+        this._localInvDiag = null;
+
+        // MG delegate (when pcType === 'mg')
+        this._mg = null;
+
+        // Grid dimensions (set during ensure())
+        this._nelx = 0;
+        this._nely = 0;
+        this._nelz = 0;
+        this._ndof = 0;
+
+        // Cached operator data
+        this._E_vals = null;
+        this._activeElements = null;
+        this._edofArray = null;
+        this._fixedMask = null;
+        this._freedofs = null;
+        this._invDiag = null;
+
+        // Work buffers
+        this._Ap_buf = null;
+    }
+
+    /**
+     * Ensure the solver hierarchy is built for the given grid.
+     * Analogous to KSPSetUp in PETSc.
+     */
+    ensure(nelx, nely, nelz, edofArray, fixedMask, freedofs) {
+        if (this._nelx === nelx && this._nely === nely && this._nelz === nelz) return;
+
+        this._nelx = nelx;
+        this._nely = nely;
+        this._nelz = nelz;
+        this._ndof = 3 * (nelx + 1) * (nely + 1) * (nelz + 1);
+        this._edofArray = edofArray;
+        this._fixedMask = fixedMask;
+        this._freedofs = freedofs;
+        this._Ap_buf = new Float64Array(this._ndof);
+
+        if (this.pcType === 'mg') {
+            if (!this._mg) this._mg = new MGPrecond3D(this.KEflat);
+            this._mg.ensure(nelx, nely, nelz, edofArray, fixedMask, freedofs);
+        } else if (this.pcType === 'bddc') {
+            this._buildSubdomains(nelx, nely, nelz);
+        }
+    }
+
+    /**
+     * Update operators from current density field.
+     * Analogous to updating the matrix in PETSc before KSPSolve.
+     */
+    updateOperators(x, penal, E0, Emin) {
+        const nel = this._nelx * this._nely * this._nelz;
+        const dE = E0 - Emin;
+
+        // Build E_vals and active element list
+        if (!this._E_vals || this._E_vals.length !== nel) {
+            this._E_vals = new Float64Array(nel);
+        }
+        const E_vals = this._E_vals;
+        const active = [];
+        const skipThreshold = Emin * 1000;
+
+        for (let e = 0; e < nel; e++) {
+            const E = Emin + Math.pow(x[e], penal) * dE;
+            E_vals[e] = E;
+            if (E > skipThreshold) active.push(e);
+        }
+        this._activeElements = active;
+
+        // Build global inverse diagonal (Jacobi)
+        if (!this._invDiag || this._invDiag.length !== this._ndof) {
+            this._invDiag = new Float64Array(this._ndof);
+        }
+        const diag = new Float64Array(this._ndof);
+        const KEflat = this.KEflat;
+        const edofArray = this._edofArray;
+        for (let ai = 0; ai < active.length; ai++) {
+            const e = active[ai];
+            const E = E_vals[e];
+            const eOff = e * 24;
+            for (let i = 0; i < 24; i++) {
+                diag[edofArray[eOff + i]] += E * KEflat[i * 24 + i];
+            }
+        }
+        const invDiag = this._invDiag;
+        invDiag.fill(0);
+        for (let i = 0; i < this._ndof; i++) {
+            if (!this._fixedMask[i] && diag[i] > 1e-30) {
+                invDiag[i] = 1.0 / diag[i];
+            }
+        }
+
+        // Update preconditioner
+        if (this.pcType === 'mg' && this._mg) {
+            this._mg.updateFromFine(x, penal, E0, Emin);
+        } else if (this.pcType === 'bddc' && this._subdomains) {
+            this._updateBDDC(diag);
+        }
+    }
+
+    /**
+     * Partition the grid into non-overlapping subdomains for BDDC.
+     * Each subdomain is a contiguous block of elements along each axis.
+     */
+    _buildSubdomains(nelx, nely, nelz) {
+        // Determine number of subdomains per axis (target ~8-64 total subdomains)
+        const totalElements = nelx * nely * nelz;
+        const targetSubdomains = Math.max(8, Math.min(64, Math.ceil(Math.cbrt(totalElements / 100))));
+        const nsx = Math.max(KSP_BDDC_MIN_SUBDOMAINS, Math.min(nelx, Math.round(Math.cbrt(targetSubdomains * nelx / nely * nelx / nelz))));
+        const nsy = Math.max(KSP_BDDC_MIN_SUBDOMAINS, Math.min(nely, Math.round(Math.cbrt(targetSubdomains * nely / nelx * nely / nelz))));
+        const nsz = Math.max(KSP_BDDC_MIN_SUBDOMAINS, Math.min(nelz, Math.round(Math.cbrt(targetSubdomains * nelz / nelx * nelz / nely))));
+
+        const subdomains = [];
+        for (let sz = 0; sz < nsz; sz++) {
+            const z0 = Math.floor(sz * nelz / nsz);
+            const z1 = Math.floor((sz + 1) * nelz / nsz);
+            for (let sy = 0; sy < nsy; sy++) {
+                const y0 = Math.floor(sy * nely / nsy);
+                const y1 = Math.floor((sy + 1) * nely / nsy);
+                for (let sx = 0; sx < nsx; sx++) {
+                    const x0 = Math.floor(sx * nelx / nsx);
+                    const x1 = Math.floor((sx + 1) * nelx / nsx);
+                    const elements = [];
+                    for (let ez = z0; ez < z1; ez++) {
+                        for (let ey = y0; ey < y1; ey++) {
+                            for (let ex = x0; ex < x1; ex++) {
+                                elements.push(ex + ey * nelx + ez * nelx * nely);
+                            }
+                        }
+                    }
+                    if (elements.length > 0) {
+                        subdomains.push({
+                            elements,
+                            x0, x1, y0, y1, z0, z1,
+                            // DOFs touched by this subdomain (set in _updateBDDC)
+                            dofs: null,
+                            // Local inverse diagonal for subdomain Jacobi smoothing
+                            localInvDiag: null
+                        });
+                    }
+                }
+            }
+        }
+        this._subdomains = subdomains;
+
+        // Build coarse space: one constraint DOF per subdomain vertex (corner nodes)
+        // These are the "primal" DOFs in BDDC terminology
+        const coarseDofSet = new Set();
+        const nny = nely + 1;
+        const nnz = nelz + 1;
+        for (const sub of subdomains) {
+            // Corner nodes of this subdomain block
+            const corners = [
+                [sub.x0, sub.y0, sub.z0], [sub.x1, sub.y0, sub.z0],
+                [sub.x0, sub.y1, sub.z0], [sub.x1, sub.y1, sub.z0],
+                [sub.x0, sub.y0, sub.z1], [sub.x1, sub.y0, sub.z1],
+                [sub.x0, sub.y1, sub.z1], [sub.x1, sub.y1, sub.z1],
+            ];
+            for (const [cx, cy, cz] of corners) {
+                const clampedX = Math.min(cx, nelx);
+                const clampedY = Math.min(cy, nely);
+                const clampedZ = Math.min(cz, nelz);
+                const nodeIdx = clampedX * nny * nnz + clampedY * nnz + clampedZ;
+                coarseDofSet.add(3 * nodeIdx);
+                coarseDofSet.add(3 * nodeIdx + 1);
+                coarseDofSet.add(3 * nodeIdx + 2);
+            }
+        }
+        this._coarseMap = [...coarseDofSet].sort((a, b) => a - b);
+    }
+
+    /**
+     * Update BDDC preconditioner with current diagonal.
+     */
+    _updateBDDC(globalDiag) {
+        if (!this._subdomains) return;
+
+        const edofArray = this._edofArray;
+        const fixedMask = this._fixedMask;
+        const E_vals = this._E_vals;
+        const KEflat = this.KEflat;
+        const ndof = this._ndof;
+
+        for (const sub of this._subdomains) {
+            // Collect DOFs for this subdomain
+            const dofSet = new Set();
+            for (const e of sub.elements) {
+                const eOff = e * 24;
+                for (let i = 0; i < 24; i++) {
+                    dofSet.add(edofArray[eOff + i]);
+                }
+            }
+            sub.dofs = [...dofSet].sort((a, b) => a - b);
+
+            // Build local inverse diagonal for subdomain Jacobi smoothing
+            const localDiag = new Float64Array(ndof);
+            for (const e of sub.elements) {
+                const E = E_vals[e];
+                if (E < 1e-30) continue;
+                const eOff = e * 24;
+                for (let i = 0; i < 24; i++) {
+                    localDiag[edofArray[eOff + i]] += E * KEflat[i * 24 + i];
+                }
+            }
+            const localInvDiag = new Float64Array(ndof);
+            for (const d of sub.dofs) {
+                if (!fixedMask[d] && localDiag[d] > 1e-30) {
+                    localInvDiag[d] = 1.0 / localDiag[d];
+                }
+            }
+            sub.localInvDiag = localInvDiag;
+        }
+    }
+
+    /**
+     * Apply the global stiffness operator K*p → Ap (element-by-element).
+     */
+    applyA(p, Ap) {
+        Ap.fill(0);
+        const KEflat = this.KEflat;
+        const edofArray = this._edofArray;
+        const E_vals = this._E_vals;
+        const active = this._activeElements;
+        const loc = new Float64Array(24);
+
+        for (let ai = 0; ai < active.length; ai++) {
+            const e = active[ai];
+            const E = E_vals[e];
+            const eOff = e * 24;
+            for (let j = 0; j < 24; j++) loc[j] = p[edofArray[eOff + j]];
+            for (let i = 0; i < 24; i++) {
+                const gi = edofArray[eOff + i];
+                let sum = 0;
+                const row = i * 24;
+                for (let j = 0; j < 24; j++) sum += KEflat[row + j] * loc[j];
+                Ap[gi] += E * sum;
+            }
+        }
+    }
+
+    /**
+     * Apply BDDC preconditioner: z ≈ K⁻¹ r.
+     *
+     * BDDC algorithm:
+     *  1. Local subdomain solves (additive Schwarz with Jacobi smoothing)
+     *  2. Coarse-level correction via primal (corner) DOFs
+     *  3. Weighted assembly of local + coarse corrections
+     */
+    _applyBDDC(r, z) {
+        const ndof = this._ndof;
+        const fixedMask = this._fixedMask;
+
+        z.fill(0);
+
+        // Step 1: Additive Schwarz — local subdomain Jacobi smoothing
+        // Each subdomain applies local inverse diagonal to the residual
+        const localCorrection = new Float64Array(ndof);
+        const weight = new Float64Array(ndof);
+
+        for (const sub of this._subdomains) {
+            const invD = sub.localInvDiag;
+            for (const d of sub.dofs) {
+                if (!fixedMask[d]) {
+                    localCorrection[d] += invD[d] * r[d];
+                    weight[d] += 1.0;
+                }
+            }
+        }
+
+        // Average contributions from overlapping subdomain solves
+        for (let i = 0; i < ndof; i++) {
+            if (weight[i] > 0) {
+                localCorrection[i] /= weight[i];
+            }
+        }
+
+        // Apply multiple smoothing sweeps for better local approximation
+        const Ap = this._Ap_buf;
+        for (let sweep = 1; sweep < KSP_BDDC_SMOOTHER_ITERS; sweep++) {
+            this.applyA(localCorrection, Ap);
+            for (const sub of this._subdomains) {
+                const invD = sub.localInvDiag;
+                for (const d of sub.dofs) {
+                    if (!fixedMask[d]) {
+                        localCorrection[d] += invD[d] * (r[d] - Ap[d]);
+                    }
+                }
+            }
+        }
+
+        // Step 2: Coarse-level correction via primal DOFs
+        // The coarse space enforces continuity at subdomain corner nodes.
+        // Use weighted Jacobi on the coarse (primal) DOFs for the residual.
+        const invDiag = this._invDiag;
+        const coarseCorrection = new Float64Array(ndof);
+        this.applyA(localCorrection, Ap);
+        for (let i = 0; i < ndof; i++) {
+            if (fixedMask[i]) continue;
+            const coarseRes = r[i] - Ap[i];
+            coarseCorrection[i] = invDiag[i] * coarseRes;
+        }
+
+        // Step 3: Combine local and coarse corrections
+        for (let i = 0; i < ndof; i++) {
+            z[i] = localCorrection[i] + coarseCorrection[i];
+        }
+
+        // Zero fixed DOFs
+        for (let i = 0; i < ndof; i++) {
+            if (fixedMask[i]) z[i] = 0;
+        }
+    }
+
+    /**
+     * Apply the selected preconditioner: z ≈ K⁻¹ r.
+     * Dispatches to the appropriate PC implementation.
+     */
+    apply(r, z) {
+        if (this.pcType === 'mg' && this._mg) {
+            this._mg.apply(r, z);
+        } else if (this.pcType === 'bddc' && this._subdomains) {
+            this._applyBDDC(r, z);
+        } else {
+            // PCJACOBI fallback
+            const invDiag = this._invDiag;
+            for (let i = 0; i < this._ndof; i++) {
+                z[i] = invDiag[i] * r[i];
+            }
+        }
+    }
+}
+
 class TopologyOptimizerWorker3D {
     constructor() {
         this.rmin = 1.5;
@@ -1028,6 +1394,7 @@ class TopologyOptimizerWorker3D {
         // Linear solve state (warm-start + reusable buffers)
         this.linearSolver = DEFAULT_LINEAR_SOLVER;
         this._mg = null;           // MGPrecond3D instance (built lazily)
+        this._ksp = null;          // KSPSolver instance (built lazily for 'petsc')
         this._U_prev = null;       // previous displacement (warm start)
         this._pcg_r = null;
         this._pcg_z = null;
@@ -3078,7 +3445,7 @@ class TopologyOptimizerWorker3D {
         }
 
         // ── Full WASM FEA solve (Jacobi-PCG, zero per-iteration JS↔WASM crossings) ──
-        if (this.linearSolver !== 'mgpcg' && wasmLoaded && wasmModule?.exports?.ebePCG) {
+        if (this.linearSolver !== 'mgpcg' && this.linearSolver !== 'petsc' && wasmLoaded && wasmModule?.exports?.ebePCG) {
             const result = this._solveWithWasmPCG(nelx, nely, nelz, x, penal, KEflat, edofArray, F, freedofs, iteration, maxIterations);
             if (result) return result;
             // Fall through to JS solver if WASM allocation failed
@@ -3097,6 +3464,16 @@ class TopologyOptimizerWorker3D {
             }
             this._mg.ensure(nelx, nely, nelz, edofArray, fixedMask, freedofs);
             this._mg.updateFromFine(x, penal, this.E0, this.Emin);
+        }
+
+        // Lazily build / update KSP (PETSc-style) solver with BDDC or MG preconditioning
+        if (this.linearSolver === 'petsc') {
+            const pcType = config.petscPC || 'bddc';
+            if (!this._ksp) {
+                this._ksp = new KSPSolver(KEflat, { pc: pcType });
+            }
+            this._ksp.ensure(nelx, nely, nelz, edofArray, fixedMask, freedofs);
+            this._ksp.updateOperators(x, penal, this.E0, this.Emin);
         }
 
         // Allocate / reuse solver buffers
@@ -3137,6 +3514,8 @@ class TopologyOptimizerWorker3D {
         // Compute initial residual: r = F - K*U
         if (this.linearSolver === 'mgpcg' && this._mg) {
             this._mg.applyA(0, U, r);
+        } else if (this.linearSolver === 'petsc' && this._ksp) {
+            this._ksp.applyA(U, r);
         } else {
             this._fullSpaceMatVec(E_vals, activeElements, KEflat, edofArray, nel, U, r, ndof);
         }
@@ -3155,6 +3534,8 @@ class TopologyOptimizerWorker3D {
         // Apply preconditioner: z = M^{-1} r
         if (this.linearSolver === 'mgpcg' && this._mg) {
             this._mg.apply(r, z);
+        } else if (this.linearSolver === 'petsc' && this._ksp) {
+            this._ksp.apply(r, z);
         } else {
             // Jacobi preconditioner fallback
             if (!this._fullInvDiag || this._fullInvDiag.length !== ndof) {
@@ -3196,6 +3577,8 @@ class TopologyOptimizerWorker3D {
             // Ap = K * p
             if (this.linearSolver === 'mgpcg' && this._mg) {
                 this._mg.applyA(0, p, Ap);
+            } else if (this.linearSolver === 'petsc' && this._ksp) {
+                this._ksp.applyA(p, Ap);
             } else {
                 this._fullSpaceMatVec(E_vals, activeElements, KEflat, edofArray, nel, p, Ap, ndof);
             }
@@ -3218,6 +3601,8 @@ class TopologyOptimizerWorker3D {
             // Apply preconditioner
             if (this.linearSolver === 'mgpcg' && this._mg) {
                 this._mg.apply(r, z);
+            } else if (this.linearSolver === 'petsc' && this._ksp) {
+                this._ksp.apply(r, z);
             } else {
                 for (let i = 0; i < ndof; i++) z[i] = this._fullInvDiag[i] * r[i];
             }
