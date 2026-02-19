@@ -531,9 +531,9 @@ export class Viewer3D {
         const proj = mat4Perspective(Math.PI / 4, aspect, 0.1, 1000);
         const mv = this._buildModelView(nx, ny, nz);
 
-        // Find closest mesh triangle to cursor
+        // Find closest mesh triangle to cursor (normalized stress 0..1)
         let bestZ = Infinity;
-        let bestStrain = null;
+        let closestStress = null;
 
         for (let i = 0; i < this.meshData.length; i++) {
             const tri = this.meshData[i];
@@ -546,12 +546,12 @@ export class Viewer3D {
             const dist = Math.sqrt((mx - sp.x) ** 2 + (my - sp.y) ** 2);
             if (dist < 20 && sp.z < bestZ) {
                 bestZ = sp.z;
-                bestStrain = tri.strain !== undefined ? tri.strain : 0;
+                closestStress = tri.strain !== undefined ? tri.strain : 0;
             }
         }
 
-        if (bestStrain !== null) {
-            this._hoverStressValue = bestStrain;
+        if (closestStress !== null) {
+            this._hoverStressValue = closestStress;
             this._hoverScreenPos = { x: mx, y: my };
         } else {
             this._hoverStressValue = null;
@@ -1493,10 +1493,11 @@ export class Viewer3D {
         const maxStress = this.maxStress || 1;
 
         // Draw gradient bar (blue at bottom = low stress, red at top = high stress)
+        // Uses DENSITY_COLOR_GREEN to match the mesh coloring scheme
         for (let i = 0; i < barHeight; i++) {
             const t = 1 - i / barHeight; // 0 at bottom, 1 at top
             const r = t;
-            const g = 0.298;
+            const g = DENSITY_COLOR_GREEN;
             const b = 1 - t;
             ctx.fillStyle = `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`;
             ctx.fillRect(barX, barY + i, barWidth, 1);
