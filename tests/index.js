@@ -549,6 +549,140 @@ console.log('Test 17: TopologySolver library – preventVoids parameter');
 }
 
 // ──────────────────────────────────────────────────
+// Test 18: Manufacturing constraint (90°) – no enclosed cavities
+//   At 90° every void element must be reachable from the top surface (ey=0)
+// ──────────────────────────────────────────────────
+console.log('Test 18: Manufacturing constraint (90°) – no enclosed cavities');
+{
+    const solver = new TopologySolver();
+    const nx = 10, ny = 5, nz = 1;
+    const model = { nx, ny, nz, type: 'beam', elements: new Float32Array(nx * ny).fill(1) };
+    const config = {
+        solver: '2d',
+        volumeFraction: 0.4,
+        maxIterations: 5,
+        penaltyFactor: 3,
+        filterRadius: 0.9,
+        forceDirection: 'down',
+        forceMagnitude: 100,
+        constraintPosition: 'left',
+        useAMR: false,
+        youngsModulus: 2.3,
+        poissonsRatio: 0.35,
+        useProjection: false,
+        manufacturingConstraint: true,
+        manufacturingAngle: 90,
+    };
+
+    const result = await solver.optimize(model, config, () => {});
+
+    assert(result.iterations >= 1, `mfg90: should complete at least 1 iteration, got ${result.iterations}`);
+    assert(result.densities instanceof Float32Array, 'mfg90: result.densities should be a Float32Array');
+
+    // Verify: every void element should be reachable from the top row (ey=0)
+    // using a top-to-bottom flood fill through void elements (strict vertical at 90°)
+    // Returned densities use x-major indexing: idx = ex + ey * nx (nz=1)
+    const densities = result.densities;
+    const threshold = 0.3;
+    const accessible = new Uint8Array(nx * ny);
+    // Seed: void elements on top row (ey=0)
+    for (let ex = 0; ex < nx; ex++) {
+        const idx = ex; // ey=0, x-major
+        if (densities[idx] < threshold) accessible[idx] = 1;
+    }
+    // Sweep top-to-bottom: at 90° only check directly above (dx=0)
+    for (let ey = 1; ey < ny; ey++) {
+        for (let ex = 0; ex < nx; ex++) {
+            const idx = ex + ey * nx;
+            if (densities[idx] >= threshold) continue;
+            const aboveIdx = ex + (ey - 1) * nx;
+            if (accessible[aboveIdx]) accessible[idx] = 1;
+        }
+    }
+    let enclosedCavities = 0;
+    for (let i = 0; i < nx * ny; i++) {
+        if (densities[i] < threshold && !accessible[i]) enclosedCavities++;
+    }
+    assert(enclosedCavities === 0, `mfg90: should have no enclosed cavities, found ${enclosedCavities}`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 19: Manufacturing max depth constraint
+//   No void element should exist at or beyond the max depth
+// ──────────────────────────────────────────────────
+console.log('Test 19: Manufacturing max depth constraint');
+{
+    const solver = new TopologySolver();
+    const nx = 8, ny = 6, nz = 1;
+    const model = { nx, ny, nz, type: 'beam', elements: new Float32Array(nx * ny).fill(1) };
+    const maxDepth = 3;
+    const config = {
+        solver: '2d',
+        volumeFraction: 0.4,
+        maxIterations: 5,
+        penaltyFactor: 3,
+        filterRadius: 0.9,
+        forceDirection: 'down',
+        forceMagnitude: 100,
+        constraintPosition: 'left',
+        useAMR: false,
+        youngsModulus: 2.3,
+        poissonsRatio: 0.35,
+        useProjection: false,
+        manufacturingConstraint: true,
+        manufacturingAngle: 90,
+        manufacturingMaxDepth: maxDepth,
+    };
+
+    const result = await solver.optimize(model, config, () => {});
+    assert(result.iterations >= 1, `maxDepth: should complete at least 1 iteration`);
+
+    const densities = result.densities;
+    const threshold = 0.3;
+    let deepVoids = 0;
+    // Returned densities use x-major indexing: idx = ex + ey * nx (nz=1)
+    for (let ex = 0; ex < nx; ex++) {
+        for (let ey = maxDepth; ey < ny; ey++) {
+            const idx = ex + ey * nx;
+            if (densities[idx] < threshold) deepVoids++;
+        }
+    }
+    assert(deepVoids === 0, `maxDepth: no voids should exist at depth >= ${maxDepth}, found ${deepVoids}`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 20: Manufacturing constraint with min radius completes successfully
+// ──────────────────────────────────────────────────
+console.log('Test 20: Manufacturing constraint with min radius');
+{
+    const solver = new TopologySolver();
+    const nx = 8, ny = 4, nz = 1;
+    const model = { nx, ny, nz, type: 'beam', elements: new Float32Array(nx * ny).fill(1) };
+    const config = {
+        solver: '2d',
+        volumeFraction: 0.4,
+        maxIterations: 3,
+        penaltyFactor: 3,
+        filterRadius: 0.9,
+        forceDirection: 'down',
+        forceMagnitude: 100,
+        constraintPosition: 'left',
+        useAMR: false,
+        youngsModulus: 2.3,
+        poissonsRatio: 0.35,
+        useProjection: false,
+        manufacturingConstraint: true,
+        manufacturingAngle: 90,
+        manufacturingMinRadius: 1,
+    };
+
+    const result = await solver.optimize(model, config, () => {});
+    assert(result.iterations >= 1, `minRadius: should complete at least 1 iteration, got ${result.iterations}`);
+    assert(typeof result.finalCompliance === 'number' && result.finalCompliance > 0, 'minRadius: finalCompliance should be a positive number');
+    assert(result.densities instanceof Float32Array, 'minRadius: result.densities should be a Float32Array');
+}
+
+// ──────────────────────────────────────────────────
 // Summary
 // ──────────────────────────────────────────────────
 console.log(`\nResults: ${passed} passed, ${failed} failed`);

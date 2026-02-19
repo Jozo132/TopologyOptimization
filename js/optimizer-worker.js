@@ -575,9 +575,18 @@ class TopologyOptimizerWorker {
                 this._fillInternalVoids(xnew, nelx, nely);
             }
 
-            // Apply manufacturing overhang constraint if enabled
-            if (config.manufacturingConstraint && config.manufacturingAngle != null) {
-                this._applyOverhangConstraint(xnew, nelx, nely, config.manufacturingAngle);
+            // Apply manufacturing constraints if enabled
+            if (config.manufacturingConstraint) {
+                if (config.manufacturingAngle != null) {
+                    this._applyOverhangConstraint(xnew, nelx, nely, config.manufacturingAngle);
+                    this._enforceToolAccessibility(xnew, nelx, nely, config.manufacturingAngle);
+                }
+                if (config.manufacturingMaxDepth > 0) {
+                    this._applyMaxDepthConstraint(xnew, nelx, nely, config.manufacturingMaxDepth);
+                }
+                if (config.manufacturingMinRadius > 0) {
+                    this._applyMinRadiusConstraint(xnew, nelx, nely, config.manufacturingMinRadius);
+                }
             }
 
             change = 0;
@@ -1103,6 +1112,7 @@ class TopologyOptimizerWorker {
 
         // Build a support map: sweep from bottom row (ey=nely-1) upward (ey=0)
         // bottom row is always self-supported
+        const span = Math.round(reach);
         for (let ey = nely - 2; ey >= 0; ey--) {
             for (let ex = 0; ex < nelx; ex++) {
                 const idx = ey + ex * nely; // column-major
@@ -1111,7 +1121,6 @@ class TopologyOptimizerWorker {
                 // Check if there is any solid element below within the reach cone
                 const belowRow = ey + 1;
                 let supported = false;
-                const span = Math.floor(reach) + 1; // +1 for the element directly below
                 for (let dx = -span; dx <= span; dx++) {
                     const sx = ex + dx;
                     if (sx < 0 || sx >= nelx) continue;
@@ -1125,6 +1134,148 @@ class TopologyOptimizerWorker {
                 if (!supported) {
                     x[idx] = 0.0; // remove unsupported material
                 }
+            }
+        }
+    }
+
+    /**
+     * Enforce CNC tool accessibility from the top surface (2D).
+     * For 3-axis CNC, the tool approaches from above (ey=0). Any void element
+     * must be reachable from the top surface within the tool's angular reach.
+     * At 90° (reach=0), each column must have void elements contiguous from the top;
+     * once solid material is encountered, everything below must be solid.
+     *
+     * Uses 2D column-major indexing: idx = ey + ex * nely.
+     */
+    _enforceToolAccessibility(x, nelx, nely, angleDeg, threshold = 0.3) {
+        const angleRad = angleDeg * Math.PI / 180;
+        const reach = Math.min(Math.tan(Math.PI / 2 - angleRad), nelx);
+        const span = Math.round(reach);
+        const nel = nelx * nely;
+        const accessible = new Uint8Array(nel);
+
+        // Seed: all void elements on the top row (ey=0) are accessible
+        for (let ex = 0; ex < nelx; ex++) {
+            const idx = ex * nely; // ey=0
+            if (x[idx] < threshold) {
+                accessible[idx] = 1;
+            }
+        }
+
+        // Sweep top-to-bottom: a void element is accessible if an accessible
+        // element exists in the row above within the tool's angular reach
+        for (let ey = 1; ey < nely; ey++) {
+            for (let ex = 0; ex < nelx; ex++) {
+                const idx = ey + ex * nely;
+                if (x[idx] >= threshold) continue; // solid, skip
+
+                const aboveRow = ey - 1;
+                for (let dx = -span; dx <= span; dx++) {
+                    const sx = ex + dx;
+                    if (sx < 0 || sx >= nelx) continue;
+                    const aboveIdx = aboveRow + sx * nely;
+                    if (accessible[aboveIdx]) {
+                        accessible[idx] = 1;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Fill inaccessible voids
+        for (let i = 0; i < nel; i++) {
+            if (x[i] < threshold && !accessible[i]) {
+                x[i] = 1.0;
+            }
+        }
+    }
+
+    /**
+     * Enforce maximum milling depth from the top surface (2D).
+     * Elements deeper than maxDepth rows from the top (ey=0) are forced solid,
+     * since the CNC tool cannot reach them.
+     *
+     * Uses 2D column-major indexing: idx = ey + ex * nely.
+     */
+    _applyMaxDepthConstraint(x, nelx, nely, maxDepth, threshold = 0.3) {
+        const limit = Math.floor(maxDepth);
+        for (let ex = 0; ex < nelx; ex++) {
+            for (let ey = limit; ey < nely; ey++) {
+                const idx = ey + ex * nely;
+                if (x[idx] < threshold) {
+                    x[idx] = 1.0;
+                }
+            }
+        }
+    }
+
+    /**
+     * Enforce minimum radius on pocket corners (2D).
+     * Applies morphological closing (dilate then erode) on the solid region
+     * with a circular structuring element of the specified radius.
+     * This rounds all internal (concave) corners of pockets to at least the
+     * given radius, matching the CNC tool's minimum corner radius.
+     *
+     * Uses 2D column-major indexing: idx = ey + ex * nely.
+     */
+    _applyMinRadiusConstraint(x, nelx, nely, radius, threshold = 0.3) {
+        const nel = nelx * nely;
+        const r = Math.ceil(radius);
+        const r2 = radius * radius;
+
+        // Build circular structuring element offsets
+        const offsets = [];
+        for (let dy = -r; dy <= r; dy++) {
+            for (let dx = -r; dx <= r; dx++) {
+                if (dx * dx + dy * dy <= r2) {
+                    offsets.push([dx, dy]);
+                }
+            }
+        }
+
+        // Step 1: Dilate solid region
+        const dilated = new Float32Array(nel);
+        for (let i = 0; i < nel; i++) dilated[i] = x[i];
+
+        for (let ex = 0; ex < nelx; ex++) {
+            for (let ey = 0; ey < nely; ey++) {
+                if (x[ey + ex * nely] >= threshold) {
+                    for (const [dx, dy] of offsets) {
+                        const sx = ex + dx, sy = ey + dy;
+                        if (sx >= 0 && sx < nelx && sy >= 0 && sy < nely) {
+                            const sidx = sy + sx * nely;
+                            if (dilated[sidx] < threshold) dilated[sidx] = threshold;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Step 2: Erode the dilated result
+        const eroded = new Float32Array(nel);
+        for (let i = 0; i < nel; i++) eroded[i] = dilated[i];
+
+        for (let ex = 0; ex < nelx; ex++) {
+            for (let ey = 0; ey < nely; ey++) {
+                const idx = ey + ex * nely;
+                if (dilated[idx] >= threshold) {
+                    for (const [dx, dy] of offsets) {
+                        const sx = ex + dx, sy = ey + dy;
+                        if (sx < 0 || sx >= nelx || sy < 0 || sy >= nely ||
+                            dilated[sy + sx * nely] < threshold) {
+                            eroded[idx] = 0.0;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Apply: only fill void elements that became solid after closing
+        // (morphological closing never removes original solid)
+        for (let i = 0; i < nel; i++) {
+            if (x[i] < threshold && eroded[i] >= threshold) {
+                x[i] = eroded[i];
             }
         }
     }

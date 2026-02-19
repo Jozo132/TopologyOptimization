@@ -57,6 +57,8 @@ class TopologyApp {
             preventVoids: false,
             manufacturingConstraint: false,
             manufacturingAngle: 90,
+            manufacturingMinRadius: 0,
+            manufacturingMaxDepth: 0,
             useAMR: true,
             amrInterval: 3,
             minGranuleSize: 0.02,
@@ -456,6 +458,13 @@ class TopologyApp {
         angleInput.addEventListener('input', (e) => {
             this.config.manufacturingAngle = parseFloat(e.target.value);
             angleSlider.value = e.target.value;
+        });
+
+        document.getElementById('manufacturingMinRadius').addEventListener('input', (e) => {
+            this.config.manufacturingMinRadius = parseFloat(e.target.value) || 0;
+        });
+        document.getElementById('manufacturingMaxDepth').addEventListener('input', (e) => {
+            this.config.manufacturingMaxDepth = parseFloat(e.target.value) || 0;
         });
 
         // Advanced modal controls
