@@ -200,6 +200,11 @@ export class Viewer3D {
         // Strain range filter (0..1 normalized)
         this.strainMin = 0;
         this.strainMax = 1;
+        this.maxStress = 0; // Max stress value (for MPa scale)
+
+        // Hover stress tooltip
+        this._hoverStressValue = null; // Stress value at hovered position
+        this._hoverScreenPos = null;   // Screen position for tooltip
 
         // Paint mode for face selection
         this.paintMode = null;
@@ -378,6 +383,11 @@ export class Viewer3D {
                 this._updateHover(e);
             }
 
+            // Stress hover tooltip (when mesh data available and not dragging)
+            if (!this.paintMode && this.meshData && this.meshData.length > 0 && !this.isDragging && !this.isPanning) {
+                this._updateStressHover(e);
+            }
+
             const dx = e.clientX - this.lastMousePos.x;
             const dy = e.clientY - this.lastMousePos.y;
 
@@ -408,6 +418,11 @@ export class Viewer3D {
             this.isPainting = false;
             if (this._hoverFaces.length > 0) {
                 this._hoverFaces = [];
+                this.draw();
+            }
+            if (this._hoverStressValue !== null) {
+                this._hoverStressValue = null;
+                this._hoverScreenPos = null;
                 this.draw();
             }
         });
@@ -490,6 +505,58 @@ export class Viewer3D {
         }
 
         this._hoverFaces = this._findFacesInBrush(mx, my);
+        this.draw();
+    }
+
+    /**
+     * Update stress hover tooltip by picking the closest mesh triangle under cursor.
+     */
+    _updateStressHover(e) {
+        const rect = this.canvas.getBoundingClientRect();
+        const mx = (e.clientX - rect.left) * (this.canvas.width / rect.width);
+        const my = (e.clientY - rect.top) * (this.canvas.height / rect.height);
+
+        if (!this.model || !this.meshData || this.meshData.length === 0) {
+            if (this._hoverStressValue !== null) {
+                this._hoverStressValue = null;
+                this._hoverScreenPos = null;
+                this.draw();
+            }
+            return;
+        }
+
+        const { nx, ny, nz } = this.model;
+        const { width, height } = this.canvas;
+        const aspect = width / height;
+        const proj = mat4Perspective(Math.PI / 4, aspect, 0.1, 1000);
+        const mv = this._buildModelView(nx, ny, nz);
+
+        // Find closest mesh triangle to cursor (normalized stress 0..1)
+        let bestZ = Infinity;
+        let closestStress = null;
+
+        for (let i = 0; i < this.meshData.length; i++) {
+            const tri = this.meshData[i];
+            const v = tri.vertices;
+            // Project triangle center to screen
+            const cx3d = (v[0][0] + v[1][0] + v[2][0]) / 3;
+            const cy3d = (v[0][1] + v[1][1] + v[2][1]) / 3;
+            const cz3d = (v[0][2] + v[1][2] + v[2][2]) / 3;
+            const sp = this._projectToScreen({ x: cx3d, y: cy3d, z: cz3d }, mv, proj, width, height);
+            const dist = Math.sqrt((mx - sp.x) ** 2 + (my - sp.y) ** 2);
+            if (dist < 20 && sp.z < bestZ) {
+                bestZ = sp.z;
+                closestStress = tri.strain !== undefined ? tri.strain : 0;
+            }
+        }
+
+        if (closestStress !== null) {
+            this._hoverStressValue = closestStress;
+            this._hoverScreenPos = { x: mx, y: my };
+        } else {
+            this._hoverStressValue = null;
+            this._hoverScreenPos = null;
+        }
         this.draw();
     }
 
@@ -841,6 +908,16 @@ export class Viewer3D {
 
         // Draw 2D overlay
         this._drawAxesOverlay();
+
+        // Draw vertical stress scale bar when mesh data is available
+        if (this.meshData && this.meshData.length > 0) {
+            this._drawStressScale(width, height);
+        }
+
+        // Draw stress hover tooltip
+        if (this._hoverStressValue !== null && this._hoverScreenPos) {
+            this._drawStressTooltip();
+        }
 
         if (this.paintMode) {
             this.ctx.fillStyle = this.paintMode === 'constraint' ? 'rgba(0,200,100,0.8)' : 'rgba(255,100,50,0.8)';
@@ -1405,6 +1482,132 @@ export class Viewer3D {
         }
     }
 
+    // ─── Vertical Stress Scale Bar ────────────────────────────────────────────
+
+    _drawStressScale(viewWidth, viewHeight) {
+        const ctx = this.ctx;
+        const barWidth = 20;
+        const barHeight = Math.min(200, viewHeight * 0.5);
+        const barX = viewWidth - 60;
+        const barY = (viewHeight - barHeight) / 2;
+        const maxStress = this.maxStress || 1;
+
+        // Draw gradient bar (blue at bottom = low stress, red at top = high stress)
+        // Uses DENSITY_COLOR_GREEN to match the mesh coloring scheme
+        for (let i = 0; i < barHeight; i++) {
+            const t = 1 - i / barHeight; // 0 at bottom, 1 at top
+            const r = t;
+            const g = DENSITY_COLOR_GREEN;
+            const b = 1 - t;
+            ctx.fillStyle = `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`;
+            ctx.fillRect(barX, barY + i, barWidth, 1);
+        }
+
+        // Draw border
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(barX, barY, barWidth, barHeight);
+
+        // Draw strain range filter indicators (horizontal lines at min/max)
+        if (this.strainMin > 0 || this.strainMax < 1) {
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+            ctx.lineWidth = 2;
+            const minY = barY + barHeight - this.strainMin * barHeight;
+            const maxY = barY + barHeight - this.strainMax * barHeight;
+            // Draw filter region lines
+            ctx.beginPath();
+            ctx.moveTo(barX - 5, minY);
+            ctx.lineTo(barX + barWidth + 5, minY);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(barX - 5, maxY);
+            ctx.lineTo(barX + barWidth + 5, maxY);
+            ctx.stroke();
+            // Shade out-of-range regions
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+            if (this.strainMin > 0) {
+                ctx.fillRect(barX, minY, barWidth, barY + barHeight - minY);
+            }
+            if (this.strainMax < 1) {
+                ctx.fillRect(barX, barY, barWidth, maxY - barY);
+            }
+        }
+
+        // Draw tick labels
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+        ctx.font = '10px Arial';
+        ctx.textAlign = 'right';
+        const tickCount = 5;
+        for (let i = 0; i <= tickCount; i++) {
+            const t = i / tickCount;
+            const y = barY + barHeight - t * barHeight;
+            const stressVal = t * maxStress;
+            // Tick mark
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(barX - 3, y);
+            ctx.lineTo(barX, y);
+            ctx.stroke();
+            // Label
+            ctx.fillText(stressVal.toFixed(1), barX - 5, y + 3);
+        }
+
+        // Draw title
+        ctx.save();
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+        ctx.font = 'bold 11px Arial';
+        ctx.textAlign = 'center';
+        ctx.translate(barX + barWidth + 16, barY + barHeight / 2);
+        ctx.rotate(-Math.PI / 2);
+        ctx.fillText('Stress (N/mm² = MPa)', 0, 0);
+        ctx.restore();
+
+        // Draw hover indicator on the scale bar
+        if (this._hoverStressValue !== null) {
+            const hoverY = barY + barHeight - this._hoverStressValue * barHeight;
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(barX - 8, hoverY);
+            ctx.lineTo(barX + barWidth + 8, hoverY);
+            ctx.stroke();
+            // Draw small triangle indicator
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            ctx.moveTo(barX - 8, hoverY);
+            ctx.lineTo(barX - 3, hoverY - 4);
+            ctx.lineTo(barX - 3, hoverY + 4);
+            ctx.closePath();
+            ctx.fill();
+        }
+    }
+
+    _drawStressTooltip() {
+        if (this._hoverStressValue === null || !this._hoverScreenPos) return;
+        const ctx = this.ctx;
+        const maxStress = this.maxStress || 1;
+        const stressVal = this._hoverStressValue * maxStress;
+
+        const text = `${stressVal.toFixed(2)} MPa`;
+        ctx.font = 'bold 12px Arial';
+        const metrics = ctx.measureText(text);
+        const padding = 6;
+        const tooltipW = metrics.width + padding * 2;
+        const tooltipH = 20;
+        const tx = this._hoverScreenPos.x + 15;
+        const ty = this._hoverScreenPos.y - 10;
+
+        // Background
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+        ctx.fillRect(tx, ty - tooltipH / 2, tooltipW, tooltipH);
+
+        // Text
+        ctx.fillStyle = '#ffffff';
+        ctx.textAlign = 'left';
+        ctx.fillText(text, tx + padding, ty + 4);
+    }
+
     // ─── 2D Overlay (axes) ──────────────────────────────────────────────────
 
     _drawAxesOverlay() {
@@ -1455,8 +1658,9 @@ export class Viewer3D {
 
     // ─── Public API ─────────────────────────────────────────────────────────
 
-    updateMesh(meshData) {
+    updateMesh(meshData, maxStress) {
         this.meshData = meshData;
+        if (maxStress !== undefined) this.maxStress = maxStress;
         this._needsRebuild = true;
         this.draw();
     }
@@ -1504,6 +1708,9 @@ export class Viewer3D {
         this.meshData = null;
         this.strainMin = 0;
         this.strainMax = 1;
+        this.maxStress = 0;
+        this._hoverStressValue = null;
+        this._hoverScreenPos = null;
         this.viewMode = 'auto';
         this.meshVisible = true;
         this.paintedConstraintFaces = new Set();

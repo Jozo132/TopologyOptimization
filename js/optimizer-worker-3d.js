@@ -1359,6 +1359,7 @@ class TopologyOptimizerWorker3D {
                     iteration: loop,
                     compliance: c,
                     meshData: meshData,
+                    maxStress: meshData ? meshData.maxStress : 0,
                     penal: currentPenal,
                     beta: beta,
                     timing: {
@@ -1398,6 +1399,7 @@ class TopologyOptimizerWorker3D {
                 ny: nely,
                 nz: nelz,
                 meshData: finalMesh,
+                maxStress: finalMesh ? finalMesh.maxStress : 0,
                 amrStats: amrStats,
                 timing: {
                     totalTime: totalTime,
@@ -1652,6 +1654,7 @@ class TopologyOptimizerWorker3D {
             }
         }
 
+        triangles.maxStress = maxStress;
         return triangles;
     }
 
