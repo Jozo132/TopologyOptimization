@@ -174,6 +174,101 @@ class WasmMatrixOps {
         this._free(ptrEnergies);
         this._free(ptrEdofs);
     }
+
+    /**
+     * Full self-contained Element-By-Element Preconditioned Conjugate Gradient
+     * (EbE-PCG) FEA solver.
+     *
+     * Performs the entire Jacobi-preconditioned CG solve in WASM, eliminating
+     * per-iteration JS↔WASM boundary crossings.
+     *
+     * @param {Float64Array} densities - element densities (nel)
+     * @param {Float64Array} KEflat - reference element stiffness (edofSize*edofSize)
+     * @param {Int32Array} edofs - element DOF connectivity (nel*edofSize)
+     * @param {Float64Array} F - global force vector (ndof), accepts Float32Array too
+     * @param {Int32Array} freedofs - free DOF indices (nfree)
+     * @param {number} nel - number of elements
+     * @param {number} edofSize - DOFs per element (8 for 2D, 24 for 3D)
+     * @param {number} ndof - total degrees of freedom
+     * @param {number} Emin - minimum Young's modulus
+     * @param {number} E0 - base Young's modulus
+     * @param {number} penal - SIMP penalization exponent
+     * @param {number} maxIter - maximum CG iterations
+     * @param {number} tolerance - convergence tolerance
+     * @returns {{ U: Float64Array, iterations: number, compliance: number }}
+     */
+    ebePCG(densities, KEflat, edofs, F, freedofs, nel, edofSize, ndof, Emin, E0, penal, maxIter, tolerance) {
+        if (!this.isAvailable()) {
+            throw new Error('WASM not loaded');
+        }
+
+        const mem = this.instance.exports.memory;
+        const nfree = freedofs.length;
+        const align8 = (v) => (v + 7) & ~7;
+
+        // Convert F to Float64Array if necessary (the worker uses Float32Array for F)
+        const F64 = F instanceof Float64Array ? F : Float64Array.from(F);
+
+        // Calculate memory layout
+        const densSize = nel * 8;
+        const keSize = edofSize * edofSize * 8;
+        const edofsSize = nel * edofSize * 4;
+        const fSize = ndof * 8;
+        const uSize = ndof * 8;
+        const freedofsSize = nfree * 4;
+        // Workspace: E_vals[nel] + active[nel] + diag[ndof] +
+        //            Uf[nfree] + r[nfree] + z[nfree] + p[nfree] + Ap[nfree] +
+        //            p_full[ndof] + Ap_full[ndof] + scratch[edofSize] + invDiag[nfree]
+        const workSize = nel * 8 + nel * 4 + ndof * 8 +
+                         5 * nfree * 8 + 2 * ndof * 8 + edofSize * 8 + nfree * 8;
+
+        const totalBytes = densSize + keSize + edofsSize + fSize + uSize + freedofsSize + workSize + 128;
+
+        // Ensure enough WASM memory
+        const currentBytes = mem.buffer.byteLength;
+        if (currentBytes < totalBytes + 65536) {
+            const additionalPages = Math.ceil((totalBytes + 65536 - currentBytes) / 65536);
+            mem.grow(additionalPages);
+        }
+        const dataStart = mem.buffer.byteLength - totalBytes - 64;
+
+        let offset = align8(dataStart);
+        const densOff = offset; offset += densSize;
+        const keOff = offset; offset += keSize;
+        const edofsOff = offset; offset += edofsSize;
+        offset = align8(offset);
+        const fOff = offset; offset += fSize;
+        const uOff = offset; offset += uSize;
+        const freedofsOff = offset; offset += freedofsSize;
+        offset = align8(offset);
+        const workOff = offset;
+
+        // Copy input data to WASM memory
+        new Float64Array(mem.buffer, densOff, nel).set(densities);
+        new Float64Array(mem.buffer, keOff, edofSize * edofSize).set(KEflat);
+        new Int32Array(mem.buffer, edofsOff, nel * edofSize).set(edofs);
+        new Float64Array(mem.buffer, fOff, ndof).set(F64);
+        new Int32Array(mem.buffer, freedofsOff, nfree).set(freedofs);
+
+        // Call WASM ebePCG
+        const iterations = this.instance.exports.ebePCG(
+            densOff, keOff, edofsOff, fOff, uOff, freedofsOff,
+            nel, edofSize, ndof, nfree,
+            Emin, E0, penal, maxIter, tolerance, workOff
+        );
+
+        // Read results
+        const U = new Float64Array(ndof);
+        U.set(new Float64Array(mem.buffer, uOff, ndof));
+
+        // Compute compliance: c = F^T U
+        let compliance = 0;
+        for (let i = 0; i < ndof; i++) {
+            compliance += F64[i] * U[i];
+        }
+
+        return { U, iterations, compliance };
+    }
 }
 
 // Singleton instance
