@@ -491,11 +491,7 @@ class TopologyOptimizerWorker {
         const isBlendedCurvature = model.meshType === 'blended-curvature';
         if (isBlendedCurvature && model.elements) {
             for (let i = 0; i < nel; i++) {
-                const idx2D = i;
-                const iy = Math.floor(idx2D / nelx);
-                const ix = idx2D % nelx;
-                const idxImporter = ix + iy * nelx;
-                x[i] = model.elements[idxImporter] > 0 ? Math.max(volfrac, model.elements[idxImporter]) : 0;
+                x[i] = model.elements[i] > 0 ? Math.max(volfrac, model.elements[i]) : 0;
             }
         }
 

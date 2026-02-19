@@ -446,13 +446,14 @@ export class ModelImporter {
 
     /**
      * Blended curvature meshing for STEP files.
-     * Instead of axis-aligned voxels, this method creates a curvature-adaptive
-     * grid where elements near high-curvature surface regions are refined while
-     * flat interior regions use coarser elements.  The result is still a
-     * structured hex grid (nx × ny × nz) so existing solvers work unmodified,
-     * but the element densities along curved boundaries are blended (0–1)
-     * based on surface proximity and local curvature, yielding smoother
-     * boundary representation than binary voxelization.
+     * Instead of binary voxelization, this method creates a uniform hex grid
+     * (nx × ny × nz) where element densities along curved boundaries are
+     * blended (0–1) based on surface proximity and local curvature.  Interior
+     * voxels keep density 1.0, exterior voxels 0.0, and boundary voxels
+     * receive a smoothly varying density that encodes curvature information.
+     * Because the grid structure is identical to voxelizeVertices, existing
+     * solvers work unmodified while benefiting from smoother boundary
+     * representation.
      *
      * @param {Array} vertices - Triangle vertices from STEP parser
      * @param {number|null} resolution - Grid resolution (voxels along longest axis)
