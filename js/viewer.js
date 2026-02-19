@@ -9,6 +9,7 @@ const GRID_COLOR = [0.25, 0.25, 0.35];      // Ground grid line color
 const DEFAULT_TRIANGLE_DENSITY = 0.5;
 const WIREFRAME_EDGE_COLOR = 0.2;
 const EDGE_COLOR_COMPONENT_COUNT = 18;
+const BRUSH_DEPTH_TOLERANCE = 0.1;           // Depth tolerance for 3D brush face selection
 
 // ─── WebGL Shader Sources ───────────────────────────────────────────────────
 
@@ -337,15 +338,11 @@ export class Viewer3D {
                     this.isPainting = true;
                     this._paintErasing = false;
                     this.handlePaintClick(e);
-                    this.lastMousePos = { x: e.clientX, y: e.clientY };
-                    return;
                 } else if (e.button === 2) {
                     // Right click: erase
                     this.isPainting = true;
                     this._paintErasing = true;
                     this.handlePaintClick(e);
-                    this.lastMousePos = { x: e.clientX, y: e.clientY };
-                    return;
                 }
             } else {
                 if (e.button === 1 || (e.button === 0 && e.shiftKey)) {
@@ -527,7 +524,7 @@ export class Viewer3D {
                     this._projectToScreen(pv, mv, proj, width, height)
                 );
                 const faceZ = (sv[0].z + sv[1].z + sv[2].z + sv[3].z) / 4;
-                if (Math.abs(faceZ - bestZ) < 0.1) {
+                if (Math.abs(faceZ - bestZ) < BRUSH_DEPTH_TOLERANCE) {
                     result.push(bf);
                 }
             }
