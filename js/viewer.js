@@ -210,6 +210,7 @@ export class Viewer3D {
         this.paintMode = null;
         this.paintedConstraintFaces = new Set();
         this.paintedForceFaces = new Set();
+        this.paintedKeepFaces = new Set();
         this.forceDirection = 'down';
         this.forceVector = null; // Custom force vector [fx, fy, fz], overrides forceDirection
         this.forceMagnitude = 1000;
@@ -457,9 +458,16 @@ export class Viewer3D {
 
         // Determine target: active group or flat set
         const activeGroup = this.getActiveGroup();
-        const targetSet = activeGroup
-            ? activeGroup.faces
-            : (this.paintMode === 'constraint' ? this.paintedConstraintFaces : this.paintedForceFaces);
+        let targetSet;
+        if (activeGroup) {
+            targetSet = activeGroup.faces;
+        } else if (this.paintMode === 'constraint') {
+            targetSet = this.paintedConstraintFaces;
+        } else if (this.paintMode === 'keep') {
+            targetSet = this.paintedKeepFaces;
+        } else {
+            targetSet = this.paintedForceFaces;
+        }
 
         if (this.useAngleSelection && facesInBrush.length > 0 && !this._paintErasing) {
             // Angle-based selection: use first hit as seed, flood-fill
@@ -684,7 +692,7 @@ export class Viewer3D {
         const group = {
             id,
             name: name || `${type} ${id}`,
-            type, // 'force' or 'constraint'
+            type, // 'force', 'constraint', or 'keep'
             faces: new Set(),
             params: type === 'force'
                 ? { direction: 'down', vector: null, magnitude: 1000, forceType: 'total', dofs: 'all' }
@@ -720,8 +728,12 @@ export class Viewer3D {
     _syncGroupsToFaceSets() {
         this.paintedConstraintFaces.clear();
         this.paintedForceFaces.clear();
+        this.paintedKeepFaces.clear();
         for (const group of this.selectionGroups) {
-            const targetSet = group.type === 'constraint' ? this.paintedConstraintFaces : this.paintedForceFaces;
+            let targetSet;
+            if (group.type === 'constraint') targetSet = this.paintedConstraintFaces;
+            else if (group.type === 'force') targetSet = this.paintedForceFaces;
+            else targetSet = this.paintedKeepFaces;
             for (const key of group.faces) {
                 targetSet.add(key);
             }
@@ -920,12 +932,16 @@ export class Viewer3D {
         }
 
         if (this.paintMode) {
-            this.ctx.fillStyle = this.paintMode === 'constraint' ? 'rgba(0,200,100,0.8)' : 'rgba(255,100,50,0.8)';
+            const paintColors = { constraint: 'rgba(0,200,100,0.8)', force: 'rgba(255,100,50,0.8)', keep: 'rgba(50,100,255,0.8)' };
+            this.ctx.fillStyle = paintColors[this.paintMode] || 'rgba(255,100,50,0.8)';
             this.ctx.font = '14px Arial';
             this.ctx.textAlign = 'left';
-            const label = this.paintMode === 'constraint'
-                ? '🖌 Painting Constraints (Right-click to remove)'
-                : '🖌 Painting Forces (Right-click to remove)';
+            const paintLabels = {
+                constraint: '🖌 Painting Constraints (Right-click to remove)',
+                force: '🖌 Painting Forces (Right-click to remove)',
+                keep: '🔒 Painting Keep Region (Right-click to remove)'
+            };
+            const label = paintLabels[this.paintMode] || paintLabels.force;
             this.ctx.fillText(label, 10, height - 10);
         }
     }
@@ -1323,7 +1339,8 @@ export class Viewer3D {
     _drawOverlays(gl, projection, modelView, nx, ny, nz) {
         const hasCon = this.paintedConstraintFaces.size > 0;
         const hasForce = this.paintedForceFaces.size > 0;
-        if (!hasCon && !hasForce) return;
+        const hasKeep = this.paintedKeepFaces.size > 0;
+        if (!hasCon && !hasForce && !hasKeep) return;
 
         const prog = this._overlayProgram;
         gl.useProgram(prog);
@@ -1380,6 +1397,27 @@ export class Viewer3D {
             }
 
             this._drawForceArrows2D(nx, ny, nz, projection, modelView);
+        }
+
+        if (hasKeep) {
+            const positions = [];
+            for (const bf of this._boundaryFaces) {
+                if (!this.paintedKeepFaces.has(bf.key)) continue;
+                const v = bf.projVerts;
+                positions.push(v[0].x, v[0].y, v[0].z, v[1].x, v[1].y, v[1].z, v[2].x, v[2].y, v[2].z);
+                positions.push(v[0].x, v[0].y, v[0].z, v[2].x, v[2].y, v[2].z, v[3].x, v[3].y, v[3].z);
+            }
+            if (positions.length > 0) {
+                const buf = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.DYNAMIC_DRAW);
+                gl.enableVertexAttribArray(posLoc);
+                gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+                gl.uniform4fv(gl.getUniformLocation(prog, 'uColor'), [0.2, 0.4, 1.0, 0.45]);
+                gl.drawArrays(gl.TRIANGLES, 0, positions.length / 3);
+                gl.disableVertexAttribArray(posLoc);
+                gl.deleteBuffer(buf);
+            }
         }
 
         gl.depthMask(true);

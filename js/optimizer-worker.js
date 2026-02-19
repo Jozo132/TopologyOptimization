@@ -402,7 +402,8 @@ class TopologyOptimizerWorker {
         const preservedElements = new Set();
         const allPaintedKeys = [
             ...(config.paintedConstraints || []),
-            ...(config.paintedForces || [])
+            ...(config.paintedForces || []),
+            ...(config.paintedKeep || [])
         ];
         for (const key of allPaintedKeys) {
             const parts = key.split(',');
@@ -578,7 +579,7 @@ class TopologyOptimizerWorker {
             // Apply manufacturing constraints if enabled
             if (config.manufacturingConstraint) {
                 if (config.manufacturingAngle != null) {
-                    this._applyOverhangConstraint(xnew, nelx, nely, config.manufacturingAngle);
+                    this._applyOverhangConstraint(xnew, nelx, nely, config.manufacturingAngle, 0.3, preservedElements);
                     this._enforceToolAccessibility(xnew, nelx, nely, config.manufacturingAngle);
                 }
                 if (config.manufacturingMaxDepth > 0) {
@@ -1117,7 +1118,7 @@ class TopologyOptimizerWorker {
      *
      * Uses 2D column-major indexing: idx = ey + ex * nely.
      */
-    _applyOverhangConstraint(x, nelx, nely, angleDeg, threshold = 0.3) {
+    _applyOverhangConstraint(x, nelx, nely, angleDeg, threshold = 0.3, preservedElements = null) {
         const span = this._overhangSpan(angleDeg, nelx);
 
         // Build a support map: sweep from bottom row (ey=nely-1) upward (ey=0)
@@ -1126,6 +1127,7 @@ class TopologyOptimizerWorker {
             for (let ex = 0; ex < nelx; ex++) {
                 const idx = ey + ex * nely; // column-major
                 if (x[idx] < threshold) continue; // void element, skip
+                if (preservedElements && preservedElements.has(idx)) continue;
 
                 // Check if there is any solid element below within the reach cone
                 const belowRow = ey + 1;
