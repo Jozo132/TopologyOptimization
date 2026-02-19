@@ -3639,7 +3639,7 @@ class TopologyOptimizerWorker3D {
         }
 
         // ── Full WASM KSP BDDC solve (BDDC domain decomposition in WASM, zero per-iteration crossings) ──
-        if (this.linearSolver === 'petsc' && (config?.petscPC || 'bddc') === 'bddc' && wasmLoaded && wasmModule?.exports?.ebeKSP_BDDC) {
+        if (this.linearSolver === 'petsc' && (!config?.petscPC || config.petscPC === 'bddc') && wasmLoaded && wasmModule?.exports?.ebeKSP_BDDC) {
             const result = this._solveWithWasmKSP_BDDC(nelx, nely, nelz, x, penal, KEflat, edofArray, F, freedofs, fixedMask, iteration, maxIterations);
             if (result) return result;
             // Fall through to JS KSP solver if WASM allocation failed
