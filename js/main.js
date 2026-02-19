@@ -405,18 +405,11 @@ class TopologyApp {
         });
 
         // Selection Groups
-        document.getElementById('addForceGroup').addEventListener('click', () => {
+        document.getElementById('addGroup').addEventListener('click', () => {
             const group = this.viewer.addSelectionGroup('force');
             this.viewer.setPaintMode('force');
             document.getElementById('paintForce').classList.add('active-tool');
             document.getElementById('paintConstraint').classList.remove('active-tool');
-            this._renderGroupsList();
-        });
-        document.getElementById('addConstraintGroup').addEventListener('click', () => {
-            const group = this.viewer.addSelectionGroup('constraint');
-            this.viewer.setPaintMode('constraint');
-            document.getElementById('paintConstraint').classList.add('active-tool');
-            document.getElementById('paintForce').classList.remove('active-tool');
             this._renderGroupsList();
         });
         
@@ -654,13 +647,41 @@ class TopologyApp {
             const item = document.createElement('div');
             item.className = 'group-item' + (group.id === this.viewer.activeGroupId ? ' active-group' : '');
 
+            const groupColors = { constraint: '#10b981', force: '#f97316', keep: '#3b82f6' };
             const colorDot = document.createElement('span');
             colorDot.className = 'group-color';
-            colorDot.style.background = group.type === 'constraint' ? '#10b981' : '#f97316';
+            colorDot.style.background = groupColors[group.type] || '#f97316';
 
-            const nameSpan = document.createElement('span');
-            nameSpan.className = 'group-name';
-            nameSpan.textContent = group.name;
+            const typeSelect = document.createElement('select');
+            typeSelect.className = 'group-type-select';
+            typeSelect.style.cssText = 'font-size: 0.7rem; padding: 0.1rem 0.2rem; border-radius: 4px; border: 1px solid var(--border-color); background: var(--bg-secondary); cursor: pointer;';
+            for (const opt of ['force', 'constraint', 'keep']) {
+                const option = document.createElement('option');
+                option.value = opt;
+                option.textContent = opt.charAt(0).toUpperCase() + opt.slice(1);
+                if (opt === group.type) option.selected = true;
+                typeSelect.appendChild(option);
+            }
+            typeSelect.addEventListener('click', (e) => e.stopPropagation());
+            typeSelect.addEventListener('change', (e) => {
+                e.stopPropagation();
+                const newType = e.target.value;
+                group.type = newType;
+                group.name = `${newType} ${group.id}`;
+                if (newType === 'force') {
+                    group.params = { direction: 'down', vector: null, magnitude: 1000, forceType: 'total', dofs: 'all' };
+                } else {
+                    group.params = { dofs: 'all' };
+                }
+                this.viewer._syncGroupsToFaceSets();
+                this.viewer._needsRebuild = true;
+                this.viewer.draw();
+                if (group.id === this.viewer.activeGroupId) {
+                    this.viewer.setPaintMode(newType);
+                    this._updatePaintToolButtons(newType);
+                }
+                this._renderGroupsList();
+            });
 
             const countSpan = document.createElement('span');
             countSpan.className = 'group-count';
@@ -678,21 +699,27 @@ class TopologyApp {
             item.addEventListener('click', () => {
                 this.viewer.setActiveGroup(group.id);
                 this.viewer.setPaintMode(group.type);
-                if (group.type === 'force') {
-                    document.getElementById('paintForce').classList.add('active-tool');
-                    document.getElementById('paintConstraint').classList.remove('active-tool');
-                } else {
-                    document.getElementById('paintConstraint').classList.add('active-tool');
-                    document.getElementById('paintForce').classList.remove('active-tool');
-                }
+                this._updatePaintToolButtons(group.type);
                 this._renderGroupsList();
             });
 
             item.appendChild(colorDot);
-            item.appendChild(nameSpan);
+            item.appendChild(typeSelect);
             item.appendChild(countSpan);
             item.appendChild(removeBtn);
             container.appendChild(item);
+        }
+    }
+
+    _updatePaintToolButtons(type) {
+        const paintForce = document.getElementById('paintForce');
+        const paintConstraint = document.getElementById('paintConstraint');
+        paintForce.classList.remove('active-tool');
+        paintConstraint.classList.remove('active-tool');
+        if (type === 'force') {
+            paintForce.classList.add('active-tool');
+        } else if (type === 'constraint') {
+            paintConstraint.classList.add('active-tool');
         }
     }
 
@@ -805,11 +832,12 @@ class TopologyApp {
         this._optimizationPaused = false;
         
         try {
-            // Include painted constraint/force data and selection groups in config
+            // Include painted constraint/force/keep data and selection groups in config
             const optimConfig = {
                 ...this.config,
                 paintedConstraints: Array.from(this.viewer.paintedConstraintFaces),
                 paintedForces: Array.from(this.viewer.paintedForceFaces),
+                paintedKeep: Array.from(this.viewer.paintedKeepFaces),
                 selectionGroups: this.viewer.selectionGroups.map(g => ({
                     ...g,
                     faces: Array.from(g.faces)

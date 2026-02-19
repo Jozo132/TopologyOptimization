@@ -683,6 +683,99 @@ console.log('Test 20: Manufacturing constraint with min radius');
 }
 
 // ──────────────────────────────────────────────────
+// Test 21: paintedKeep faces are preserved during optimization
+//   Voxels marked as "keep" should remain solid (density ≥ 0.99)
+// ──────────────────────────────────────────────────
+console.log('Test 21: paintedKeep faces preserve voxels during optimization');
+{
+    const solver = new TopologySolver();
+    const nx = 8, ny = 4, nz = 1;
+    const model = { nx, ny, nz, type: 'beam', elements: new Float32Array(nx * ny).fill(1) };
+    // Mark some interior voxels as "keep" (these would normally be optimized away at low volfrac)
+    const keepKeys = ['3,1,0,3', '4,1,0,3', '3,2,0,2', '4,2,0,2'];
+    const config = {
+        solver: '2d',
+        volumeFraction: 0.1,
+        maxIterations: 5,
+        penaltyFactor: 3,
+        filterRadius: 0.9,
+        forceDirection: 'down',
+        forceMagnitude: 100,
+        constraintPosition: 'left',
+        useAMR: false,
+        youngsModulus: 2.3,
+        poissonsRatio: 0.35,
+        useProjection: false,
+        paintedKeep: keepKeys,
+    };
+
+    const result = await solver.optimize(model, config, () => {});
+    assert(result.iterations >= 1, `keepFaces: should complete at least 1 iteration, got ${result.iterations}`);
+    assert(result.densities instanceof Float32Array, 'keepFaces: result.densities should be a Float32Array');
+
+    // Verify that preserved voxels are at full density (result uses row-major 3D indexing: x + y * nx)
+    let allPreserved = true;
+    for (const key of keepKeys) {
+        const parts = key.split(',');
+        const vx = parseInt(parts[0], 10);
+        const vy = parseInt(parts[1], 10);
+        const idx = vx + vy * nx;
+        if (result.densities[idx] < 0.99) {
+            allPreserved = false;
+            break;
+        }
+    }
+    assert(allPreserved, 'keepFaces: all keep-marked voxels should remain at full density');
+}
+
+// ──────────────────────────────────────────────────
+// Test 22: Manufacturing constraint respects preserved elements
+//   Preserved voxels should not be zeroed by overhang constraint
+// ──────────────────────────────────────────────────
+console.log('Test 22: Manufacturing constraint respects preserved elements');
+{
+    const solver = new TopologySolver();
+    const nx = 6, ny = 4, nz = 1;
+    const model = { nx, ny, nz, type: 'beam', elements: new Float32Array(nx * ny).fill(1) };
+    // Mark constraint voxels on the left edge (these are preserved)
+    const constraintKeys = ['0,0,0,0', '0,1,0,0', '0,2,0,0', '0,3,0,0'];
+    const config = {
+        solver: '2d',
+        volumeFraction: 0.4,
+        maxIterations: 5,
+        penaltyFactor: 3,
+        filterRadius: 0.9,
+        forceDirection: 'down',
+        forceMagnitude: 100,
+        constraintPosition: 'left',
+        paintedConstraints: constraintKeys,
+        useAMR: false,
+        youngsModulus: 2.3,
+        poissonsRatio: 0.35,
+        useProjection: false,
+        manufacturingConstraint: true,
+        manufacturingAngle: 90,
+    };
+
+    const result = await solver.optimize(model, config, () => {});
+    assert(result.iterations >= 1, `mfgPreserved: should complete at least 1 iteration, got ${result.iterations}`);
+
+    // Verify constraint voxels remain solid despite manufacturing constraint (row-major 3D indexing)
+    let constraintsSolid = true;
+    for (const key of constraintKeys) {
+        const parts = key.split(',');
+        const vx = parseInt(parts[0], 10);
+        const vy = parseInt(parts[1], 10);
+        const idx = vx + vy * nx;
+        if (result.densities[idx] < 0.99) {
+            constraintsSolid = false;
+            break;
+        }
+    }
+    assert(constraintsSolid, 'mfgPreserved: constraint voxels should remain solid with manufacturing constraints enabled');
+}
+
+// ──────────────────────────────────────────────────
 // Summary
 // ──────────────────────────────────────────────────
 console.log(`\nResults: ${passed} passed, ${failed} failed`);

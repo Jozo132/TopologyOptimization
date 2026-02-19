@@ -30,6 +30,17 @@ const CG_TOLERANCE = CG_TOL_END; // backward-compat alias
 // With MGPCG, hundreds (not thousands) of iterations should be enough.
 const MAX_CG_ITERATIONS = 400;
 
+// Face-to-node mapping: faceIndex → indices into the 8-node array [n0..n7]
+// Matches the face definitions in viewer.js for consistent face picking
+const FACE_NODE_INDICES = [
+    [0, 4, 7, 3], // fi=0: -X face
+    [5, 1, 2, 6], // fi=1: +X face
+    [0, 1, 5, 4], // fi=2: -Y face
+    [3, 7, 6, 2], // fi=3: +Y face
+    [0, 3, 2, 1], // fi=4: -Z face
+    [4, 5, 6, 7], // fi=5: +Z face
+];
+
 // Geometric multigrid parameters (V-cycle)
 const MG_MAX_LEVELS = 6;
 const MG_NU1 = 2;           // pre-smoothing steps
@@ -1118,7 +1129,8 @@ class TopologyOptimizerWorker3D {
         const preservedElements = new Set();
         const allPaintedKeys = [
             ...(config.paintedConstraints || []),
-            ...(config.paintedForces || [])
+            ...(config.paintedForces || []),
+            ...(config.paintedKeep || [])
         ];
         for (const key of allPaintedKeys) {
             const parts = key.split(',');
@@ -1310,14 +1322,14 @@ class TopologyOptimizerWorker3D {
             // Apply manufacturing constraints if enabled
             if (config.manufacturingConstraint) {
                 if (config.manufacturingAngle != null) {
-                    this._applyOverhangConstraint(xnew, nelx, nely, nelz, config.manufacturingAngle);
-                    this._enforceToolAccessibility(xnew, nelx, nely, nelz, config.manufacturingAngle);
+                    this._applyOverhangConstraint(xnew, nelx, nely, nelz, config.manufacturingAngle, 0.3, preservedMask);
+                    this._enforceToolAccessibility(xnew, nelx, nely, nelz, config.manufacturingAngle, 0.3, preservedMask);
                 }
                 if (config.manufacturingMaxDepth > 0) {
-                    this._applyMaxDepthConstraint(xnew, nelx, nely, nelz, config.manufacturingMaxDepth);
+                    this._applyMaxDepthConstraint(xnew, nelx, nely, nelz, config.manufacturingMaxDepth, 0.3, preservedMask);
                 }
                 if (config.manufacturingMinRadius > 0) {
-                    this._applyMinRadiusConstraint(xnew, nelx, nely, nelz, config.manufacturingMinRadius);
+                    this._applyMinRadiusConstraint(xnew, nelx, nely, nelz, config.manufacturingMinRadius, 0.3, preservedMask);
                 }
             }
 
@@ -1932,7 +1944,7 @@ class TopologyOptimizerWorker3D {
      *
      * Uses x-major indexing: idx = ex + ey * nelx + ez * nelx * nely.
      */
-    _applyOverhangConstraint(x, nelx, nely, nelz, angleDeg, threshold = 0.3) {
+    _applyOverhangConstraint(x, nelx, nely, nelz, angleDeg, threshold = 0.3, preservedMask = null) {
         const span = this._overhangSpan(angleDeg, Math.max(nelx, nelz));
 
         const idx3 = (ex, ey, ez) => ex + ey * nelx + ez * nelx * nely;
@@ -1944,6 +1956,7 @@ class TopologyOptimizerWorker3D {
                 for (let ex = 0; ex < nelx; ex++) {
                     const idx = idx3(ex, ey, ez);
                     if (x[idx] < threshold) continue;
+                    if (preservedMask && preservedMask[idx]) continue;
 
                     // Check support cone in the layer below
                     let supported = false;
@@ -1977,7 +1990,7 @@ class TopologyOptimizerWorker3D {
      *
      * Uses x-major indexing: idx = ex + ey * nelx + ez * nelx * nely.
      */
-    _enforceToolAccessibility(x, nelx, nely, nelz, angleDeg, threshold = 0.3) {
+    _enforceToolAccessibility(x, nelx, nely, nelz, angleDeg, threshold = 0.3, preservedMask = null) {
         const span = this._overhangSpan(angleDeg, Math.max(nelx, nelz));
         const nel = nelx * nely * nelz;
         const accessible = new Uint8Array(nel);
@@ -2036,7 +2049,7 @@ class TopologyOptimizerWorker3D {
      *
      * Uses x-major indexing: idx = ex + ey * nelx + ez * nelx * nely.
      */
-    _applyMaxDepthConstraint(x, nelx, nely, nelz, maxDepth, threshold = 0.3) {
+    _applyMaxDepthConstraint(x, nelx, nely, nelz, maxDepth, threshold = 0.3, preservedMask = null) {
         const limit = Math.floor(maxDepth);
         const idx3 = (ex, ey, ez) => ex + ey * nelx + ez * nelx * nely;
 
@@ -2061,7 +2074,7 @@ class TopologyOptimizerWorker3D {
      *
      * Uses x-major indexing: idx = ex + ey * nelx + ez * nelx * nely.
      */
-    _applyMinRadiusConstraint(x, nelx, nely, nelz, radius, threshold = 0.3) {
+    _applyMinRadiusConstraint(x, nelx, nely, nelz, radius, threshold = 0.3, preservedMask = null) {
         const nel = nelx * nely * nelz;
         const r = Math.ceil(radius);
         const r2 = radius * radius;
@@ -2687,7 +2700,13 @@ class TopologyOptimizerWorker3D {
             const n5 = (vx + 1) * nny * nnz + vy * nnz + (vz + 1);
             const n6 = (vx + 1) * nny * nnz + (vy + 1) * nnz + (vz + 1);
             const n7 = vx * nny * nnz + (vy + 1) * nnz + (vz + 1);
-            const nodes = [n0, n1, n2, n3, n4, n5, n6, n7];
+            const allNodes = [n0, n1, n2, n3, n4, n5, n6, n7];
+
+            // Use face-specific nodes when faceIndex is available
+            const fi = parts.length >= 4 ? parseInt(parts[3], 10) : -1;
+            const nodes = (fi >= 0 && fi < 6)
+                ? FACE_NODE_INDICES[fi].map(i => allNodes[i])
+                : allNodes;
 
             const maxNode = (nelx + 1) * (nely + 1) * (nelz + 1);
             for (const n of nodes) {
@@ -2731,7 +2750,7 @@ class TopologyOptimizerWorker3D {
             }
         }
 
-        // Collect unique nodes from painted faces
+        // Collect unique nodes from painted faces, using face-specific nodes when available
         const nodeSet = new Set();
         for (const key of paintedKeys) {
             const parts = key.split(',');
@@ -2749,7 +2768,13 @@ class TopologyOptimizerWorker3D {
             const n5 = (vx + 1) * nny * nnz + vy * nnz + (vz + 1);
             const n6 = (vx + 1) * nny * nnz + (vy + 1) * nnz + (vz + 1);
             const n7 = vx * nny * nnz + (vy + 1) * nnz + (vz + 1);
-            const nodes = [n0, n1, n2, n3, n4, n5, n6, n7];
+            const allNodes = [n0, n1, n2, n3, n4, n5, n6, n7];
+
+            // Use face-specific nodes when faceIndex is available
+            const fi = parts.length >= 4 ? parseInt(parts[3], 10) : -1;
+            const nodes = (fi >= 0 && fi < 6)
+                ? FACE_NODE_INDICES[fi].map(i => allNodes[i])
+                : allNodes;
 
             const maxNode = (nelx + 1) * (nely + 1) * (nelz + 1);
             for (const n of nodes) {
