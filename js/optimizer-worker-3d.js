@@ -30,6 +30,17 @@ const CG_TOLERANCE = CG_TOL_END; // backward-compat alias
 // With MGPCG, hundreds (not thousands) of iterations should be enough.
 const MAX_CG_ITERATIONS = 400;
 
+// Face-to-node mapping: faceIndex → indices into the 8-node array [n0..n7]
+// Matches the face definitions in viewer.js for consistent face picking
+const FACE_NODE_INDICES = [
+    [0, 4, 7, 3], // fi=0: -X face
+    [5, 1, 2, 6], // fi=1: +X face
+    [0, 1, 5, 4], // fi=2: -Y face
+    [3, 7, 6, 2], // fi=3: +Y face
+    [0, 3, 2, 1], // fi=4: -Z face
+    [4, 5, 6, 7], // fi=5: +Z face
+];
+
 // Geometric multigrid parameters (V-cycle)
 const MG_MAX_LEVELS = 6;
 const MG_NU1 = 2;           // pre-smoothing steps
@@ -2672,16 +2683,6 @@ class TopologyOptimizerWorker3D {
         const nnz = nelz + 1;
         const mode = constraintDOFs || 'all';
 
-        // Face-to-node mapping: faceIndex → indices into the 8-node array [n0..n7]
-        const faceNodeIndices = [
-            [0, 4, 7, 3], // fi=0: -X face
-            [5, 1, 2, 6], // fi=1: +X face
-            [0, 1, 5, 4], // fi=2: -Y face
-            [3, 7, 6, 2], // fi=3: +Y face
-            [0, 3, 2, 1], // fi=4: -Z face
-            [4, 5, 6, 7], // fi=5: +Z face
-        ];
-
         for (const key of paintedKeys) {
             const parts = key.split(',');
             if (parts.length < 3) continue;
@@ -2704,7 +2705,7 @@ class TopologyOptimizerWorker3D {
             // Use face-specific nodes when faceIndex is available
             const fi = parts.length >= 4 ? parseInt(parts[3], 10) : -1;
             const nodes = (fi >= 0 && fi < 6)
-                ? faceNodeIndices[fi].map(i => allNodes[i])
+                ? FACE_NODE_INDICES[fi].map(i => allNodes[i])
                 : allNodes;
 
             const maxNode = (nelx + 1) * (nely + 1) * (nelz + 1);
@@ -2751,15 +2752,6 @@ class TopologyOptimizerWorker3D {
 
         // Collect unique nodes from painted faces, using face-specific nodes when available
         const nodeSet = new Set();
-        // Face-to-node mapping: faceIndex → indices into the 8-node array [n0..n7]
-        const faceNodeIndices = [
-            [0, 4, 7, 3], // fi=0: -X face
-            [5, 1, 2, 6], // fi=1: +X face
-            [0, 1, 5, 4], // fi=2: -Y face
-            [3, 7, 6, 2], // fi=3: +Y face
-            [0, 3, 2, 1], // fi=4: -Z face
-            [4, 5, 6, 7], // fi=5: +Z face
-        ];
         for (const key of paintedKeys) {
             const parts = key.split(',');
             if (parts.length < 3) continue;
@@ -2781,7 +2773,7 @@ class TopologyOptimizerWorker3D {
             // Use face-specific nodes when faceIndex is available
             const fi = parts.length >= 4 ? parseInt(parts[3], 10) : -1;
             const nodes = (fi >= 0 && fi < 6)
-                ? faceNodeIndices[fi].map(i => allNodes[i])
+                ? FACE_NODE_INDICES[fi].map(i => allNodes[i])
                 : allNodes;
 
             const maxNode = (nelx + 1) * (nely + 1) * (nelz + 1);
