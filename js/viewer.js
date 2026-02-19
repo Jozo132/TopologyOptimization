@@ -511,7 +511,7 @@ export class Viewer3D {
         const queue = [seedKey];
 
         while (queue.length > 0) {
-            const currentKey = queue.pop();
+            const currentKey = queue.shift();
             if (visited.has(currentKey)) continue;
             visited.add(currentKey);
 
@@ -613,9 +613,10 @@ export class Viewer3D {
     // ─── Selection Group Management ─────────────────────────────────────────
 
     addSelectionGroup(type, name) {
+        const id = this._nextGroupId++;
         const group = {
-            id: this._nextGroupId++,
-            name: name || `${type} ${this._nextGroupId - 1}`,
+            id,
+            name: name || `${type} ${id}`,
             type, // 'force' or 'constraint'
             faces: new Set(),
             params: type === 'force'

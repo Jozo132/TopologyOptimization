@@ -11,6 +11,23 @@ const MATERIAL_PRESETS = {
     steel: { youngsModulus: 200, poissonsRatio: 0.30 }
 };
 
+const DOF_DESCRIPTIONS = {
+    'all': 'Fixed: X ✓ Y ✓ Z ✓ — Fully constrained',
+    'xy':  'Fixed: X ✓ Y ✓ Z ✗ — Free to slide along Z',
+    'xz':  'Fixed: X ✓ Y ✗ Z ✓ — Free to slide along Y',
+    'yz':  'Fixed: X ✗ Y ✓ Z ✓ — Free to slide along X',
+    'x':   'Fixed: X ✓ Y ✗ Z ✗ — Rail constraint (X axis)',
+    'y':   'Fixed: X ✗ Y ✓ Z ✗ — Rail constraint (Y axis)',
+    'z':   'Fixed: X ✗ Y ✗ Z ✓ — Rail constraint (Z axis)'
+};
+
+const FORCE_DIRECTION_VECTORS = {
+    down: [0, -1, 0],
+    up: [0, 1, 0],
+    left: [-1, 0, 0],
+    right: [1, 0, 0]
+};
+
 class TopologyApp {
     constructor() {
         this.viewer = null;
@@ -293,8 +310,7 @@ class TopologyApp {
             this.viewer.forceDirection = e.target.value;
             // Update the force vector inputs to match preset direction
             if (e.target.value !== 'custom') {
-                const presetVectors = { down: [0,-1,0], up: [0,1,0], left: [-1,0,0], right: [1,0,0] };
-                const v = presetVectors[e.target.value] || [0,-1,0];
+                const v = FORCE_DIRECTION_VECTORS[e.target.value] || [0, -1, 0];
                 document.getElementById('forceVectorX').value = v[0];
                 document.getElementById('forceVectorY').value = v[1];
                 document.getElementById('forceVectorZ').value = v[2];
@@ -605,16 +621,7 @@ class TopologyApp {
     _updateDOFPreview(dofValue) {
         const previewEl = document.getElementById('dofPreviewText');
         if (!previewEl) return;
-        const dofDescriptions = {
-            'all': 'Fixed: X ✓ Y ✓ Z ✓ — Fully constrained',
-            'xy':  'Fixed: X ✓ Y ✓ Z ✗ — Free to slide along Z',
-            'xz':  'Fixed: X ✓ Y ✗ Z ✓ — Free to slide along Y',
-            'yz':  'Fixed: X ✗ Y ✓ Z ✓ — Free to slide along X',
-            'x':   'Fixed: X ✓ Y ✗ Z ✗ — Rail constraint (X axis)',
-            'y':   'Fixed: X ✗ Y ✓ Z ✗ — Rail constraint (Y axis)',
-            'z':   'Fixed: X ✗ Y ✗ Z ✓ — Rail constraint (Z axis)'
-        };
-        previewEl.textContent = dofDescriptions[dofValue] || dofDescriptions['all'];
+        previewEl.textContent = DOF_DESCRIPTIONS[dofValue] || DOF_DESCRIPTIONS['all'];
     }
 
     _renderGroupsList() {
