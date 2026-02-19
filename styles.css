@@ -284,6 +284,11 @@ button {
     border-color: rgba(255, 255, 255, 0.4);
 }
 
+.btn-icon.active-tool {
+    background: rgba(100, 180, 255, 0.35);
+    border-color: rgba(100, 180, 255, 0.7);
+}
+
 /* Form Controls */
 .control-group {
     margin-bottom: 1rem;

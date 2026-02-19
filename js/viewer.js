@@ -25,6 +25,7 @@ const MESH_VERTEX_SHADER = `
     varying vec3 vNormal;
     varying vec3 vColor;
     varying vec3 vPosition;
+    varying vec3 vWorldPos;
 
     void main() {
         vec4 mvPosition = uModelView * vec4(aPosition, 1.0);
@@ -32,6 +33,7 @@ const MESH_VERTEX_SHADER = `
         vNormal = normalize(uNormalMatrix * aNormal);
         vColor = aColor;
         vPosition = mvPosition.xyz;
+        vWorldPos = aPosition;
     }
 `;
 
@@ -41,11 +43,16 @@ const MESH_FRAGMENT_SHADER = `
     varying vec3 vNormal;
     varying vec3 vColor;
     varying vec3 vPosition;
+    varying vec3 vWorldPos;
 
     uniform vec3 uLightDir;
     uniform float uAmbient;
+    uniform float uClipEnabled;
+    uniform vec3 uClipNormal;
+    uniform float uClipOffset;
 
     void main() {
+        if (uClipEnabled > 0.5 && dot(uClipNormal, vWorldPos) - uClipOffset > 0.0) discard;
         vec3 normal = normalize(vNormal);
         float diffuse = abs(dot(normal, uLightDir));
         float light = uAmbient + (1.0 - uAmbient) * diffuse;
@@ -62,19 +69,26 @@ const LINE_VERTEX_SHADER = `
     uniform mat4 uModelView;
 
     varying vec3 vColor;
+    varying vec3 vWorldPos;
 
     void main() {
         gl_Position = uProjection * uModelView * vec4(aPosition, 1.0);
         vColor = aColor;
+        vWorldPos = aPosition;
     }
 `;
 
 const LINE_FRAGMENT_SHADER = `
     precision mediump float;
     varying vec3 vColor;
+    varying vec3 vWorldPos;
     uniform float uAlpha;
+    uniform float uClipEnabled;
+    uniform vec3 uClipNormal;
+    uniform float uClipOffset;
 
     void main() {
+        if (uClipEnabled > 0.5 && dot(uClipNormal, vWorldPos) - uClipOffset > 0.0) discard;
         gl_FragColor = vec4(vColor, uAlpha);
     }
 `;
@@ -85,16 +99,24 @@ const OVERLAY_VERTEX_SHADER = `
     uniform mat4 uProjection;
     uniform mat4 uModelView;
 
+    varying vec3 vWorldPos;
+
     void main() {
         gl_Position = uProjection * uModelView * vec4(aPosition, 1.0);
+        vWorldPos = aPosition;
     }
 `;
 
 const OVERLAY_FRAGMENT_SHADER = `
     precision mediump float;
+    varying vec3 vWorldPos;
     uniform vec4 uColor;
+    uniform float uClipEnabled;
+    uniform vec3 uClipNormal;
+    uniform float uClipOffset;
 
     void main() {
+        if (uClipEnabled > 0.5 && dot(uClipNormal, vWorldPos) - uClipOffset > 0.0) discard;
         gl_FragColor = uColor;
     }
 `;
@@ -243,6 +265,12 @@ export class Viewer3D {
         this._lineProgram = null;
         this._overlayProgram = null;
 
+        // Section (clipping) plane
+        this.sectionEnabled = false;
+        this.sectionNormal = [1, 0, 0];
+        this.sectionOffset = 0;
+        this._isSectionDragging = false;
+
         // Cached GPU buffers
         this._meshBuffers = null;
         this._edgeBuffers = null;
@@ -366,6 +394,8 @@ export class Viewer3D {
             } else {
                 if (e.button === 1 || (e.button === 0 && e.shiftKey)) {
                     this.isPanning = true;
+                } else if (e.button === 0 && e.altKey && this.sectionEnabled) {
+                    this._isSectionDragging = true;
                 } else if (e.button === 0) {
                     this.isDragging = true;
                 }
@@ -392,7 +422,11 @@ export class Viewer3D {
             const dx = e.clientX - this.lastMousePos.x;
             const dy = e.clientY - this.lastMousePos.y;
 
-            if (this.isPanning) {
+            if (this._isSectionDragging && this.sectionEnabled) {
+                this._rotateSectionPlane(dx, dy);
+                this.lastMousePos = { x: e.clientX, y: e.clientY };
+                this.draw();
+            } else if (this.isPanning) {
                 const panScale = 0.003 / this.zoom;
                 this.pan.x += dx * panScale;
                 this.pan.y -= dy * panScale;
@@ -411,12 +445,14 @@ export class Viewer3D {
             this.isDragging = false;
             this.isPanning = false;
             this.isPainting = false;
+            this._isSectionDragging = false;
         });
 
         canvas.addEventListener('mouseleave', () => {
             this.isDragging = false;
             this.isPanning = false;
             this.isPainting = false;
+            this._isSectionDragging = false;
             if (this._hoverFaces.length > 0) {
                 this._hoverFaces = [];
                 this.draw();
@@ -430,9 +466,15 @@ export class Viewer3D {
 
         canvas.addEventListener('wheel', (e) => {
             e.preventDefault();
-            this.zoom *= (1 - e.deltaY * 0.001);
-            this.zoom = Math.max(0.1, Math.min(10, this.zoom));
-            this.draw();
+            if (e.altKey && this.sectionEnabled && this.model) {
+                const maxDim = Math.max(this.model.nx, this.model.ny, this.model.nz);
+                this.sectionOffset -= e.deltaY * 0.005 * maxDim;
+                this.draw();
+            } else {
+                this.zoom *= (1 - e.deltaY * 0.001);
+                this.zoom = Math.max(0.1, Math.min(10, this.zoom));
+                this.draw();
+            }
         });
 
         canvas.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -444,6 +486,38 @@ export class Viewer3D {
         if (!mode) {
             this._hoverFaces = [];
             this.draw();
+        }
+    }
+
+    _rotateSectionPlane(dx, dy) {
+        const speed = 0.01;
+        const sn = this.sectionNormal.slice();
+
+        // Rotate around world Y axis (horizontal drag)
+        const cosY = Math.cos(dx * speed);
+        const sinY = Math.sin(dx * speed);
+        const rx = sn[0] * cosY + sn[2] * sinY;
+        const rz = -sn[0] * sinY + sn[2] * cosY;
+        sn[0] = rx;
+        sn[2] = rz;
+
+        // Rotate around world X axis (vertical drag)
+        const cosX = Math.cos(dy * speed);
+        const sinX = Math.sin(dy * speed);
+        const ry = sn[1] * cosX - sn[2] * sinX;
+        const rz2 = sn[1] * sinX + sn[2] * cosX;
+        sn[1] = ry;
+        sn[2] = rz2;
+
+        this.sectionNormal = vec3Normalize(sn);
+    }
+
+    _setClipUniforms(gl, prog) {
+        const loc = (name) => gl.getUniformLocation(prog, name);
+        gl.uniform1f(loc('uClipEnabled'), this.sectionEnabled ? 1.0 : 0.0);
+        if (this.sectionEnabled) {
+            gl.uniform3fv(loc('uClipNormal'), this.sectionNormal);
+            gl.uniform1f(loc('uClipOffset'), this.sectionOffset);
         }
     }
 
@@ -902,12 +976,19 @@ export class Viewer3D {
 
         // Draw mesh
         if (this.meshVisible && this._meshBuffers && this._meshBuffers.count > 0) {
+            if (this.sectionEnabled) gl.disable(gl.CULL_FACE);
             this._drawMesh(gl, projection, modelView, normalMatrix);
+            if (this.sectionEnabled) gl.enable(gl.CULL_FACE);
         }
 
         // Draw edges: always for AMR triangle mesh (to show block boundaries), wireframe-only otherwise
         if (this.meshVisible && this._edgeBuffers && this._edgeBuffers.count > 0 && (this.wireframe || this.meshData)) {
             this._drawEdges(gl, projection, modelView);
+        }
+
+        // Draw section plane visualization
+        if (this.sectionEnabled) {
+            this._drawSectionPlane(gl, projection, modelView, nx, ny, nz);
         }
 
         // Draw overlays
@@ -943,6 +1024,13 @@ export class Viewer3D {
             };
             const label = paintLabels[this.paintMode] || paintLabels.force;
             this.ctx.fillText(label, 10, height - 10);
+        }
+
+        if (this.sectionEnabled) {
+            this.ctx.fillStyle = 'rgba(100,180,255,0.9)';
+            this.ctx.font = '13px Arial';
+            this.ctx.textAlign = 'left';
+            this.ctx.fillText('✂ Section View  (Alt+Drag: rotate, Alt+Scroll: move)', 10, 20);
         }
     }
 
@@ -1260,6 +1348,7 @@ export class Viewer3D {
         const lightDir = vec3Normalize([0.3, 0.5, 0.8]);
         gl.uniform3fv(gl.getUniformLocation(prog, 'uLightDir'), lightDir);
         gl.uniform1f(gl.getUniformLocation(prog, 'uAmbient'), 0.4);
+        this._setClipUniforms(gl, prog);
 
         const posLoc = gl.getAttribLocation(prog, 'aPosition');
         const normLoc = gl.getAttribLocation(prog, 'aNormal');
@@ -1291,6 +1380,7 @@ export class Viewer3D {
         gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uProjection'), false, projection);
         gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uModelView'), false, modelView);
         gl.uniform1f(gl.getUniformLocation(prog, 'uAlpha'), 0.5);
+        this._setClipUniforms(gl, prog);
 
         const posLoc = gl.getAttribLocation(prog, 'aPosition');
         const colLoc = gl.getAttribLocation(prog, 'aColor');
@@ -1318,6 +1408,8 @@ export class Viewer3D {
         gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uProjection'), false, projection);
         gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uModelView'), false, modelView);
         gl.uniform1f(gl.getUniformLocation(prog, 'uAlpha'), 0.3);
+        // Don't clip the ground grid
+        gl.uniform1f(gl.getUniformLocation(prog, 'uClipEnabled'), 0.0);
 
         const posLoc = gl.getAttribLocation(prog, 'aPosition');
         const colLoc = gl.getAttribLocation(prog, 'aColor');
@@ -1347,6 +1439,7 @@ export class Viewer3D {
 
         gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uProjection'), false, projection);
         gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uModelView'), false, modelView);
+        this._setClipUniforms(gl, prog);
 
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -1425,6 +1518,68 @@ export class Viewer3D {
         gl.enable(gl.CULL_FACE);
     }
 
+    _drawSectionPlane(gl, projection, modelView, nx, ny, nz) {
+        const n = this.sectionNormal;
+        const d = this.sectionOffset;
+        const maxDim = Math.max(nx, ny, nz);
+
+        // Find two tangent vectors perpendicular to the plane normal
+        let up = Math.abs(n[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+        const t1 = vec3Normalize([
+            up[1] * n[2] - up[2] * n[1],
+            up[2] * n[0] - up[0] * n[2],
+            up[0] * n[1] - up[1] * n[0]
+        ]);
+        const t2 = [
+            n[1] * t1[2] - n[2] * t1[1],
+            n[2] * t1[0] - n[0] * t1[2],
+            n[0] * t1[1] - n[1] * t1[0]
+        ];
+
+        // Project model center onto the plane
+        const mc = [nx / 2, ny / 2, nz / 2];
+        const dist = n[0] * mc[0] + n[1] * mc[1] + n[2] * mc[2] - d;
+        const center = [mc[0] - dist * n[0], mc[1] - dist * n[1], mc[2] - dist * n[2]];
+
+        const size = maxDim;
+        const v0 = [center[0] - t1[0] * size - t2[0] * size, center[1] - t1[1] * size - t2[1] * size, center[2] - t1[2] * size - t2[2] * size];
+        const v1 = [center[0] + t1[0] * size - t2[0] * size, center[1] + t1[1] * size - t2[1] * size, center[2] + t1[2] * size - t2[2] * size];
+        const v2 = [center[0] + t1[0] * size + t2[0] * size, center[1] + t1[1] * size + t2[1] * size, center[2] + t1[2] * size + t2[2] * size];
+        const v3 = [center[0] - t1[0] * size + t2[0] * size, center[1] - t1[1] * size + t2[1] * size, center[2] - t1[2] * size + t2[2] * size];
+
+        const positions = [...v0, ...v1, ...v2, ...v0, ...v2, ...v3];
+
+        const prog = this._overlayProgram;
+        gl.useProgram(prog);
+
+        gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uProjection'), false, projection);
+        gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uModelView'), false, modelView);
+        // Do not clip the plane quad itself
+        gl.uniform1f(gl.getUniformLocation(prog, 'uClipEnabled'), 0.0);
+
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        gl.depthMask(false);
+        gl.disable(gl.CULL_FACE);
+
+        const posLoc = gl.getAttribLocation(prog, 'aPosition');
+        const buf = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.DYNAMIC_DRAW);
+        gl.enableVertexAttribArray(posLoc);
+        gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+
+        gl.uniform4fv(gl.getUniformLocation(prog, 'uColor'), [0.3, 0.5, 0.8, 0.12]);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+        gl.disableVertexAttribArray(posLoc);
+        gl.deleteBuffer(buf);
+
+        gl.depthMask(true);
+        gl.disable(gl.BLEND);
+        gl.enable(gl.CULL_FACE);
+    }
+
     _drawHoverHighlight(gl, projection, modelView) {
         if (this._hoverFaces.length === 0) return;
 
@@ -1433,6 +1588,7 @@ export class Viewer3D {
 
         gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uProjection'), false, projection);
         gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uModelView'), false, modelView);
+        this._setClipUniforms(gl, prog);
 
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -1733,10 +1889,20 @@ export class Viewer3D {
         this.draw();
     }
 
+    toggleSection() {
+        this.sectionEnabled = !this.sectionEnabled;
+        if (this.sectionEnabled && this.model) {
+            this.sectionNormal = [1, 0, 0];
+            this.sectionOffset = this.model.nx / 2;
+        }
+        this.draw();
+    }
+
     resetCamera() {
         this.rotation = { x: 0.5, y: 0.5 };
         this.pan = { x: 0, y: 0 };
         this.zoom = 1;
+        this.sectionEnabled = false;
         this.draw();
     }
 
@@ -1751,6 +1917,9 @@ export class Viewer3D {
         this._hoverScreenPos = null;
         this.viewMode = 'auto';
         this.meshVisible = true;
+        this.sectionEnabled = false;
+        this.sectionNormal = [1, 0, 0];
+        this.sectionOffset = 0;
         this.paintedConstraintFaces = new Set();
         this.paintedForceFaces = new Set();
         this.paintMode = null;

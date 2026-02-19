@@ -575,9 +575,16 @@ class TopologyApp {
         document.getElementById('toggleWireframe').addEventListener('click', () => {
             this.viewer.toggleWireframe();
         });
+
+        document.getElementById('toggleSection').addEventListener('click', () => {
+            this.viewer.toggleSection();
+            const btn = document.getElementById('toggleSection');
+            btn.classList.toggle('active-tool', this.viewer.sectionEnabled);
+        });
         
         document.getElementById('resetCamera').addEventListener('click', () => {
             this.viewer.resetCamera();
+            document.getElementById('toggleSection').classList.remove('active-tool');
         });
 
         // Strain range slider
@@ -1020,6 +1027,7 @@ class TopologyApp {
         // Reset viewer control button states
         document.getElementById('toggleViewMode').classList.remove('active-tool');
         document.getElementById('toggleMeshVisibility').classList.remove('active-tool');
+        document.getElementById('toggleSection').classList.remove('active-tool');
         
         // Reset viewer
         this.viewer.clear();
