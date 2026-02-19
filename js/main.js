@@ -339,6 +339,12 @@ class TopologyApp {
         document.getElementById('forceType').addEventListener('change', (e) => {
             this.config.forceType = e.target.value;
             this.viewer.forceType = e.target.value;
+            const label = document.getElementById('forceMagnitudeLabel');
+            if (label) {
+                label.textContent = e.target.value === 'pressure'
+                    ? 'Pressure (N/mm² = MPa)'
+                    : 'Force Magnitude (N)';
+            }
         });
 
         document.getElementById('forceMagnitude').addEventListener('input', (e) => {
@@ -601,8 +607,14 @@ class TopologyApp {
                     strainMinInput.value = min;
                 }
             }
-            strainMinValue.textContent = `${Math.round(min * 100)}%`;
-            strainMaxValue.textContent = `${Math.round(max * 100)}%`;
+            const maxStress = this.viewer.maxStress || 0;
+            if (maxStress > 0) {
+                strainMinValue.textContent = `${(min * maxStress).toFixed(2)} MPa`;
+                strainMaxValue.textContent = `${(max * maxStress).toFixed(2)} MPa`;
+            } else {
+                strainMinValue.textContent = `${Math.round(min * 100)}%`;
+                strainMaxValue.textContent = `${Math.round(max * 100)}%`;
+            }
             // Update fill bar position
             strainFill.style.left = `${min * 100}%`;
             strainFill.style.width = `${(max - min) * 100}%`;
@@ -808,7 +820,7 @@ class TopologyApp {
             const result = await this.optimizer.optimize(
                 this.currentModel,
                 optimConfig,
-                (iteration, compliance, meshData, timing) => {
+                (iteration, compliance, meshData, timing, maxStress) => {
                     // Progress callback
                     const progress = (iteration / this.config.maxIterations) * 100;
                     progressFill.style.width = `${progress}%`;
@@ -826,7 +838,7 @@ class TopologyApp {
                     
                     // Update visualization with triangle mesh
                     if (meshData) {
-                        this.viewer.updateMesh(meshData);
+                        this.viewer.updateMesh(meshData, maxStress);
                         // Show strain slider when mesh data is available
                         document.getElementById('strainSliderContainer').classList.remove('hidden');
                     }
@@ -837,7 +849,7 @@ class TopologyApp {
             
             // Update viewer with final mesh
             if (result.meshData) {
-                this.viewer.updateMesh(result.meshData);
+                this.viewer.updateMesh(result.meshData, result.maxStress);
                 document.getElementById('strainSliderContainer').classList.remove('hidden');
             }
             
@@ -972,8 +984,8 @@ class TopologyApp {
         // Reset strain slider values
         document.getElementById('strainMin').value = 0;
         document.getElementById('strainMax').value = 1;
-        document.getElementById('strainMinValue').textContent = '0%';
-        document.getElementById('strainMaxValue').textContent = '100%';
+        document.getElementById('strainMinValue').textContent = '0 MPa';
+        document.getElementById('strainMaxValue').textContent = '0 MPa';
         document.getElementById('strainSliderFill').style.left = '0%';
         document.getElementById('strainSliderFill').style.width = '100%';
         
