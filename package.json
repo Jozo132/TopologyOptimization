@@ -12,6 +12,7 @@
     "benchmark:fea": "node benchmark-fea.js",
     "benchmark:solver": "node benchmark-solver.js",
     "benchmark:mgpcg": "node benchmark-mgpcg.js",
+    "benchmark:ksp": "node benchmark-ksp.js",
     "benchmark:gpu": "echo 'Open http://localhost:8080/benchmark-gpu.html after running: npx serve . -l 8080'",
     "test": "node tests",
     "start": "npx serve ."
