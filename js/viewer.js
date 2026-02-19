@@ -1675,44 +1675,46 @@ export class Viewer3D {
                     const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length;
                     const cy = pts.reduce((s, p) => s + p[1], 0) / pts.length;
                     const cz = pts.reduce((s, p) => s + p[2], 0) / pts.length;
-                    // Build local 2D basis on the plane
+                    // Build local 2D basis on the plane (avoid parallel up vector)
                     let up = Math.abs(n[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
                     const t1 = vec3Normalize([
                         up[1] * n[2] - up[2] * n[1],
                         up[2] * n[0] - up[0] * n[2],
                         up[0] * n[1] - up[1] * n[0]
                     ]);
+                    // Second tangent: cross(capNormal, t1)
+                    const t2 = [
+                        capNormal[1] * t1[2] - capNormal[2] * t1[1],
+                        capNormal[2] * t1[0] - capNormal[0] * t1[2],
+                        capNormal[0] * t1[1] - capNormal[1] * t1[0]
+                    ];
                     pts.sort((a, b) => {
-                        const ax = (a[0] - cx) * t1[0] + (a[1] - cy) * t1[1] + (a[2] - cz) * t1[2];
-                        const ay = (a[0] - cx) * capNormal[1] * t1[2] - (a[0] - cx) * capNormal[2] * t1[1]
-                                 + (a[1] - cy) * capNormal[2] * t1[0] - (a[1] - cy) * capNormal[0] * t1[2]
-                                 + (a[2] - cz) * capNormal[0] * t1[1] - (a[2] - cz) * capNormal[1] * t1[0];
-                        const bx = (b[0] - cx) * t1[0] + (b[1] - cy) * t1[1] + (b[2] - cz) * t1[2];
-                        const by = (b[0] - cx) * capNormal[1] * t1[2] - (b[0] - cx) * capNormal[2] * t1[1]
-                                 + (b[1] - cy) * capNormal[2] * t1[0] - (b[1] - cy) * capNormal[0] * t1[2]
-                                 + (b[2] - cz) * capNormal[0] * t1[1] - (b[2] - cz) * capNormal[1] * t1[0];
-                        return Math.atan2(ay, ax) - Math.atan2(by, bx);
+                        const da = [a[0] - cx, a[1] - cy, a[2] - cz];
+                        const db = [b[0] - cx, b[1] - cy, b[2] - cz];
+                        const angleA = Math.atan2(da[0]*t2[0]+da[1]*t2[1]+da[2]*t2[2], da[0]*t1[0]+da[1]*t1[1]+da[2]*t1[2]);
+                        const angleB = Math.atan2(db[0]*t2[0]+db[1]*t2[1]+db[2]*t2[2], db[0]*t1[0]+db[1]*t1[1]+db[2]*t1[2]);
+                        return angleA - angleB;
                     });
 
                     // Determine color from density
                     const density = densityMap[idx];
                     const hasDensityColors = !!(this.densities || (this.meshData && this.meshData.length > 0));
-                    let r, g, b2;
+                    let cr, cg, cb;
                     if (hasDensityColors) {
-                        r = density;
-                        g = DENSITY_COLOR_GREEN;
-                        b2 = 1 - density;
+                        cr = density;
+                        cg = DENSITY_COLOR_GREEN;
+                        cb = 1 - density;
                     } else {
-                        r = DEFAULT_MESH_COLOR[0];
-                        g = DEFAULT_MESH_COLOR[1];
-                        b2 = DEFAULT_MESH_COLOR[2];
+                        cr = DEFAULT_MESH_COLOR[0];
+                        cg = DEFAULT_MESH_COLOR[1];
+                        cb = DEFAULT_MESH_COLOR[2];
                     }
 
                     // Fan triangulation
                     for (let i = 1; i < pts.length - 1; i++) {
                         positions.push(...pts[0], ...pts[i], ...pts[i + 1]);
                         normals.push(...capNormal, ...capNormal, ...capNormal);
-                        colors.push(r, g, b2, r, g, b2, r, g, b2);
+                        colors.push(cr, cg, cb, cr, cg, cb, cr, cg, cb);
                     }
                 }
             }
