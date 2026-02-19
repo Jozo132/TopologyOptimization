@@ -145,6 +145,11 @@ class TopologyApp {
             this.loadTemplate('cube');
         });
 
+        // Mesh method confirmation button
+        document.getElementById('confirmMeshMethod').addEventListener('click', () => {
+            this._confirmMeshMethod();
+        });
+
         // Apply transform button (scale + rotate)
         document.getElementById('applyTransform').addEventListener('click', () => {
             if (!this.currentModel || !this.currentModel.originalVertices) return;
@@ -776,16 +781,35 @@ class TopologyApp {
             console.log('Importing file:', file.name);
             // Parse file (STL or STEP), then voxelize with mm-based voxel size
             const model = await this.importer.importFile(file, null);
-            // Re-voxelize with the configured voxel size in mm
+
+            // Store parsed data for re-meshing after mesh method selection
+            this._pendingImport = { file, model };
+
+            // Show transform controls for imported models
+            document.getElementById('transformControls').classList.remove('hidden');
+
+            // Show mesh method selector
+            const selector = document.getElementById('meshMethodSelector');
+            selector.classList.remove('hidden');
+
+            // Enable/disable blended curvature option based on file type
+            const isSTEP = /\.(stp|step)$/i.test(file.name);
+            const blendedOption = document.getElementById('blendedCurvatureOption');
+            if (isSTEP) {
+                blendedOption.classList.remove('disabled');
+                blendedOption.querySelector('input').disabled = false;
+            } else {
+                blendedOption.classList.add('disabled');
+                blendedOption.querySelector('input').disabled = true;
+                // Force box mesh for non-STEP files
+                document.querySelector('input[name="meshMethod"][value="box"]').checked = true;
+            }
+
+            // Display preliminary model info
             const voxelSizeMM = this.config.voxelSizeMM;
             const revoxelized = this.importer.voxelizeVertices(model.originalVertices, null, voxelSizeMM);
             revoxelized.originalVertices = model.originalVertices;
-            this.currentModel = revoxelized;
-            
-            // Show transform controls for imported STL models
-            document.getElementById('transformControls').classList.remove('hidden');
-            
-            // Display model info
+
             const info = document.getElementById('modelInfo');
             info.classList.remove('hidden');
             const physX = revoxelized.bounds ? (revoxelized.bounds.maxX - revoxelized.bounds.minX).toFixed(1) : '?';
@@ -797,20 +821,70 @@ class TopologyApp {
                 <strong>Size:</strong> ${physX} × ${physY} × ${physZ} mm<br>
                 <strong>Voxel size:</strong> ${voxelSizeStr} mm<br>
                 <strong>Elements:</strong> ${revoxelized.nx * revoxelized.ny * revoxelized.nz}<br>
-                <strong>Grid:</strong> ${revoxelized.nx} × ${revoxelized.ny} × ${revoxelized.nz}
+                <strong>Grid:</strong> ${revoxelized.nx} × ${revoxelized.ny} × ${revoxelized.nz}<br>
+                <em>Select meshing method above and click Continue.</em>
             `;
-            
-            // Visualize
+
+            // Preview the model
+            this.currentModel = revoxelized;
             this.viewer.setModel(revoxelized);
-            
-            // Enable and navigate to step 2
-            this.workflow.enableStep(2);
-            this.workflow.goToStep(2);
-            
+
         } catch (error) {
             console.error('Import error:', error);
             alert('Failed to import file: ' + error.message);
         }
+    }
+
+    /**
+     * Finalize import after user selects a mesh method and clicks Continue.
+     */
+    _confirmMeshMethod() {
+        if (!this._pendingImport) return;
+
+        const { file, model } = this._pendingImport;
+        const meshMethod = document.querySelector('input[name="meshMethod"]:checked').value;
+        const voxelSizeMM = this.config.voxelSizeMM;
+
+        let finalModel;
+        if (meshMethod === 'blended-curvature') {
+            finalModel = this.importer.blendedCurvatureMesh(model.originalVertices, null, voxelSizeMM);
+        } else {
+            finalModel = this.importer.voxelizeVertices(model.originalVertices, null, voxelSizeMM);
+        }
+        finalModel.originalVertices = model.originalVertices;
+        if (model.sourceFormat) finalModel.sourceFormat = model.sourceFormat;
+        if (model.protocol) finalModel.protocol = model.protocol;
+        this.currentModel = finalModel;
+
+        // Update info display
+        const info = document.getElementById('modelInfo');
+        info.classList.remove('hidden');
+        const physX = finalModel.bounds ? (finalModel.bounds.maxX - finalModel.bounds.minX).toFixed(1) : '?';
+        const physY = finalModel.bounds ? (finalModel.bounds.maxY - finalModel.bounds.minY).toFixed(1) : '?';
+        const physZ = finalModel.bounds ? (finalModel.bounds.maxZ - finalModel.bounds.minZ).toFixed(1) : '?';
+        const voxelSizeStr = finalModel.voxelSize ? finalModel.voxelSize.toFixed(2) : '?';
+        const meshLabel = meshMethod === 'blended-curvature' ? 'Blended Curvature' : 'Box (Voxelized)';
+        info.innerHTML = `
+            <strong>Model loaded:</strong> ${file.name}<br>
+            <strong>Mesh type:</strong> ${meshLabel}<br>
+            <strong>Size:</strong> ${physX} × ${physY} × ${physZ} mm<br>
+            <strong>Voxel size:</strong> ${voxelSizeStr} mm<br>
+            <strong>Elements:</strong> ${finalModel.nx * finalModel.ny * finalModel.nz}<br>
+            <strong>Grid:</strong> ${finalModel.nx} × ${finalModel.ny} × ${finalModel.nz}
+        `;
+
+        // Visualize
+        this.viewer.setModel(finalModel);
+
+        // Hide mesh method selector
+        document.getElementById('meshMethodSelector').classList.add('hidden');
+
+        // Clean up pending import
+        this._pendingImport = null;
+
+        // Enable and navigate to step 2
+        this.workflow.enableStep(2);
+        this.workflow.goToStep(2);
     }
 
     loadTemplate(type) {
@@ -1046,6 +1120,8 @@ class TopologyApp {
         const pauseBtn = document.getElementById('pauseOptimization');
         if (pauseBtn) { pauseBtn.classList.add('hidden'); pauseBtn.textContent = 'Pause'; }
         document.getElementById('transformControls').classList.add('hidden');
+        document.getElementById('meshMethodSelector').classList.add('hidden');
+        this._pendingImport = null;
         
         // Reset transform inputs
         document.getElementById('modelScale').value = 1;

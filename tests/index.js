@@ -1487,6 +1487,66 @@ console.log('Test 38: STEP parser – vector math helpers');
 }
 
 // ──────────────────────────────────────────────────
+// Test 39: Blended curvature mesh – cube produces correct grid
+// ──────────────────────────────────────────────────
+console.log('Test 39: Blended curvature mesh – cube');
+{
+    function quad(a, b, c, d) {
+        return [a, b, c, a, c, d];
+    }
+    const cubeVertices = [
+        ...quad({ x: 0, y: 0, z: 0 }, { x: 10, y: 0, z: 0 }, { x: 10, y: 10, z: 0 }, { x: 0, y: 10, z: 0 }),
+        ...quad({ x: 0, y: 0, z: 10 }, { x: 0, y: 10, z: 10 }, { x: 10, y: 10, z: 10 }, { x: 10, y: 0, z: 10 }),
+        ...quad({ x: 0, y: 0, z: 0 }, { x: 0, y: 10, z: 0 }, { x: 0, y: 10, z: 10 }, { x: 0, y: 0, z: 10 }),
+        ...quad({ x: 10, y: 0, z: 0 }, { x: 10, y: 0, z: 10 }, { x: 10, y: 10, z: 10 }, { x: 10, y: 10, z: 0 }),
+        ...quad({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 10 }, { x: 10, y: 0, z: 10 }, { x: 10, y: 0, z: 0 }),
+        ...quad({ x: 0, y: 10, z: 0 }, { x: 10, y: 10, z: 0 }, { x: 10, y: 10, z: 10 }, { x: 0, y: 10, z: 10 }),
+    ];
+
+    const result = importer.blendedCurvatureMesh(cubeVertices, 10);
+    assert(result.meshType === 'blended-curvature', `meshType should be 'blended-curvature', got '${result.meshType}'`);
+    assert(result.nx === 10, `Expected nx=10, got ${result.nx}`);
+    assert(result.ny === 10, `Expected ny=10, got ${result.ny}`);
+    assert(result.nz === 10, `Expected nz=10, got ${result.nz}`);
+
+    let solidCount = 0;
+    let blendedCount = 0;
+    for (let i = 0; i < result.elements.length; i++) {
+        if (result.elements[i] >= 1.0 - 1e-6) solidCount++;
+        else if (result.elements[i] > 0) blendedCount++;
+    }
+    assert(solidCount > 0, `Should have some fully solid interior voxels, got ${solidCount}`);
+    assert(result.originalVertices === cubeVertices, 'Should preserve original vertices');
+    assert(result.bounds != null, 'Should have bounds');
+}
+
+// ──────────────────────────────────────────────────
+// Test 40: Blended curvature mesh – meshType property on voxelizeVertices
+// ──────────────────────────────────────────────────
+console.log('Test 40: voxelizeVertices returns meshType="box"');
+{
+    const vertices = [
+        { x: 0, y: 0, z: 0 }, { x: 10, y: 0, z: 0 }, { x: 5, y: 10, z: 0 },
+    ];
+    const result = importer.voxelizeVertices(vertices, 5);
+    assert(result.meshType === 'box', `meshType should be 'box', got '${result.meshType}'`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 41: Blended curvature mesh – empty vertices
+// ──────────────────────────────────────────────────
+console.log('Test 41: Blended curvature mesh – no triangles fills all');
+{
+    const result = importer.blendedCurvatureMesh([], 5, 2);
+    assert(result.meshType === 'blended-curvature', `meshType should be 'blended-curvature'`);
+    let allOne = true;
+    for (let i = 0; i < result.elements.length; i++) {
+        if (result.elements[i] !== 1) { allOne = false; break; }
+    }
+    assert(allOne, 'With no triangles, all elements should be 1');
+}
+
+// ──────────────────────────────────────────────────
 // Summary
 // ──────────────────────────────────────────────────
 console.log(`\nResults: ${passed} passed, ${failed} failed`);

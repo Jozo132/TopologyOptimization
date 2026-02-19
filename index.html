@@ -63,6 +63,24 @@
                         <button id="useBridgeTemplate" class="btn-secondary">Bridge</button>
                         <button id="useCubeTemplate" class="btn-secondary">Cube Test (3D)</button>
                     </div>
+                    <div id="meshMethodSelector" class="mesh-method-selector hidden">
+                        <p><strong>Select Meshing Method:</strong></p>
+                        <label class="mesh-method-option">
+                            <input type="radio" name="meshMethod" value="box" checked>
+                            <span class="mesh-method-label">
+                                <strong>Box Mesh (Voxelized)</strong>
+                                <small>Classic axis-aligned voxel grid. Works with all file types.</small>
+                            </span>
+                        </label>
+                        <label class="mesh-method-option" id="blendedCurvatureOption">
+                            <input type="radio" name="meshMethod" value="blended-curvature">
+                            <span class="mesh-method-label">
+                                <strong>Blended Curvature Mesh</strong>
+                                <small>Curvature-adaptive mesh that follows surface geometry. STEP files only.</small>
+                            </span>
+                        </label>
+                        <button id="confirmMeshMethod" class="btn-primary" style="margin-top: 0.75rem;">Continue →</button>
+                    </div>
                     <div id="modelInfo" class="model-info hidden"></div>
                 </div>
             </div>

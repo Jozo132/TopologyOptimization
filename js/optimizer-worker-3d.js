@@ -1202,6 +1202,16 @@ class TopologyOptimizerWorker3D {
         let xnew = new Float32Array(nel);
         let xold = new Float32Array(nel);
 
+        // For blended-curvature meshes, use the model's element densities as
+        // the initial density distribution so the solver starts from the
+        // curvature-adaptive surface representation.
+        const isBlendedCurvature = model.meshType === 'blended-curvature';
+        if (isBlendedCurvature && model.elements) {
+            for (let i = 0; i < nel; i++) {
+                x[i] = model.elements[i] > 0 ? Math.max(volfrac, model.elements[i]) : 0;
+            }
+        }
+
         const { H, Hs } = this.prepareFilter(nelx, nely, nelz, this.rmin);
         let fixeddofs = this.getFixedDOFs(nelx, nely, nelz, config.constraintPosition, config.constraintDOFs);
         let F = this.getLoadVector(nelx, nely, nelz, config.forceDirection, config.forceMagnitude, config.forceVector);

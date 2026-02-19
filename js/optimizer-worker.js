@@ -487,6 +487,18 @@ class TopologyOptimizerWorker {
         let xnew = new Float32Array(nel);
         let xold = new Float32Array(nel).fill(1);
 
+        // For blended-curvature meshes, initialise densities from model elements
+        const isBlendedCurvature = model.meshType === 'blended-curvature';
+        if (isBlendedCurvature && model.elements) {
+            for (let i = 0; i < nel; i++) {
+                const idx2D = i;
+                const iy = Math.floor(idx2D / nelx);
+                const ix = idx2D % nelx;
+                const idxImporter = ix + iy * nelx;
+                x[i] = model.elements[idxImporter] > 0 ? Math.max(volfrac, model.elements[idxImporter]) : 0;
+            }
+        }
+
         const { H, Hs } = this.prepareFilter(nelx, nely, this.rmin);
         let fixeddofs = this.getFixedDOFs(nelx, nely, config.constraintPosition, config.constraintDOFs);
         let F = this.getLoadVector(nelx, nely, config.forceDirection, config.forceMagnitude, config.forceVector);

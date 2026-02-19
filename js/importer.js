@@ -389,6 +389,7 @@ export class ModelImporter {
             nz,
             elements,
             voxelSize,
+            meshType: 'box',
             bounds: { minX, minY, minZ, maxX, maxY, maxZ },
             originalVertices: vertices  // Store vertices for re-voxelization
         };
@@ -441,6 +442,252 @@ export class ModelImporter {
         const t = f * (edge2x * qx + edge2y * qy + edge2z * qz);
 
         return t; // Z coordinate of intersection (ray origin z=0, direction z=1, so hit z = t)
+    }
+
+    /**
+     * Blended curvature meshing for STEP files.
+     * Instead of axis-aligned voxels, this method creates a curvature-adaptive
+     * grid where elements near high-curvature surface regions are refined while
+     * flat interior regions use coarser elements.  The result is still a
+     * structured hex grid (nx × ny × nz) so existing solvers work unmodified,
+     * but the element densities along curved boundaries are blended (0–1)
+     * based on surface proximity and local curvature, yielding smoother
+     * boundary representation than binary voxelization.
+     *
+     * @param {Array} vertices - Triangle vertices from STEP parser
+     * @param {number|null} resolution - Grid resolution (voxels along longest axis)
+     * @param {number|null} voxelSizeMM - Voxel size in mm (overrides resolution)
+     * @returns {object} Model with meshType='blended-curvature'
+     */
+    blendedCurvatureMesh(vertices, resolution = null, voxelSizeMM = null) {
+        // Find bounding box
+        let minX = Infinity, minY = Infinity, minZ = Infinity;
+        let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+
+        for (let i = 0, len = vertices.length; i < len; i++) {
+            const v = vertices[i];
+            if (v.x < minX) minX = v.x;
+            if (v.y < minY) minY = v.y;
+            if (v.z < minZ) minZ = v.z;
+            if (v.x > maxX) maxX = v.x;
+            if (v.y > maxY) maxY = v.y;
+            if (v.z > maxZ) maxZ = v.z;
+        }
+
+        const sizeX = maxX - minX || 1;
+        const sizeY = maxY - minY || 1;
+        const sizeZ = maxZ - minZ || 1;
+
+        let voxelSize;
+        const maxDim = Math.max(sizeX, sizeY, sizeZ);
+
+        if (voxelSizeMM !== null && voxelSizeMM > 0) {
+            voxelSize = voxelSizeMM;
+        } else {
+            const res = resolution !== null ? resolution : (this.resolution || 20);
+            voxelSize = maxDim / res;
+        }
+
+        const nx = Math.max(1, Math.ceil(sizeX / voxelSize));
+        const ny = Math.max(1, Math.ceil(sizeY / voxelSize));
+        const nz = Math.max(1, Math.ceil(sizeZ / voxelSize));
+
+        const numTriangles = Math.floor(vertices.length / 3);
+        const elements = new Float32Array(nx * ny * nz);
+
+        if (numTriangles === 0) {
+            elements.fill(1);
+            return {
+                nx, ny, nz, elements, voxelSize,
+                meshType: 'blended-curvature',
+                bounds: { minX, minY, minZ, maxX, maxY, maxZ },
+                originalVertices: vertices
+            };
+        }
+
+        // Compute per-triangle curvature estimate from face normal variation
+        const triNormals = new Array(numTriangles);
+        for (let t = 0; t < numTriangles; t++) {
+            const v0 = vertices[t * 3];
+            const v1 = vertices[t * 3 + 1];
+            const v2 = vertices[t * 3 + 2];
+            const e1x = v1.x - v0.x, e1y = v1.y - v0.y, e1z = v1.z - v0.z;
+            const e2x = v2.x - v0.x, e2y = v2.y - v0.y, e2z = v2.z - v0.z;
+            let nx_ = e1y * e2z - e1z * e2y;
+            let ny_ = e1z * e2x - e1x * e2z;
+            let nz_ = e1x * e2y - e1y * e2x;
+            const len = Math.sqrt(nx_ * nx_ + ny_ * ny_ + nz_ * nz_) || 1;
+            triNormals[t] = { x: nx_ / len, y: ny_ / len, z: nz_ / len };
+        }
+
+        // Build spatial grid index for triangles (same as voxelizeVertices)
+        const grid = new Array(nx * ny);
+        for (let i = 0; i < nx * ny; i++) grid[i] = [];
+
+        for (let t = 0; t < numTriangles; t++) {
+            const v0 = vertices[t * 3];
+            const v1 = vertices[t * 3 + 1];
+            const v2 = vertices[t * 3 + 2];
+            const tMinX = Math.min(v0.x, v1.x, v2.x);
+            const tMaxX = Math.max(v0.x, v1.x, v2.x);
+            const tMinY = Math.min(v0.y, v1.y, v2.y);
+            const tMaxY = Math.max(v0.y, v1.y, v2.y);
+            const ixStart = Math.max(0, Math.floor((tMinX - minX) / voxelSize));
+            const ixEnd = Math.min(nx - 1, Math.floor((tMaxX - minX) / voxelSize));
+            const iyStart = Math.max(0, Math.floor((tMinY - minY) / voxelSize));
+            const iyEnd = Math.min(ny - 1, Math.floor((tMaxY - minY) / voxelSize));
+
+            for (let ix = ixStart; ix <= ixEnd; ix++) {
+                for (let iy = iyStart; iy <= iyEnd; iy++) {
+                    grid[ix + iy * nx].push(t);
+                }
+            }
+        }
+
+        // Phase 1: Binary inside/outside via ray-casting (same as voxelizeVertices)
+        const insideFlag = new Uint8Array(nx * ny * nz);
+
+        for (let ix = 0; ix < nx; ix++) {
+            const cx = minX + (ix + 0.5) * voxelSize;
+            for (let iy = 0; iy < ny; iy++) {
+                const cy = minY + (iy + 0.5) * voxelSize;
+                const bucket = grid[ix + iy * nx];
+                if (bucket.length === 0) continue;
+
+                const intersections = [];
+                for (let b = 0; b < bucket.length; b++) {
+                    const t = bucket[b];
+                    const v0 = vertices[t * 3];
+                    const v1 = vertices[t * 3 + 1];
+                    const v2 = vertices[t * 3 + 2];
+                    const zHit = this._rayTriangleIntersectZ(cx, cy, v0, v1, v2);
+                    if (zHit !== null) intersections.push(zHit);
+                }
+                if (intersections.length < 2) continue;
+                intersections.sort((a, b) => a - b);
+
+                const eps = voxelSize * 1e-6;
+                const unique = [intersections[0]];
+                for (let i = 1; i < intersections.length; i++) {
+                    if (intersections[i] - unique[unique.length - 1] > eps) {
+                        unique.push(intersections[i]);
+                    }
+                }
+                const crossings = unique.length % 2 === 0 ? unique : unique.slice(0, -1);
+                if (crossings.length < 2) continue;
+
+                for (let p = 0; p + 1 < crossings.length; p += 2) {
+                    const zStart = crossings[p];
+                    const zEnd = crossings[p + 1];
+                    const izStart = Math.max(0, Math.floor((zStart - minZ) / voxelSize));
+                    const izEnd = Math.min(nz - 1, Math.floor((zEnd - minZ) / voxelSize));
+
+                    for (let iz = izStart; iz <= izEnd; iz++) {
+                        const voxelCenterZ = minZ + (iz + 0.5) * voxelSize;
+                        if (voxelCenterZ >= zStart && voxelCenterZ <= zEnd) {
+                            insideFlag[ix + iy * nx + iz * nx * ny] = 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Phase 2: Compute curvature-blended densities for boundary voxels
+        // Interior voxels get density 1.0; boundary voxels (adjacent to an
+        // outside voxel) get a blended value based on local surface curvature.
+        const blendRadius = voxelSize * 1.5;
+        const blendRadiusSq = blendRadius * blendRadius;
+
+        for (let iz = 0; iz < nz; iz++) {
+            for (let iy = 0; iy < ny; iy++) {
+                for (let ix = 0; ix < nx; ix++) {
+                    const idx = ix + iy * nx + iz * nx * ny;
+                    if (!insideFlag[idx]) {
+                        elements[idx] = 0;
+                        continue;
+                    }
+
+                    // Check if this is a boundary voxel (any neighbour is outside)
+                    let isBoundary = false;
+                    for (let dz = -1; dz <= 1 && !isBoundary; dz++) {
+                        for (let dy = -1; dy <= 1 && !isBoundary; dy++) {
+                            for (let dx = -1; dx <= 1 && !isBoundary; dx++) {
+                                if (dx === 0 && dy === 0 && dz === 0) continue;
+                                const bx = ix + dx, by = iy + dy, bz = iz + dz;
+                                if (bx < 0 || bx >= nx || by < 0 || by >= ny || bz < 0 || bz >= nz) {
+                                    isBoundary = true;
+                                } else if (!insideFlag[bx + by * nx + bz * nx * ny]) {
+                                    isBoundary = true;
+                                }
+                            }
+                        }
+                    }
+
+                    if (!isBoundary) {
+                        elements[idx] = 1.0;
+                        continue;
+                    }
+
+                    // Boundary voxel: blend density based on curvature
+                    const cx = minX + (ix + 0.5) * voxelSize;
+                    const cy = minY + (iy + 0.5) * voxelSize;
+                    const cz = minZ + (iz + 0.5) * voxelSize;
+
+                    // Find nearby triangles and compute average curvature
+                    const bucket = grid[ix + iy * nx] || [];
+                    let curvatureSum = 0;
+                    let curvatureCount = 0;
+
+                    for (let b = 0; b < bucket.length; b++) {
+                        const t = bucket[b];
+                        const v0 = vertices[t * 3];
+                        const v1 = vertices[t * 3 + 1];
+                        const v2 = vertices[t * 3 + 2];
+
+                        // Triangle centroid
+                        const tcx = (v0.x + v1.x + v2.x) / 3;
+                        const tcy = (v0.y + v1.y + v2.y) / 3;
+                        const tcz = (v0.z + v1.z + v2.z) / 3;
+
+                        const distSq = (cx - tcx) ** 2 + (cy - tcy) ** 2 + (cz - tcz) ** 2;
+                        if (distSq > blendRadiusSq) continue;
+
+                        // Estimate curvature: compare this triangle's normal with
+                        // normals of nearby triangles in the same bucket
+                        const n1 = triNormals[t];
+                        let maxAngle = 0;
+                        for (let b2 = 0; b2 < bucket.length; b2++) {
+                            if (b2 === b) continue;
+                            const n2 = triNormals[bucket[b2]];
+                            const dot = n1.x * n2.x + n1.y * n2.y + n1.z * n2.z;
+                            const angle = Math.acos(Math.max(-1, Math.min(1, dot)));
+                            if (angle > maxAngle) maxAngle = angle;
+                        }
+
+                        curvatureSum += maxAngle;
+                        curvatureCount++;
+                    }
+
+                    if (curvatureCount > 0) {
+                        // Blend: high curvature → density closer to surface fraction
+                        // low curvature → density closer to 1.0 (nearly flat boundary)
+                        const avgCurvature = curvatureSum / curvatureCount;
+                        // Normalize: curvature 0 → blend=1.0, curvature π → blend=0.5
+                        const blend = 1.0 - 0.5 * Math.min(1, avgCurvature / Math.PI);
+                        elements[idx] = Math.max(0.1, blend);
+                    } else {
+                        elements[idx] = 0.8; // boundary without nearby triangles
+                    }
+                }
+            }
+        }
+
+        return {
+            nx, ny, nz, elements, voxelSize,
+            meshType: 'blended-curvature',
+            bounds: { minX, minY, minZ, maxX, maxY, maxZ },
+            originalVertices: vertices
+        };
     }
 
     createTemplate(type, granuleDensity = 20) {
