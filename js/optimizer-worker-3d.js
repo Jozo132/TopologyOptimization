@@ -305,6 +305,9 @@ class MGPrecond3D {
         this.KEflat = KEflat;
         this.levels = [];
         this._tmpLocal = new Float64Array(24);
+        this._wasmReady = false;
+        this._wasmKeOff = 0;
+        this._wasmScratchOff = 0;
     }
 
     static _precomputeEdofs3D(nelx, nely, nelz) {
@@ -420,6 +423,86 @@ class MGPrecond3D {
             cx = nx; cy = ny; cz = nz;
             fixedMask = fixedC;
         }
+
+        this._initWasmBuffers();
+    }
+
+    /**
+     * Allocate WASM memory buffers for accelerated applyA.
+     * Per-level regions hold edofs, E_vals, active, p, and Ap.
+     * KEflat and a scratch buffer are shared across levels.
+     */
+    _initWasmBuffers() {
+        if (!wasmModule || !wasmModule.exports.applyAEbe3D) {
+            this._wasmReady = false;
+            return;
+        }
+        try {
+            const mem = wasmModule.exports.memory;
+            const align8 = (v) => (v + 7) & ~7;
+            // Calculate total needed memory (with alignment padding)
+            const keSize = 576 * 8;       // KEflat: 24*24 f64
+            const scratchSize = 24 * 8;   // scratch: 24 f64
+            let totalBytes = keSize + scratchSize;
+
+            for (const level of this.levels) {
+                totalBytes += level.nel * 24 * 4 + 8;  // edofs (i32) + align
+                totalBytes += level.nel * 8;       // E_vals (f64)
+                totalBytes += level.nel * 4 + 8;   // active (i32) + align
+                totalBytes += level.ndof * 8;      // p (f64)
+                totalBytes += level.ndof * 8;      // Ap (f64)
+            }
+
+            const neededPages = Math.ceil(totalBytes / 65536) + 1;
+            const dataStart = mem.buffer.byteLength;
+            const growResult = mem.grow(neededPages);
+            if (growResult === -1) {
+                this._wasmReady = false;
+                return;
+            }
+
+            let offset = dataStart;
+
+            // Shared KEflat
+            this._wasmKeOff = offset; offset += keSize;
+            new Float64Array(mem.buffer, this._wasmKeOff, 576).set(this.KEflat);
+
+            // Shared scratch
+            this._wasmScratchOff = offset; offset += scratchSize;
+
+            // Per-level allocations
+            for (const level of this.levels) {
+                const w = {};
+                w.edofsOff = offset; offset += level.nel * 24 * 4;
+                offset = align8(offset);
+                w.evalsOff = offset; offset += level.nel * 8;
+                w.activeOff = offset; offset += level.nel * 4;
+                offset = align8(offset);
+                w.pOff = offset; offset += level.ndof * 8;
+                w.apOff = offset; offset += level.ndof * 8;
+
+                // Copy static edofs (don't change during solve)
+                new Int32Array(mem.buffer, w.edofsOff, level.edofArray.length).set(level.edofArray);
+                level._wasm = w;
+            }
+
+            this._wasmReady = true;
+        } catch (e) {
+            this._wasmReady = false;
+        }
+    }
+
+    /**
+     * Sync density-derived data (E_vals, active list) to WASM memory for a level.
+     */
+    _wasmSyncLevel(level) {
+        if (!this._wasmReady || !level._wasm) return;
+        const mem = wasmModule.exports.memory;
+        const w = level._wasm;
+        new Float64Array(mem.buffer, w.evalsOff, level.nel).set(level.E_vals);
+        new Int32Array(mem.buffer, w.activeOff, level.activeCount).set(
+            level.active.subarray(0, level.activeCount)
+        );
     }
 
     _makeLevel(nelx, nely, nelz, edofArray, fixedMask, freeDofs) {
@@ -465,6 +548,7 @@ class MGPrecond3D {
         const L0 = this.levels[0];
         L0.dens.set(xFine);
         this._updateOperatorLevel(L0, penal, E0, Emin);
+        this._wasmSyncLevel(L0);
 
         // Coarse levels: Galerkin or E-val averaging fallback
         for (let li = 1; li < this.levels.length; li++) {
@@ -479,6 +563,7 @@ class MGPrecond3D {
             } else {
                 this._restrictEvalAvg(this.levels[li - 1], this.levels[li], E0, Emin);
             }
+            this._wasmSyncLevel(coarse);
         }
     }
 
@@ -712,7 +797,24 @@ class MGPrecond3D {
             }
             return;
         }
-        // Element-by-element matvec
+
+        // WASM-accelerated element-by-element matvec
+        if (this._wasmReady && level._wasm) {
+            const mem = wasmModule.exports.memory;
+            const w = level._wasm;
+            // Copy input vector p into WASM memory
+            new Float64Array(mem.buffer, w.pOff, level.ndof).set(p.subarray(0, level.ndof));
+            // Call WASM kernel
+            wasmModule.exports.applyAEbe3D(
+                this._wasmKeOff, w.edofsOff, w.evalsOff, w.activeOff, level.activeCount,
+                w.pOff, w.apOff, level.ndof, this._wasmScratchOff
+            );
+            // Read result back
+            Ap.set(new Float64Array(mem.buffer, w.apOff, level.ndof));
+            return;
+        }
+
+        // Fallback: JS element-by-element matvec
         Ap.fill(0);
 
         const KEflat = this.KEflat;

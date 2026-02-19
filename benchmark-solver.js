@@ -240,7 +240,13 @@ function fullSpaceMatVec(E_vals, activeElements, KEflat, edofArray, p, Ap, ndof)
 // MG Preconditioner with Galerkin coarse operators
 // ═══════════════════════════════════════════════════════════════════════
 class MGPrecond3D {
-    constructor(KEflat) { this.KEflat = KEflat; this.levels = []; this._tmpL = new Float64Array(24); }
+    constructor(KEflat, wasmMod) {
+        this.KEflat = KEflat; this.levels = []; this._tmpL = new Float64Array(24);
+        this._wasmMod = wasmMod || null;
+        this._wasmReady = false;
+        this._wasmKeOff = 0;
+        this._wasmScratchOff = 0;
+    }
 
     static _downsampleFixedMaskBy2(fixedFine, nxF0, nyF0, nzF0, nxC0, nyC0, nzC0) {
         const nxF = nxF0 + 1, nyF = nyF0 + 1, nzF = nzF0 + 1;
@@ -285,6 +291,48 @@ class MGPrecond3D {
             this.levels.push(this._makeLevel(nx, ny, nz, edof, fmC, freeC));
             cx = nx; cy = ny; cz = nz; fm = fmC;
         }
+        this._initWasmBuffers();
+    }
+
+    _initWasmBuffers() {
+        const wasm = this._wasmMod;
+        if (!wasm || !wasm.exports.applyAEbe3D) { this._wasmReady = false; return; }
+        try {
+            const mem = wasm.exports.memory;
+            const align8 = (v) => (v + 7) & ~7;
+            let totalBytes = 576 * 8 + 24 * 8;
+            for (const level of this.levels) {
+                totalBytes += level.nel * 24 * 4 + 8 + level.nel * 8 + level.nel * 4 + 8 + level.ndof * 8 + level.ndof * 8;
+            }
+            const neededPages = Math.ceil(totalBytes / 65536) + 1;
+            const dataStart = mem.buffer.byteLength;
+            if (mem.grow(neededPages) === -1) { this._wasmReady = false; return; }
+            let offset = dataStart;
+            this._wasmKeOff = offset; offset += 576 * 8;
+            new Float64Array(mem.buffer, this._wasmKeOff, 576).set(this.KEflat);
+            this._wasmScratchOff = offset; offset += 24 * 8;
+            for (const level of this.levels) {
+                const w = {};
+                w.edofsOff = offset; offset += level.nel * 24 * 4;
+                offset = align8(offset);
+                w.evalsOff = offset; offset += level.nel * 8;
+                w.activeOff = offset; offset += level.nel * 4;
+                offset = align8(offset);
+                w.pOff = offset; offset += level.ndof * 8;
+                w.apOff = offset; offset += level.ndof * 8;
+                new Int32Array(mem.buffer, w.edofsOff, level.edofArray.length).set(level.edofArray);
+                level._wasm = w;
+            }
+            this._wasmReady = true;
+        } catch (e) { this._wasmReady = false; }
+    }
+
+    _wasmSyncLevel(level) {
+        if (!this._wasmReady || !level._wasm) return;
+        const mem = this._wasmMod.exports.memory;
+        const w = level._wasm;
+        new Float64Array(mem.buffer, w.evalsOff, level.nel).set(level.E_vals);
+        new Int32Array(mem.buffer, w.activeOff, level.activeCount).set(level.active.subarray(0, level.activeCount));
     }
 
     _makeLevel(nelx, nely, nelz, edofArray, fixedMask, freeDofs) {
@@ -478,6 +526,7 @@ class MGPrecond3D {
         // Level 0: element-by-element E_vals
         this.levels[0].dens.set(xFine);
         this._updateOp(this.levels[0], penal, 0);
+        this._wasmSyncLevel(this.levels[0]);
         // Coarse levels: Galerkin or E-val-avg fallback
         for (let li = 1; li < this.levels.length; li++) {
             const coarse = this.levels[li];
@@ -492,6 +541,7 @@ class MGPrecond3D {
                 // Fallback for large levels: E-val averaging
                 this._restrictEvalAvg(this.levels[li - 1], this.levels[li]);
             }
+            this._wasmSyncLevel(coarse);
         }
     }
 
@@ -532,7 +582,19 @@ class MGPrecond3D {
             }
             return;
         }
-        // Element-by-element
+        // WASM-accelerated element-by-element
+        if (this._wasmReady && level._wasm) {
+            const mem = this._wasmMod.exports.memory;
+            const w = level._wasm;
+            new Float64Array(mem.buffer, w.pOff, level.ndof).set(p.subarray(0, level.ndof));
+            this._wasmMod.exports.applyAEbe3D(
+                this._wasmKeOff, w.edofsOff, w.evalsOff, w.activeOff, level.activeCount,
+                w.pOff, w.apOff, level.ndof, this._wasmScratchOff
+            );
+            Ap.set(new Float64Array(mem.buffer, w.apOff, level.ndof));
+            return;
+        }
+        // Fallback: JS element-by-element
         Ap.fill(0);
         const KEflat = this.KEflat, edof = level.edofArray;
         const loc = this._tmpL;
