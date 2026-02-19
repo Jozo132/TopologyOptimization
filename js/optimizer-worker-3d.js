@@ -2333,6 +2333,9 @@ class TopologyOptimizerWorker3D {
      *  - 88° = mold tooling (very slight overhang).
      *  - Lower angles allow steeper overhangs.
      *
+     * Y-axis points up: ey=0 is the physical bottom (self-supported ground),
+     * ey=nely-1 is the physical top.
+     *
      * Uses x-major indexing: idx = ex + ey * nelx + ez * nelx * nely.
      */
     _applyOverhangConstraint(x, nelx, nely, nelz, angleDeg, threshold = 0.3, preservedMask = null) {
@@ -2340,9 +2343,9 @@ class TopologyOptimizerWorker3D {
 
         const idx3 = (ex, ey, ez) => ex + ey * nelx + ez * nelx * nely;
 
-        // Sweep bottom (ey = nely-1) to top (ey = 0); bottom row is self-supported
-        for (let ey = nely - 2; ey >= 0; ey--) {
-            const belowRow = ey + 1;
+        // Sweep from ey=1 to ey=nely-1; ey=0 (ground) is self-supported
+        for (let ey = 1; ey < nely; ey++) {
+            const belowRow = ey - 1;
             for (let ez = 0; ez < nelz; ez++) {
                 for (let ex = 0; ex < nelx; ex++) {
                     const idx = idx3(ex, ey, ez);
@@ -2374,10 +2377,13 @@ class TopologyOptimizerWorker3D {
 
     /**
      * Enforce CNC tool accessibility from the top surface (3D).
-     * For 3-axis CNC, the tool approaches from above (ey=0). Any void element
+     * For 3-axis CNC, the tool approaches from above (ey=nely-1). Any void element
      * must be reachable from the top surface within the tool's angular reach.
      * At 90° (reach=0), each column must have void elements contiguous from the top;
      * once solid material is encountered, everything below must be solid.
+     *
+     * Y-axis points up: ey=0 is the physical bottom, ey=nely-1 is the physical
+     * top where the CNC tool enters.
      *
      * Uses x-major indexing: idx = ex + ey * nelx + ez * nelx * nely.
      */
@@ -2388,10 +2394,10 @@ class TopologyOptimizerWorker3D {
 
         const idx3 = (ex, ey, ez) => ex + ey * nelx + ez * nelx * nely;
 
-        // Seed: all void elements on the top layer (ey=0) are accessible
+        // Seed: all void elements on the top layer (ey=nely-1) are accessible
         for (let ez = 0; ez < nelz; ez++) {
             for (let ex = 0; ex < nelx; ex++) {
-                const idx = idx3(ex, 0, ez);
+                const idx = idx3(ex, nely - 1, ez);
                 if (x[idx] < threshold) {
                     accessible[idx] = 1;
                 }
@@ -2400,8 +2406,8 @@ class TopologyOptimizerWorker3D {
 
         // Sweep top-to-bottom: a void element is accessible if an accessible
         // element exists in the layer above within the tool's angular reach
-        for (let ey = 1; ey < nely; ey++) {
-            const aboveRow = ey - 1;
+        for (let ey = nely - 2; ey >= 0; ey--) {
+            const aboveRow = ey + 1;
             for (let ez = 0; ez < nelz; ez++) {
                 for (let ex = 0; ex < nelx; ex++) {
                     const idx = idx3(ex, ey, ez);
@@ -2435,8 +2441,11 @@ class TopologyOptimizerWorker3D {
 
     /**
      * Enforce maximum milling depth from the top surface (3D).
-     * Elements deeper than maxDepth layers from the top (ey=0) are forced solid,
-     * since the CNC tool cannot reach them.
+     * Elements deeper than maxDepth layers from the top (ey=nely-1) are forced
+     * solid, since the CNC tool cannot reach them.
+     *
+     * Y-axis points up: ey=0 is the physical bottom, ey=nely-1 is the physical
+     * top where the CNC tool enters.
      *
      * Uses x-major indexing: idx = ex + ey * nelx + ez * nelx * nely.
      */
@@ -2444,7 +2453,9 @@ class TopologyOptimizerWorker3D {
         const limit = Math.floor(maxDepth);
         const idx3 = (ex, ey, ez) => ex + ey * nelx + ez * nelx * nely;
 
-        for (let ey = limit; ey < nely; ey++) {
+        // Force solid for layers below the tool's reach from the top
+        const cutoff = nely - limit;
+        for (let ey = 0; ey < cutoff; ey++) {
             for (let ez = 0; ez < nelz; ez++) {
                 for (let ex = 0; ex < nelx; ex++) {
                     const idx = idx3(ex, ey, ez);
