@@ -223,7 +223,6 @@ class WasmMatrixOps {
                          5 * nfree * 8 + 2 * ndof * 8 + edofSize * 8 + nfree * 8;
 
         const totalBytes = densSize + keSize + edofsSize + fSize + uSize + freedofsSize + workSize + 128;
-        const neededPages = Math.ceil(totalBytes / 65536) + 1;
 
         // Ensure enough WASM memory
         const currentBytes = mem.buffer.byteLength;

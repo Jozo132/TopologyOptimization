@@ -563,21 +563,19 @@ export function ebePCG(
     }
   }
 
-  // Build inverse diagonal for free DOFs, stored in z temporarily
-  // We'll use the scratch area at the end for invDiag storage
-  // Actually, reuse zPtr temporarily for invDiag (will be overwritten in CG init)
-  const invDiagPtr: usize = zPtr; // Will be properly set before CG loop
+  // Temporarily reuse zPtr to build invDiag (will be copied to safe location before CG)
+  const invDiagTempPtr: usize = zPtr;
   for (let i: i32 = 0; i < nfree; i++) {
     const fi: i32 = load<i32>(freedofsPtr + (<usize>i << 2));
     const d: f64 = load<f64>(diagPtr + (<usize>fi << 3));
     const inv: f64 = d > 1e-30 ? 1.0 / d : 0.0;
-    store<f64>(invDiagPtr + (<usize>i << 3), inv);
+    store<f64>(invDiagTempPtr + (<usize>i << 3), inv);
   }
 
-  // Copy invDiag to scratch area since z will be overwritten
-  // We need nel * 8 bytes for invDiag - use space after scratch
+  // Copy invDiag to safe location since zPtr will be overwritten by CG
+  // Needs nfree * 8 bytes - use space after scratch buffer
   const invDiagSafePtr: usize = scratchPtr + (<usize>edofSize << 3);
-  memory.copy(invDiagSafePtr, invDiagPtr, <usize>nfree << 3);
+  memory.copy(invDiagSafePtr, invDiagTempPtr, <usize>nfree << 3);
 
   // ── Step 3: Initialize CG ─────────────────────────────────────────
   // Zero U output
