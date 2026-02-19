@@ -107,13 +107,22 @@
                                 <option value="custom">Custom Vector</option>
                             </select>
                         </div>
-                        <div id="forceVectorControls" class="control-group hidden">
+                        <div id="forceVectorControls" class="control-group">
                             <label>Force Vector (X, Y, Z)</label>
                             <div style="display: flex; gap: 0.5rem;">
                                 <input type="number" id="forceVectorX" value="0" step="0.1" style="width: 4rem;">
                                 <input type="number" id="forceVectorY" value="-1" step="0.1" style="width: 4rem;">
                                 <input type="number" id="forceVectorZ" value="0" step="0.1" style="width: 4rem;">
                             </div>
+                            <small style="display: block; color: #666; margin-top: 0.25rem;">Custom force direction components</small>
+                        </div>
+                        <div class="control-group">
+                            <label>Force Type</label>
+                            <select id="forceType">
+                                <option value="total" selected>Total (distributed over group)</option>
+                                <option value="pressure">Pressure (per face)</option>
+                            </select>
+                            <small style="display: block; color: #666; margin-top: 0.25rem;">Total: force spread across selected faces. Pressure: force applied per face.</small>
                         </div>
                         <div class="control-group">
                             <label>Force Magnitude (N)</label>
@@ -130,7 +139,9 @@
                                 <option value="y">Y only</option>
                                 <option value="z">Z only</option>
                             </select>
-                            <small style="display: block; color: #666; margin-top: 0.25rem;">Select which DOFs to fix at constraints (non-XYZ options enable torque optimization)</small>
+                        </div>
+                        <div id="dofPreview" class="dof-preview">
+                            <small><strong>DOF Preview:</strong> <span id="dofPreviewText">Fixed: X ✓ Y ✓ Z ✓ — Fully constrained</span></small>
                         </div>
                         <div class="control-group">
                             <label>Constraint Position</label>
@@ -146,10 +157,35 @@
                             <button id="paintForce" class="btn-secondary" title="Click faces on the model to apply forces (arrows show direction)">🖌 Paint Forces</button>
                             <button id="clearPaint" class="btn-secondary" title="Exit paint mode">✋ Stop Painting</button>
                             <div class="control-group" style="margin-top: 0.5rem;">
+                                <label>
+                                    <input type="checkbox" id="useAngleSelection">
+                                    Angle-based surface selection
+                                </label>
+                                <small style="display: block; color: #666; margin-top: 0.25rem;">Click a face to select connected surfaces within angle tolerance</small>
+                            </div>
+                            <div id="angleToleranceControls" class="control-group" style="margin-top: 0.5rem; display: none;">
+                                <label>Angle Tolerance (°)</label>
+                                <div class="slider-with-input">
+                                    <input type="range" id="angleTolerance" min="1" max="180" step="1" value="45">
+                                    <input type="number" id="angleToleranceInput" min="1" max="180" step="1" value="45">
+                                    <span>°</span>
+                                </div>
+                            </div>
+                            <div class="control-group" style="margin-top: 0.5rem;">
                                 <label>Brush Size</label>
                                 <input type="range" id="brushSize" min="1" max="10" step="1" value="1">
                                 <span id="brushSizeValue">1</span>
                             </div>
+                        </div>
+                        <!-- Selection Groups -->
+                        <div class="groups-toolbar" style="margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--border-color);">
+                            <label style="font-weight: 600; font-size: 0.875rem;">Selection Groups</label>
+                            <small style="display: block; color: #666; margin-bottom: 0.5rem;">Create groups to apply different parameters per selection</small>
+                            <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                                <button id="addForceGroup" class="btn-secondary" style="font-size: 0.75rem;">+ Force Group</button>
+                                <button id="addConstraintGroup" class="btn-secondary" style="font-size: 0.75rem;">+ Constraint Group</button>
+                            </div>
+                            <div id="selectionGroupsList" style="margin-top: 0.5rem;"></div>
                         </div>
                     </div>
                 </div>

@@ -28,6 +28,7 @@ class TopologyApp {
             forceDirection: 'down',
             forceVector: null, // Custom force vector [fx, fy, fz]
             forceMagnitude: 1000,
+            forceType: 'total', // 'total' or 'pressure'
             constraintPosition: 'left',
             constraintDOFs: 'all',
             maxIterations: 30,
@@ -290,28 +291,38 @@ class TopologyApp {
         document.getElementById('forceDirection').addEventListener('change', (e) => {
             this.config.forceDirection = e.target.value;
             this.viewer.forceDirection = e.target.value;
-            const vectorControls = document.getElementById('forceVectorControls');
-            if (e.target.value === 'custom') {
-                vectorControls.classList.remove('hidden');
-                this._updateForceVector();
-            } else {
-                vectorControls.classList.add('hidden');
+            // Update the force vector inputs to match preset direction
+            if (e.target.value !== 'custom') {
+                const presetVectors = { down: [0,-1,0], up: [0,1,0], left: [-1,0,0], right: [1,0,0] };
+                const v = presetVectors[e.target.value] || [0,-1,0];
+                document.getElementById('forceVectorX').value = v[0];
+                document.getElementById('forceVectorY').value = v[1];
+                document.getElementById('forceVectorZ').value = v[2];
                 this.config.forceVector = null;
                 this.viewer.forceVector = null;
+            } else {
+                this._updateForceVector();
             }
             this.viewer.draw();
         });
 
         const updateForceVectorFromInputs = () => {
-            if (this.config.forceDirection === 'custom') {
-                this._updateForceVector();
-                this.viewer.draw();
-            }
+            this._updateForceVector();
+            this.config.forceDirection = 'custom';
+            document.getElementById('forceDirection').value = 'custom';
+            this.viewer.forceDirection = 'custom';
+            this.viewer.draw();
         };
         document.getElementById('forceVectorX').addEventListener('input', updateForceVectorFromInputs);
         document.getElementById('forceVectorY').addEventListener('input', updateForceVectorFromInputs);
         document.getElementById('forceVectorZ').addEventListener('input', updateForceVectorFromInputs);
         
+        // Force type
+        document.getElementById('forceType').addEventListener('change', (e) => {
+            this.config.forceType = e.target.value;
+            this.viewer.forceType = e.target.value;
+        });
+
         document.getElementById('forceMagnitude').addEventListener('input', (e) => {
             this.config.forceMagnitude = parseFloat(e.target.value);
             this.viewer.forceMagnitude = parseFloat(e.target.value);
@@ -319,6 +330,7 @@ class TopologyApp {
 
         document.getElementById('constraintDOFs').addEventListener('change', (e) => {
             this.config.constraintDOFs = e.target.value;
+            this._updateDOFPreview(e.target.value);
         });
         
         document.getElementById('constraintPosition').addEventListener('change', (e) => {
@@ -341,10 +353,47 @@ class TopologyApp {
             document.getElementById('paintConstraint').classList.remove('active-tool');
             document.getElementById('paintForce').classList.remove('active-tool');
         });
+
+        // Angle-based selection
+        document.getElementById('useAngleSelection').addEventListener('change', (e) => {
+            this.viewer.useAngleSelection = e.target.checked;
+            document.getElementById('angleToleranceControls').style.display = e.target.checked ? '' : 'none';
+        });
+
+        const updateAngleTolerance = () => {
+            const val = parseInt(document.getElementById('angleTolerance').value);
+            document.getElementById('angleToleranceInput').value = val;
+            this.viewer.angleTolerance = val;
+            this.viewer.updateAngleSelection();
+        };
+        document.getElementById('angleTolerance').addEventListener('input', () => {
+            updateAngleTolerance();
+        });
+        document.getElementById('angleToleranceInput').addEventListener('input', (e) => {
+            document.getElementById('angleTolerance').value = e.target.value;
+            updateAngleTolerance();
+        });
+
         document.getElementById('brushSize').addEventListener('input', (e) => {
             const size = parseInt(e.target.value);
             this.viewer.brushSize = size;
             document.getElementById('brushSizeValue').textContent = size;
+        });
+
+        // Selection Groups
+        document.getElementById('addForceGroup').addEventListener('click', () => {
+            const group = this.viewer.addSelectionGroup('force');
+            this.viewer.setPaintMode('force');
+            document.getElementById('paintForce').classList.add('active-tool');
+            document.getElementById('paintConstraint').classList.remove('active-tool');
+            this._renderGroupsList();
+        });
+        document.getElementById('addConstraintGroup').addEventListener('click', () => {
+            const group = this.viewer.addSelectionGroup('constraint');
+            this.viewer.setPaintMode('constraint');
+            document.getElementById('paintConstraint').classList.add('active-tool');
+            document.getElementById('paintForce').classList.remove('active-tool');
+            this._renderGroupsList();
         });
         
         // Step 3: Solve
@@ -553,6 +602,72 @@ class TopologyApp {
         this.viewer.forceVector = [fx, fy, fz];
     }
 
+    _updateDOFPreview(dofValue) {
+        const previewEl = document.getElementById('dofPreviewText');
+        if (!previewEl) return;
+        const dofDescriptions = {
+            'all': 'Fixed: X ✓ Y ✓ Z ✓ — Fully constrained',
+            'xy':  'Fixed: X ✓ Y ✓ Z ✗ — Free to slide along Z',
+            'xz':  'Fixed: X ✓ Y ✗ Z ✓ — Free to slide along Y',
+            'yz':  'Fixed: X ✗ Y ✓ Z ✓ — Free to slide along X',
+            'x':   'Fixed: X ✓ Y ✗ Z ✗ — Rail constraint (X axis)',
+            'y':   'Fixed: X ✗ Y ✓ Z ✗ — Rail constraint (Y axis)',
+            'z':   'Fixed: X ✗ Y ✗ Z ✓ — Rail constraint (Z axis)'
+        };
+        previewEl.textContent = dofDescriptions[dofValue] || dofDescriptions['all'];
+    }
+
+    _renderGroupsList() {
+        const container = document.getElementById('selectionGroupsList');
+        if (!container) return;
+        container.innerHTML = '';
+
+        for (const group of this.viewer.selectionGroups) {
+            const item = document.createElement('div');
+            item.className = 'group-item' + (group.id === this.viewer.activeGroupId ? ' active-group' : '');
+
+            const colorDot = document.createElement('span');
+            colorDot.className = 'group-color';
+            colorDot.style.background = group.type === 'constraint' ? '#10b981' : '#f97316';
+
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'group-name';
+            nameSpan.textContent = group.name;
+
+            const countSpan = document.createElement('span');
+            countSpan.className = 'group-count';
+            countSpan.textContent = `${group.faces.size} faces`;
+
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'group-remove';
+            removeBtn.textContent = '×';
+            removeBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.viewer.removeSelectionGroup(group.id);
+                this._renderGroupsList();
+            });
+
+            item.addEventListener('click', () => {
+                this.viewer.setActiveGroup(group.id);
+                this.viewer.setPaintMode(group.type);
+                if (group.type === 'force') {
+                    document.getElementById('paintForce').classList.add('active-tool');
+                    document.getElementById('paintConstraint').classList.remove('active-tool');
+                } else {
+                    document.getElementById('paintConstraint').classList.add('active-tool');
+                    document.getElementById('paintForce').classList.remove('active-tool');
+                }
+                this._renderGroupsList();
+            });
+
+            item.appendChild(colorDot);
+            item.appendChild(nameSpan);
+            item.appendChild(countSpan);
+            item.appendChild(removeBtn);
+            container.appendChild(item);
+        }
+    }
+
     async handleFileImport(file) {
         try {
             console.log('Importing file:', file.name);
@@ -662,11 +777,15 @@ class TopologyApp {
         this._optimizationPaused = false;
         
         try {
-            // Include painted constraint/force data in config
+            // Include painted constraint/force data and selection groups in config
             const optimConfig = {
                 ...this.config,
                 paintedConstraints: Array.from(this.viewer.paintedConstraintFaces),
-                paintedForces: Array.from(this.viewer.paintedForceFaces)
+                paintedForces: Array.from(this.viewer.paintedForceFaces),
+                selectionGroups: this.viewer.selectionGroups.map(g => ({
+                    ...g,
+                    faces: Array.from(g.faces)
+                }))
             };
 
             // Run optimization in worker
