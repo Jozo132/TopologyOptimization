@@ -270,6 +270,7 @@ export class Viewer3D {
         this.sectionNormal = [1, 0, 0];
         this.sectionOffset = 0;
         this._isSectionDragging = false;
+        this._sectionPlaneBuffer = null;
 
         // Cached GPU buffers
         this._meshBuffers = null;
@@ -491,25 +492,21 @@ export class Viewer3D {
 
     _rotateSectionPlane(dx, dy) {
         const speed = 0.01;
-        const sn = this.sectionNormal.slice();
+        const [ox, oy, oz] = this.sectionNormal;
 
-        // Rotate around world Y axis (horizontal drag)
+        // Rotate around Y axis (horizontal drag)
         const cosY = Math.cos(dx * speed);
         const sinY = Math.sin(dx * speed);
-        const rx = sn[0] * cosY + sn[2] * sinY;
-        const rz = -sn[0] * sinY + sn[2] * cosY;
-        sn[0] = rx;
-        sn[2] = rz;
+        const nx = ox * cosY + oz * sinY;
+        const nz1 = -ox * sinY + oz * cosY;
 
-        // Rotate around world X axis (vertical drag)
+        // Rotate around X axis (vertical drag), applied after Y rotation
         const cosX = Math.cos(dy * speed);
         const sinX = Math.sin(dy * speed);
-        const ry = sn[1] * cosX - sn[2] * sinX;
-        const rz2 = sn[1] * sinX + sn[2] * cosX;
-        sn[1] = ry;
-        sn[2] = rz2;
+        const ny = oy * cosX - nz1 * sinX;
+        const nz = oy * sinX + nz1 * cosX;
 
-        this.sectionNormal = vec3Normalize(sn);
+        this.sectionNormal = vec3Normalize([nx, ny, nz]);
     }
 
     _setClipUniforms(gl, prog) {
@@ -1563,8 +1560,10 @@ export class Viewer3D {
         gl.disable(gl.CULL_FACE);
 
         const posLoc = gl.getAttribLocation(prog, 'aPosition');
-        const buf = gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+        if (!this._sectionPlaneBuffer) {
+            this._sectionPlaneBuffer = gl.createBuffer();
+        }
+        gl.bindBuffer(gl.ARRAY_BUFFER, this._sectionPlaneBuffer);
         gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.DYNAMIC_DRAW);
         gl.enableVertexAttribArray(posLoc);
         gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
@@ -1573,7 +1572,6 @@ export class Viewer3D {
         gl.drawArrays(gl.TRIANGLES, 0, 6);
 
         gl.disableVertexAttribArray(posLoc);
-        gl.deleteBuffer(buf);
 
         gl.depthMask(true);
         gl.disable(gl.BLEND);
