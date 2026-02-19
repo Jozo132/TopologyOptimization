@@ -1598,9 +1598,22 @@ export class Viewer3D {
         const visible = new Uint8Array(total);
         const densityMap = new Float32Array(total);
 
+        // Always use density/elements data for ALL voxels so that interior
+        // solid voxels (which have no surface triangles in meshData) also
+        // receive section-cap polygons.
+        const elements = this.model.elements;
+        for (let i = 0; i < total; i++) {
+            const density = this.densities ? this.densities[i] : elements[i];
+            densityMap[i] = density;
+            if (density > DENSITY_THRESHOLD) visible[i] = 1;
+        }
+
         if (this.viewMode !== 'voxel' && this.meshData && this.meshData.length > 0) {
             const hasStrainFilter = this.strainMin > 0 || this.strainMax < 1;
             if (hasStrainFilter) {
+                // Determine which surface voxels pass the strain filter
+                const surfaceVoxels = new Set();
+                const strainPassVoxels = new Set();
                 for (const tri of this.meshData) {
                     const v = tri.vertices[0];
                     const ex = Math.min(Math.max(Math.floor(v[0]), 0), nx - 1);
@@ -1608,26 +1621,18 @@ export class Viewer3D {
                     const ez = Math.min(Math.max(Math.floor(v[2]), 0), nz - 1);
                     const idx = ex + ey * nx + ez * nx * ny;
                     densityMap[idx] = tri.density;
+                    surfaceVoxels.add(idx);
                     const strain = tri.strain !== undefined ? tri.strain : 0;
-                    if (strain >= this.strainMin && strain <= this.strainMax) visible[idx] = 1;
+                    if (strain >= this.strainMin && strain <= this.strainMax) {
+                        strainPassVoxels.add(idx);
+                    }
                 }
-            } else {
-                for (const tri of this.meshData) {
-                    const v = tri.vertices[0];
-                    const ex = Math.min(Math.max(Math.floor(v[0]), 0), nx - 1);
-                    const ey = Math.min(Math.max(Math.floor(v[1]), 0), ny - 1);
-                    const ez = Math.min(Math.max(Math.floor(v[2]), 0), nz - 1);
-                    const idx = ex + ey * nx + ez * nx * ny;
-                    densityMap[idx] = tri.density;
-                    if (tri.density > DENSITY_THRESHOLD) visible[idx] = 1;
+                // Exclude surface voxels that don't pass the strain filter
+                for (const idx of surfaceVoxels) {
+                    if (!strainPassVoxels.has(idx)) {
+                        visible[idx] = 0;
+                    }
                 }
-            }
-        } else {
-            const elements = this.model.elements;
-            for (let i = 0; i < total; i++) {
-                const density = this.densities ? this.densities[i] : elements[i];
-                densityMap[i] = density;
-                if (density > DENSITY_THRESHOLD) visible[i] = 1;
             }
         }
 
