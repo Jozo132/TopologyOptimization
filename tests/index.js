@@ -950,7 +950,7 @@ console.log('Test 26: 3D cube – top force, bottom Y-constraint, mfg 90° – n
             if (densities[idx] < threshold) accessible[idx] = 1;
         }
     }
-    // Sweep top-to-bottom: at 90° only check directly above (ey+1)
+    // Sweep top-to-bottom: at 90° span=0 so only the element directly above (ey+1) is checked
     for (let ey = ny - 2; ey >= 0; ey--) {
         for (let ez = 0; ez < nz; ez++) {
             for (let ex = 0; ex < nx; ex++) {
@@ -1022,8 +1022,8 @@ console.log('Test 27: 3D manufacturing max depth counts from top (ey=nely-1)');
     assert(result.iterations >= 1, `3dMaxDepth: should complete at least 1 iteration`);
 
     // Verify: no voids below the max depth from the top
-    // Top = ey=ny-1. Max depth = 3 → tool reaches ey=ny-1, ny-2, ny-3
-    // Elements at ey < ny - maxDepth (= 3) should all be solid
+    // Top = ey=ny-1. Tool reaches the top maxDepth layers.
+    // Elements at ey < ny - maxDepth should all be solid
     const densities = result.densities;
     const threshold = 0.3;
     let deepVoids = 0;
