@@ -108,7 +108,7 @@ summarises their characteristics and trade-offs.
 ### When to use each backend
 
 * **JS** – small problems (n < 100) or as the universal fallback.
-* **WASM** – medium problems (100–2 000 DOFs) where Float64 precision matters.
+* **WASM** – medium problems (100–2000 DOFs) where Float64 precision matters.
   Provides 5–15× CG solver speedup with zero GPU dependency.
 * **WebGL** – large problems in browsers without WebGPU. Uses render-to-texture
   for GPGPU; available in virtually all modern browsers.

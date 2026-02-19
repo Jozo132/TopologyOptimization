@@ -180,6 +180,8 @@ export class WebGLCompute {
                 int row = int(gl_FragCoord.y) * int(textureSize(u_matrix, 0).x / u_n) + int(gl_FragCoord.x);
                 if (row >= u_n) { outVal = 0.0; return; }
                 float sum = 0.0;
+                // GLSL requires a compile-time loop bound; 4096 is the max
+                // supported n. The inner break exits early for smaller matrices.
                 for (int j = 0; j < 4096; j++) {
                     if (j >= u_n) break;
                     int idx = row * u_n + j;
@@ -248,6 +250,8 @@ export class WebGLCompute {
                 int el = int(gl_FragCoord.y) * int(textureSize(u_U, 0).x) + int(gl_FragCoord.x);
                 if (el >= u_nel) { outVal = 0.0; return; }
                 float energy = 0.0;
+                // Max edofSize is 24 (8-node hex element × 3 DOFs).
+                // The inner break exits early for smaller element types (e.g. 8 for 2D).
                 for (int i = 0; i < 24; i++) {
                     if (i >= u_edofSize) break;
                     int edofIdx = el * u_edofSize + i;
