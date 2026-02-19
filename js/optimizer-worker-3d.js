@@ -1307,6 +1307,11 @@ class TopologyOptimizerWorker3D {
                 this._fillInternalVoids(xnew, nelx, nely, nelz);
             }
 
+            // Apply manufacturing overhang constraint if enabled
+            if (config.manufacturingConstraint && config.manufacturingAngle != null) {
+                this._applyOverhangConstraint(xnew, nelx, nely, nelz, config.manufacturingAngle);
+            }
+
             change = 0;
             for (let i = 0; i < nel; i++) {
                 change = Math.max(change, Math.abs(xnew[i] - xold[i]));
@@ -1890,6 +1895,55 @@ class TopologyOptimizerWorker3D {
         for (let i = 0; i < nel; i++) {
             if (x[i] < threshold && !visited[i]) {
                 x[i] = 1.0;
+            }
+        }
+    }
+
+    /**
+     * Manufacturing overhang constraint (3D).
+     * Sweeps bottom-to-top (build direction = +Y). For each layer, an element
+     * is only allowed to be solid if it has support from the layer below
+     * within the permitted overhang cone defined by `angleDeg`.
+     *  - 90° = CNC machining (no overhangs).
+     *  - 88° = mold tooling (very slight overhang).
+     *  - Lower angles allow steeper overhangs.
+     *
+     * Uses x-major indexing: idx = ex + ey * nelx + ez * nelx * nely.
+     */
+    _applyOverhangConstraint(x, nelx, nely, nelz, angleDeg, threshold = 0.3) {
+        const angleRad = angleDeg * Math.PI / 180;
+        const reach = Math.tan(Math.PI / 2 - angleRad); // 0 at 90°
+        const span = Math.floor(reach) + 1;
+
+        const idx3 = (ex, ey, ez) => ex + ey * nelx + ez * nelx * nely;
+
+        // Sweep bottom (ey = nely-1) to top (ey = 0); bottom row is self-supported
+        for (let ey = nely - 2; ey >= 0; ey--) {
+            const belowRow = ey + 1;
+            for (let ez = 0; ez < nelz; ez++) {
+                for (let ex = 0; ex < nelx; ex++) {
+                    const idx = idx3(ex, ey, ez);
+                    if (x[idx] < threshold) continue;
+
+                    // Check support cone in the layer below
+                    let supported = false;
+                    for (let dz = -span; dz <= span && !supported; dz++) {
+                        const sz = ez + dz;
+                        if (sz < 0 || sz >= nelz) continue;
+                        for (let dx = -span; dx <= span; dx++) {
+                            const sx = ex + dx;
+                            if (sx < 0 || sx >= nelx) continue;
+                            if (x[idx3(sx, belowRow, sz)] >= threshold) {
+                                supported = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!supported) {
+                        x[idx] = 0.0;
+                    }
+                }
             }
         }
     }

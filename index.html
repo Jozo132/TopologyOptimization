@@ -164,6 +164,16 @@
                 <div class="step-content">
                     <div class="solve-controls">
                         <div class="control-group">
+                            <label>Solver</label>
+                            <select id="solverSelect">
+                                <option value="auto" selected>Auto (detect from model)</option>
+                                <option value="2d">2D SIMP</option>
+                                <option value="3d">3D SIMP</option>
+                                <option value="mgpcg">3D MGPCG (fastest 3D)</option>
+                                <option value="cg">3D Jacobi-CG</option>
+                            </select>
+                        </div>
+                        <div class="control-group">
                             <label>Max Iterations</label>
                             <input type="number" id="maxIterations" value="30" min="10" max="500" step="10">
                         </div>
@@ -174,11 +184,6 @@
                         <div class="control-group">
                             <label>Filter Radius</label>
                             <input type="number" id="filterRadius" value="0.9" min="0.1" max="5" step="0.1">
-                        </div>
-                        <div class="control-group">
-                            <label>Min Cross-Section (elements)</label>
-                            <input type="number" id="minCrossSection" value="0" min="0" max="5" step="0.5">
-                            <small style="display: block; color: #666; margin-top: 0.25rem;">0 = disabled, enforces minimum feature size</small>
                         </div>
                         <div class="control-group">
                             <label>
@@ -196,56 +201,21 @@
                         </div>
                         <div class="control-group">
                             <label>
-                                <input type="checkbox" id="useAMR" checked>
-                                Adaptive Mesh Refinement (AMR)
+                                <input type="checkbox" id="manufacturingConstraint">
+                                Manufacturing constraint
                             </label>
-                            <small style="display: block; color: #666; margin-top: 0.25rem;">Dynamically refine high-stress areas</small>
+                            <small style="display: block; color: #666; margin-top: 0.25rem;">Prevent inaccessible cavities by enforcing a maximum overhang angle</small>
                         </div>
-                        <div class="control-group" id="amrControls">
-                            <label>Min Granule Size</label>
-                            <input type="number" id="minGranuleSize" value="0.02" min="0.01" max="2" step="0.01">
-                            <small style="display: block; color: #666; margin-top: 0.25rem;">Smallest voxel size in high-stress areas</small>
+                        <div class="control-group" id="manufacturingControls" style="display: none;">
+                            <label>Overhang Angle (°)</label>
+                            <div class="slider-with-input">
+                                <input type="range" id="manufacturingAngle" min="30" max="90" step="1" value="90">
+                                <input type="number" id="manufacturingAngleInput" min="30" max="90" step="1" value="90">
+                                <span>°</span>
+                            </div>
+                            <small style="display: block; color: #666; margin-top: 0.25rem;">90° = CNC machining (no overhangs), 88° = mold tools, lower = more permissive</small>
                         </div>
-                        <div class="control-group" id="amrControls2">
-                            <label>Max Granule Size</label>
-                            <input type="number" id="maxGranuleSize" value="2" min="1" max="8" step="0.5">
-                            <small style="display: block; color: #666; margin-top: 0.25rem;">Largest voxel size in low-stress areas</small>
-                        </div>
-                        <div class="control-group" id="amrControls3">
-                            <label>AMR Recalculation Interval</label>
-                            <input type="number" id="amrInterval" value="3" min="1" max="50" step="1">
-                            <small style="display: block; color: #666; margin-top: 0.25rem;">Recalculate dynamic grain sizes every N iterations</small>
-                        </div>
-                        <details class="advanced-params">
-                            <summary style="cursor: pointer; color: #888; margin-bottom: 0.5rem;">Advanced Parameters</summary>
-                            <div class="control-group">
-                                <label>Penalty Start</label>
-                                <input type="number" id="penalStart" value="1.5" min="1" max="10" step="0.1">
-                                <small style="display: block; color: #666; margin-top: 0.25rem;">Initial penalty value for continuation ramp</small>
-                            </div>
-                            <div class="control-group">
-                                <label>Continuation Iterations</label>
-                                <input type="number" id="continuationIters" value="20" min="1" max="200" step="1">
-                                <small style="display: block; color: #666; margin-top: 0.25rem;">Number of iterations to ramp penalty from start to target</small>
-                            </div>
-                            <div class="control-group">
-                                <label>
-                                    <input type="checkbox" id="useProjection" checked>
-                                    Heaviside Projection
-                                </label>
-                                <small style="display: block; color: #666; margin-top: 0.25rem;">Apply Heaviside projection for crisp 0/1 designs</small>
-                            </div>
-                            <div class="control-group" id="projectionControls">
-                                <label>Beta Max</label>
-                                <input type="number" id="betaMax" value="64" min="1" max="256" step="1">
-                                <small style="display: block; color: #666; margin-top: 0.25rem;">Maximum projection sharpness (higher = more binary)</small>
-                            </div>
-                            <div class="control-group" id="projectionControls2">
-                                <label>Beta Interval</label>
-                                <input type="number" id="betaInterval" value="5" min="1" max="50" step="1">
-                                <small style="display: block; color: #666; margin-top: 0.25rem;">Double beta every N iterations</small>
-                            </div>
-                        </details>
+                        <button id="openAdvanced" class="btn-secondary" style="width: 100%; margin-bottom: 0.5rem;">⚙ Advanced</button>
                         <button id="runOptimization" class="btn-primary">Run Optimization</button>
                         <button id="pauseOptimization" class="btn-secondary hidden">Pause</button>
                         <button id="cancelOptimization" class="btn-cancel hidden">Cancel</button>
@@ -325,6 +295,73 @@
                 <div class="strain-slider-values">
                     <span id="strainMinValue">0%</span>
                     <span id="strainMaxValue">100%</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Advanced Parameters Modal -->
+    <div id="advancedModal" class="modal-overlay hidden">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>Advanced Parameters</h3>
+                <button id="closeAdvancedModal" class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="control-group">
+                    <label>Min Cross-Section (elements)</label>
+                    <input type="number" id="minCrossSection" value="0" min="0" max="5" step="0.5">
+                    <small style="display: block; color: #666; margin-top: 0.25rem;">0 = disabled, enforces minimum feature size</small>
+                </div>
+                <div class="control-group">
+                    <label>Penalty Start</label>
+                    <input type="number" id="penalStart" value="1.5" min="1" max="10" step="0.1">
+                    <small style="display: block; color: #666; margin-top: 0.25rem;">Initial penalty value for continuation ramp</small>
+                </div>
+                <div class="control-group">
+                    <label>Continuation Iterations</label>
+                    <input type="number" id="continuationIters" value="20" min="1" max="200" step="1">
+                    <small style="display: block; color: #666; margin-top: 0.25rem;">Number of iterations to ramp penalty from start to target</small>
+                </div>
+                <div class="control-group">
+                    <label>
+                        <input type="checkbox" id="useProjection" checked>
+                        Heaviside Projection
+                    </label>
+                    <small style="display: block; color: #666; margin-top: 0.25rem;">Apply Heaviside projection for crisp 0/1 designs</small>
+                </div>
+                <div class="control-group" id="projectionControls">
+                    <label>Beta Max</label>
+                    <input type="number" id="betaMax" value="64" min="1" max="256" step="1">
+                    <small style="display: block; color: #666; margin-top: 0.25rem;">Maximum projection sharpness (higher = more binary)</small>
+                </div>
+                <div class="control-group" id="projectionControls2">
+                    <label>Beta Interval</label>
+                    <input type="number" id="betaInterval" value="5" min="1" max="50" step="1">
+                    <small style="display: block; color: #666; margin-top: 0.25rem;">Double beta every N iterations</small>
+                </div>
+                <hr style="border: none; border-top: 1px solid var(--border-color); margin: 1rem 0;">
+                <div class="control-group">
+                    <label>
+                        <input type="checkbox" id="useAMR" checked>
+                        Adaptive Mesh Refinement (AMR)
+                    </label>
+                    <small style="display: block; color: #666; margin-top: 0.25rem;">Dynamically refine high-stress areas</small>
+                </div>
+                <div class="control-group" id="amrControls">
+                    <label>Min Granule Size</label>
+                    <input type="number" id="minGranuleSize" value="0.02" min="0.01" max="2" step="0.01">
+                    <small style="display: block; color: #666; margin-top: 0.25rem;">Smallest voxel size in high-stress areas</small>
+                </div>
+                <div class="control-group" id="amrControls2">
+                    <label>Max Granule Size</label>
+                    <input type="number" id="maxGranuleSize" value="2" min="1" max="8" step="0.5">
+                    <small style="display: block; color: #666; margin-top: 0.25rem;">Largest voxel size in low-stress areas</small>
+                </div>
+                <div class="control-group" id="amrControls3">
+                    <label>AMR Recalculation Interval</label>
+                    <input type="number" id="amrInterval" value="3" min="1" max="50" step="1">
+                    <small style="display: block; color: #666; margin-top: 0.25rem;">Recalculate dynamic grain sizes every N iterations</small>
                 </div>
             </div>
         </div>
