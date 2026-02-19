@@ -881,6 +881,164 @@ console.log('Test 25: Genetic optimization – completes and returns valid resul
 }
 
 // ──────────────────────────────────────────────────
+// Test 26: 3D cube with top force, bottom Y-constraint, and manufacturing
+//   constraint (90°) – no internal cavities
+//   Simulates a CNC-milled box: force on +Y (top) faces, Y-only constraint
+//   on -Y (bottom) faces, 80% volume fraction, 3-axis CNC at 90°.
+//   All void elements must be reachable from the top surface (ey=nely-1).
+// ──────────────────────────────────────────────────
+console.log('Test 26: 3D cube – top force, bottom Y-constraint, mfg 90° – no internal cavities');
+{
+    const solver = new TopologySolver();
+    const nx = 4, ny = 4, nz = 4;
+    const nel = nx * ny * nz;
+    const model = { nx, ny, nz, type: 'cube', elements: new Float32Array(nel).fill(1) };
+
+    // Paint all top faces (+Y face = fi=3) on the top layer (ey=ny-1)
+    const paintedForces = [];
+    for (let ez = 0; ez < nz; ez++) {
+        for (let ex = 0; ex < nx; ex++) {
+            paintedForces.push(`${ex},${ny - 1},${ez},3`);
+        }
+    }
+
+    // Paint all bottom faces (-Y face = fi=2) on the bottom layer (ey=0)
+    const paintedConstraints = [];
+    for (let ez = 0; ez < nz; ez++) {
+        for (let ex = 0; ex < nx; ex++) {
+            paintedConstraints.push(`${ex},0,${ez},2`);
+        }
+    }
+
+    const config = {
+        solver: '3d',
+        volumeFraction: 0.8,
+        maxIterations: 5,
+        penaltyFactor: 3,
+        filterRadius: 1.2,
+        forceDirection: 'down',
+        forceMagnitude: 1000,
+        constraintPosition: 'bottom',
+        constraintDOFs: 'y',
+        paintedForces,
+        paintedConstraints,
+        useAMR: false,
+        youngsModulus: 200,
+        poissonsRatio: 0.3,
+        useProjection: false,
+        manufacturingConstraint: true,
+        manufacturingAngle: 90,
+    };
+
+    const result = await solver.optimize(model, config, () => {});
+
+    assert(result.iterations >= 1, `3dMfg: should complete at least 1 iteration, got ${result.iterations}`);
+    assert(result.densities instanceof Float32Array, '3dMfg: result.densities should be a Float32Array');
+    assert(result.densities.length === nel, `3dMfg: densities length should be ${nel}, got ${result.densities.length}`);
+
+    // Verify: every void element must be reachable from the top surface (ey=ny-1)
+    // using a top-to-bottom flood through void elements (strict vertical at 90°, span=0)
+    // x-major indexing: idx = ex + ey * nx + ez * nx * ny
+    const densities = result.densities;
+    const threshold = 0.3;
+    const accessible = new Uint8Array(nel);
+
+    // Seed: void elements on top layer (ey=ny-1)
+    for (let ez = 0; ez < nz; ez++) {
+        for (let ex = 0; ex < nx; ex++) {
+            const idx = ex + (ny - 1) * nx + ez * nx * ny;
+            if (densities[idx] < threshold) accessible[idx] = 1;
+        }
+    }
+    // Sweep top-to-bottom: at 90° only check directly above (ey+1)
+    for (let ey = ny - 2; ey >= 0; ey--) {
+        for (let ez = 0; ez < nz; ez++) {
+            for (let ex = 0; ex < nx; ex++) {
+                const idx = ex + ey * nx + ez * nx * ny;
+                if (densities[idx] >= threshold) continue;
+                const aboveIdx = ex + (ey + 1) * nx + ez * nx * ny;
+                if (accessible[aboveIdx]) accessible[idx] = 1;
+            }
+        }
+    }
+    let enclosedCavities = 0;
+    for (let i = 0; i < nel; i++) {
+        if (densities[i] < threshold && !accessible[i]) enclosedCavities++;
+    }
+    assert(enclosedCavities === 0, `3dMfg: should have no enclosed cavities, found ${enclosedCavities}`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 27: 3D manufacturing max depth constraint counts from top (ey=nely-1)
+//   Verifies that the depth limit is measured from the physical top surface,
+//   not from ey=0.
+// ──────────────────────────────────────────────────
+console.log('Test 27: 3D manufacturing max depth counts from top (ey=nely-1)');
+{
+    const solver = new TopologySolver();
+    const nx = 4, ny = 6, nz = 4;
+    const nel = nx * ny * nz;
+    const model = { nx, ny, nz, type: 'cube', elements: new Float32Array(nel).fill(1) };
+    const maxDepth = 3;
+
+    // Paint all top faces (+Y, fi=3) for force
+    const paintedForces = [];
+    for (let ez = 0; ez < nz; ez++) {
+        for (let ex = 0; ex < nx; ex++) {
+            paintedForces.push(`${ex},${ny - 1},${ez},3`);
+        }
+    }
+
+    // Paint all bottom faces (-Y, fi=2) for constraints
+    const paintedConstraints = [];
+    for (let ez = 0; ez < nz; ez++) {
+        for (let ex = 0; ex < nx; ex++) {
+            paintedConstraints.push(`${ex},0,${ez},2`);
+        }
+    }
+
+    const config = {
+        solver: '3d',
+        volumeFraction: 0.5,
+        maxIterations: 5,
+        penaltyFactor: 3,
+        filterRadius: 1.2,
+        forceDirection: 'down',
+        forceMagnitude: 1000,
+        constraintPosition: 'bottom',
+        constraintDOFs: 'y',
+        paintedForces,
+        paintedConstraints,
+        useAMR: false,
+        youngsModulus: 200,
+        poissonsRatio: 0.3,
+        useProjection: false,
+        manufacturingConstraint: true,
+        manufacturingAngle: 90,
+        manufacturingMaxDepth: maxDepth,
+    };
+
+    const result = await solver.optimize(model, config, () => {});
+    assert(result.iterations >= 1, `3dMaxDepth: should complete at least 1 iteration`);
+
+    // Verify: no voids below the max depth from the top
+    // Top = ey=ny-1. Max depth = 3 → tool reaches ey=ny-1, ny-2, ny-3
+    // Elements at ey < ny - maxDepth (= 3) should all be solid
+    const densities = result.densities;
+    const threshold = 0.3;
+    let deepVoids = 0;
+    for (let ey = 0; ey < ny - maxDepth; ey++) {
+        for (let ez = 0; ez < nz; ez++) {
+            for (let ex = 0; ex < nx; ex++) {
+                const idx = ex + ey * nx + ez * nx * ny;
+                if (densities[idx] < threshold) deepVoids++;
+            }
+        }
+    }
+    assert(deepVoids === 0, `3dMaxDepth: no voids below depth ${maxDepth} from top, found ${deepVoids}`);
+}
+
+// ──────────────────────────────────────────────────
 // Summary
 // ──────────────────────────────────────────────────
 console.log(`\nResults: ${passed} passed, ${failed} failed`);
