@@ -264,14 +264,14 @@ export function generateAMRSurfaceMesh(options) {
         const tangents = getFaceTangents(faceIdx);
         const [tu, tv] = tangents;
 
-        // Try all possible fine cells in the neighbor region
-        for (let step = minSize; step < size; step = step) {
-            const subdiv = Math.round(size / step);
+        // Try all possible fine cells in the neighbor region at finest resolution
+        if (minSize < size) {
+            const subdiv = Math.round(size / minSize);
             for (let iu = 0; iu < subdiv; iu++) {
                 for (let iv = 0; iv < subdiv; iv++) {
-                    const px = nx + tu[0] * iu * step + tv[0] * iv * step;
-                    const py = ny + tu[1] * iu * step + tv[1] * iv * step;
-                    const pz = nz + tu[2] * iu * step + tv[2] * iv * step;
+                    const px = nx + tu[0] * iu * minSize + tv[0] * iv * minSize;
+                    const py = ny + tu[1] * iu * minSize + tv[1] * iv * minSize;
+                    const pz = nz + tu[2] * iu * minSize + tv[2] * iv * minSize;
                     const fineCell = findCellAt(px, py, pz);
                     if (fineCell) {
                         if (fineCell.density > threshold) anyActive = true;
@@ -279,7 +279,6 @@ export function generateAMRSurfaceMesh(options) {
                     }
                 }
             }
-            break; // Only check at minimum size
         }
 
         // Also check for coarser neighbor
