@@ -776,6 +776,111 @@ console.log('Test 22: Manufacturing constraint respects preserved elements');
 }
 
 // ──────────────────────────────────────────────────
+// Test 23: FEA-only mode – single analysis returns stress data
+// ──────────────────────────────────────────────────
+console.log('Test 23: FEA-only mode – single analysis returns stress data');
+{
+    const solver = new TopologySolver();
+    const nx = 8, ny = 4, nz = 1;
+    const model = { nx, ny, nz, type: 'beam', elements: new Float32Array(nx * ny).fill(1) };
+    const config = {
+        solver: 'fea',
+        penaltyFactor: 3,
+        filterRadius: 0.9,
+        forceDirection: 'down',
+        forceMagnitude: 100,
+        constraintPosition: 'left',
+        youngsModulus: 2.3,
+        poissonsRatio: 0.35,
+    };
+
+    const result = await solver.optimize(model, config);
+
+    assert(result.feaOnly === true, 'FEA-only result should have feaOnly=true');
+    assert(result.iterations === 0, `FEA-only should have 0 iterations, got ${result.iterations}`);
+    assert(typeof result.finalCompliance === 'number' && result.finalCompliance > 0, 'FEA-only: finalCompliance should be a positive number');
+    assert(result.densities instanceof Float32Array, 'FEA-only: result.densities should be a Float32Array');
+    assert(typeof result.maxStress === 'number' && result.maxStress > 0, 'FEA-only: maxStress should be a positive number');
+    assert(result.elementStress instanceof Float32Array, 'FEA-only: elementStress should be a Float32Array');
+    assert(result.elementStress.length === nx * ny, `FEA-only: elementStress length should be ${nx * ny}, got ${result.elementStress.length}`);
+    assert(result.meshData != null, 'FEA-only: meshData should not be null');
+}
+
+// ──────────────────────────────────────────────────
+// Test 24: analyzeFEA convenience method
+// ──────────────────────────────────────────────────
+console.log('Test 24: analyzeFEA convenience method');
+{
+    const solver = new TopologySolver();
+    const nx = 6, ny = 3, nz = 1;
+    const model = { nx, ny, nz, type: 'beam', elements: new Float32Array(nx * ny).fill(1) };
+    const config = {
+        penaltyFactor: 3,
+        filterRadius: 0.9,
+        forceDirection: 'down',
+        forceMagnitude: 100,
+        constraintPosition: 'left',
+        youngsModulus: 2.3,
+        poissonsRatio: 0.35,
+    };
+
+    const result = await solver.analyzeFEA(model, config);
+
+    assert(result.feaOnly === true, 'analyzeFEA result should have feaOnly=true');
+    assert(result.iterations === 0, `analyzeFEA should have 0 iterations, got ${result.iterations}`);
+    assert(typeof result.finalCompliance === 'number' && result.finalCompliance > 0, 'analyzeFEA: finalCompliance should be a positive number');
+    assert(result.elementStress instanceof Float32Array, 'analyzeFEA: elementStress should be a Float32Array');
+}
+
+// ──────────────────────────────────────────────────
+// Test 25: Genetic optimization – completes and returns valid result
+// ──────────────────────────────────────────────────
+console.log('Test 25: Genetic optimization – completes and returns valid result');
+{
+    const solver = new TopologySolver();
+    const nx = 6, ny = 3, nz = 1;
+    const model = { nx, ny, nz, type: 'beam', elements: new Float32Array(nx * ny).fill(1) };
+    const config = {
+        solver: 'genetic',
+        volumeFraction: 0.5,
+        maxIterations: 3,
+        penaltyFactor: 3,
+        filterRadius: 0.9,
+        forceDirection: 'down',
+        forceMagnitude: 100,
+        constraintPosition: 'left',
+        youngsModulus: 2.3,
+        poissonsRatio: 0.35,
+        populationSize: 6,
+        eliteCount: 2,
+        mutationRate: 0.05,
+        crossoverRate: 0.8,
+        tournamentSize: 2,
+    };
+
+    let progressCalled = false;
+    const result = await solver.optimize(model, config, (iter) => { progressCalled = true; });
+
+    assert(progressCalled, 'Genetic: progress callback should be called');
+    assert(result.geneticOptimization === true, 'Genetic: result should have geneticOptimization=true');
+    assert(result.iterations === 3, `Genetic: should complete 3 generations, got ${result.iterations}`);
+    assert(typeof result.finalCompliance === 'number' && result.finalCompliance > 0, 'Genetic: finalCompliance should be a positive number');
+    assert(result.densities instanceof Float32Array, 'Genetic: result.densities should be a Float32Array');
+    assert(result.densities.length === nx * ny * nz, `Genetic: densities length should be ${nx * ny * nz}, got ${result.densities.length}`);
+    assert(result.meshData != null, 'Genetic: meshData should not be null');
+
+    // Verify densities are binary (0 or 1) since genetic uses binary representation
+    let allBinary = true;
+    for (let i = 0; i < result.densities.length; i++) {
+        if (result.densities[i] !== 0.0 && result.densities[i] !== 1.0) {
+            allBinary = false;
+            break;
+        }
+    }
+    assert(allBinary, 'Genetic: densities should be binary (0 or 1)');
+}
+
+// ──────────────────────────────────────────────────
 // Summary
 // ──────────────────────────────────────────────────
 console.log(`\nResults: ${passed} passed, ${failed} failed`);
