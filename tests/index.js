@@ -1775,6 +1775,70 @@ console.log('Test 55: Exporter generates watertight mesh via AMR surface mesh');
 }
 
 // ──────────────────────────────────────────────────
+// Test 56: TopologySolver library – PETSc (KSP) solver with BDDC preconditioner
+// ──────────────────────────────────────────────────
+console.log('Test 56: TopologySolver library – PETSc KSP solver with BDDC');
+{
+    const solver = new TopologySolver();
+    const nx = 4, ny = 4, nz = 4;
+    const nel = nx * ny * nz;
+    const model = { nx, ny, nz, type: 'cube', elements: new Float32Array(nel).fill(1) };
+    const config = {
+        solver: 'petsc',
+        volumeFraction: 0.5,
+        maxIterations: 3,
+        penaltyFactor: 3,
+        filterRadius: 1.2,
+        forceDirection: 'down',
+        forceMagnitude: 100,
+        constraintPosition: 'left',
+        useAMR: false,
+        youngsModulus: 1,
+        poissonsRatio: 0.3,
+        useProjection: false,
+        petscPC: 'bddc',
+    };
+    let progressCalled = false;
+    const result = await solver.optimize(model, config, (iter) => { progressCalled = true; });
+    assert(typeof result.finalCompliance === 'number', 'PETSc KSP should produce a numeric compliance');
+    assert(result.finalCompliance > 0, `PETSc KSP compliance should be > 0, got ${result.finalCompliance}`);
+    assert(result.iterations >= 1, `PETSc KSP should complete at least 1 iteration, got ${result.iterations}`);
+    assert(result.densities instanceof Float32Array, 'PETSc KSP should return Float32Array densities');
+    assert(result.densities.length === nel, `PETSc KSP densities length should be ${nel}`);
+    assert(progressCalled, 'PETSc KSP should call progress callback');
+}
+
+// ──────────────────────────────────────────────────
+// Test 57: TopologySolver library – PETSc (KSP) solver with MG preconditioner
+// ──────────────────────────────────────────────────
+console.log('Test 57: TopologySolver library – PETSc KSP solver with MG preconditioner');
+{
+    const solver = new TopologySolver();
+    const nx = 4, ny = 4, nz = 4;
+    const nel = nx * ny * nz;
+    const model = { nx, ny, nz, type: 'cube', elements: new Float32Array(nel).fill(1) };
+    const config = {
+        solver: 'petsc',
+        volumeFraction: 0.5,
+        maxIterations: 3,
+        penaltyFactor: 3,
+        filterRadius: 1.2,
+        forceDirection: 'down',
+        forceMagnitude: 100,
+        constraintPosition: 'left',
+        useAMR: false,
+        youngsModulus: 1,
+        poissonsRatio: 0.3,
+        useProjection: false,
+        petscPC: 'mg',
+    };
+    const result = await solver.optimize(model, config, () => {});
+    assert(typeof result.finalCompliance === 'number', 'PETSc KSP+MG should produce a numeric compliance');
+    assert(result.finalCompliance > 0, `PETSc KSP+MG compliance should be > 0, got ${result.finalCompliance}`);
+    assert(result.iterations >= 1, `PETSc KSP+MG should complete at least 1 iteration, got ${result.iterations}`);
+}
+
+// ──────────────────────────────────────────────────
 // Summary
 // ──────────────────────────────────────────────────
 console.log(`\nResults: ${passed} passed, ${failed} failed`);
