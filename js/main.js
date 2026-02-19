@@ -417,6 +417,10 @@ class TopologyApp {
         // Step 3: Solve
         document.getElementById('solverSelect').addEventListener('change', (e) => {
             this.config.solver = e.target.value;
+            const geneticPanel = document.getElementById('geneticPanel');
+            if (geneticPanel) {
+                geneticPanel.style.display = e.target.value === 'genetic' ? '' : 'none';
+            }
         });
 
         document.getElementById('maxIterations').addEventListener('input', (e) => {
@@ -467,17 +471,32 @@ class TopologyApp {
             this.config.manufacturingMaxDepth = parseFloat(e.target.value) || 0;
         });
 
-        // Advanced modal controls
-        document.getElementById('openAdvanced').addEventListener('click', () => {
-            document.getElementById('advancedModal').classList.remove('hidden');
+        // Genetic algorithm parameter controls
+        document.getElementById('populationSize').addEventListener('input', (e) => {
+            this.config.populationSize = parseInt(e.target.value);
         });
-        document.getElementById('closeAdvancedModal').addEventListener('click', () => {
-            document.getElementById('advancedModal').classList.add('hidden');
+        document.getElementById('eliteCount').addEventListener('input', (e) => {
+            this.config.eliteCount = parseInt(e.target.value);
         });
-        document.getElementById('advancedModal').addEventListener('click', (e) => {
-            if (e.target === e.currentTarget) {
-                e.currentTarget.classList.add('hidden');
-            }
+        document.getElementById('mutationRate').addEventListener('input', (e) => {
+            this.config.mutationRate = parseFloat(e.target.value);
+        });
+        document.getElementById('crossoverRate').addEventListener('input', (e) => {
+            this.config.crossoverRate = parseFloat(e.target.value);
+        });
+        document.getElementById('tournamentSize').addEventListener('input', (e) => {
+            this.config.tournamentSize = parseInt(e.target.value);
+        });
+        document.getElementById('volumePenalty').addEventListener('input', (e) => {
+            this.config.volumePenalty = parseFloat(e.target.value);
+        });
+
+        // Collapsible sub-panel toggle
+        document.querySelectorAll('.sub-panel-header[data-toggle]').forEach((header) => {
+            header.addEventListener('click', () => {
+                const panel = header.closest('.sub-panel');
+                if (panel) panel.classList.toggle('collapsed');
+            });
         });
         
         // AMR controls
