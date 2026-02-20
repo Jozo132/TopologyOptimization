@@ -460,6 +460,10 @@ button {
     flex-direction: column;
 }
 
+.export-controls.hidden {
+    display: none;
+}
+
 .export-info {
     background: var(--bg-color);
     padding: 1rem;
