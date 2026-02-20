@@ -1803,18 +1803,18 @@ export class Viewer3D {
             const stress = Math.max(0, Math.min(1, stressRaw || 0));
 
             // Per-face color from closest voxel stress (0 when unavailable)
-            // Highlight voxels exceeding yield strength with orange→red gradient
+            // Below yield: navy-blue → red gradient; above yield: bright purple
             let r, g, b;
             const yieldNorm = this._yieldNormalized;
             if (yieldNorm > 0 && yieldNorm < 1 && stress > yieldNorm) {
-                const t = Math.min(1, (stress - yieldNorm) / (1 - yieldNorm));
-                r = 1.0;
-                g = 0.6 * (1 - t);
-                b = 0;
+                r = 0.75;
+                g = 0;
+                b = 1.0;
             } else {
-                r = stress;
+                const t = yieldNorm > 0 && yieldNorm < 1 ? stress / yieldNorm : stress;
+                r = t;
                 g = DENSITY_COLOR_GREEN;
-                b = 1 - stress;
+                b = 0.5 * (1 - t);
             }
 
             // Two triangles for this quad
@@ -2741,21 +2741,21 @@ export class Viewer3D {
         // Store bar geometry for hit testing on drag handles
         this._stressBarRect = { x: barX, y: barY, width: barWidth, height: barHeight };
 
-        // Draw gradient bar (blue at bottom = low stress, red at top = high stress)
-        // When yield strength is set, above-yield region uses orange→red gradient
+        // Draw gradient bar (navy-blue at bottom = low stress, red at top = high stress)
+        // When yield strength is set, above-yield region uses bright purple
         const yieldNorm = this._yieldNormalized;
         for (let i = 0; i < barHeight; i++) {
             const t = 1 - i / barHeight; // 0 at bottom, 1 at top
             let r, g, b;
             if (yieldNorm > 0 && yieldNorm < 1 && t > yieldNorm) {
-                const tp = Math.min(1, (t - yieldNorm) / (1 - yieldNorm));
-                r = 1.0;
-                g = 0.6 * (1 - tp);
-                b = 0;
+                r = 0.75;
+                g = 0;
+                b = 1.0;
             } else {
-                r = t;
+                const tn = yieldNorm > 0 && yieldNorm < 1 ? t / yieldNorm : t;
+                r = tn;
                 g = DENSITY_COLOR_GREEN;
-                b = 1 - t;
+                b = 0.5 * (1 - tn);
             }
             ctx.fillStyle = `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`;
             ctx.fillRect(barX, barY + i, barWidth, 1);

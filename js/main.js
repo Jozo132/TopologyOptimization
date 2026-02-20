@@ -206,6 +206,8 @@ class TopologyApp {
             
             this.currentModel = newModel;
             this.viewer.setModel(newModel);
+            const viewerToggle = document.getElementById('mobileToggleViewer');
+            if (viewerToggle) viewerToggle.classList.add('visible');
             
             // Update info display
             const info = document.getElementById('modelInfo');
@@ -299,6 +301,8 @@ class TopologyApp {
                     
                     // Update viewer with new voxel grid
                     this.viewer.setModel(newModel);
+                    const viewerToggle = document.getElementById('mobileToggleViewer');
+                    if (viewerToggle) viewerToggle.classList.add('visible');
                 }
             }
         };
@@ -1077,6 +1081,8 @@ class TopologyApp {
             };
 
             this.viewer.setModel(importedModel);
+            const viewerToggle = document.getElementById('mobileToggleViewer');
+            if (viewerToggle) viewerToggle.classList.add('visible');
             if (setup.referenceModel && Array.isArray(setup.referenceModel.vertices)) {
                 this.viewer.setReferenceModel(setup.referenceModel.vertices, setup.referenceModel.bounds || null);
             }
@@ -1511,6 +1517,10 @@ class TopologyApp {
             this.currentModel = revoxelized;
             this.viewer.setModel(revoxelized);
 
+            // Show the mobile viewer toggle button now that a model is loaded
+            const viewerToggle = document.getElementById('mobileToggleViewer');
+            if (viewerToggle) viewerToggle.classList.add('visible');
+
         } catch (error) {
             console.error('Import error:', error);
             alert('Failed to import file: ' + error.message);
@@ -1557,6 +1567,10 @@ class TopologyApp {
 
         // Visualize
         this.viewer.setModel(finalModel);
+        {
+            const viewerToggle = document.getElementById('mobileToggleViewer');
+            if (viewerToggle) viewerToggle.classList.add('visible');
+        }
 
         // Hide mesh method selector
         document.getElementById('meshMethodSelector').classList.add('hidden');
@@ -1599,6 +1613,10 @@ class TopologyApp {
         
         // Visualize and reset camera for fresh template view
         this.viewer.setModel(model);
+        {
+            const viewerToggle = document.getElementById('mobileToggleViewer');
+            if (viewerToggle) viewerToggle.classList.add('visible');
+        }
         this.viewer.resetCamera();
         document.getElementById('toggleSection').classList.remove('active-tool');
         this._updateSectionSliders();
