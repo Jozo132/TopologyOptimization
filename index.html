@@ -110,6 +110,7 @@
                             <option value="petsc-mg">3D PETSc KSP (MG preconditioner)</option>
                             <option value="petsc-jacobi">3D PETSc KSP (Jacobi preconditioner)</option>
                             <option value="fea">FEA Only (stress analysis)</option>
+                            <option value="fatigue">Fatigue Analysis (S-N curve)</option>
                             <option value="genetic">Genetic Algorithm</option>
                         </select>
                         <small style="display: block; color: #666; margin-top: 0.25rem;">Select 2D or 3D solving, or let the app auto-detect from your model.</small>
@@ -618,6 +619,20 @@
                     <label>Min</label>
                     <input type="range" id="densityThresholdSlider" min="0" max="1" step="0.01" value="0.3">
                     <span id="densityThresholdValue">0.30</span>
+                </div>
+            </div>
+            <div id="displacementContainer" class="section-slider-container hidden">
+                <label class="section-slider-title">↔ Deformed Shape</label>
+                <div class="section-slider-group">
+                    <label>
+                        <input type="checkbox" id="toggleDisplacement">
+                        Show
+                    </label>
+                </div>
+                <div class="section-slider-group">
+                    <label>Scale</label>
+                    <input type="range" id="displacementScaleSlider" min="1" max="200" step="1" value="1">
+                    <span id="displacementScaleValue">1×</span>
                 </div>
             </div>
             <div id="sectionSliderContainer" class="section-slider-container hidden">

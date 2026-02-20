@@ -299,6 +299,15 @@ export class Viewer3D {
         this._stressHandleDrag = null; // 'min' | 'max' | null
         this.onStrainRangeChange = null; // callback when strain range changes via handles
 
+        // Stress bar label (changes in fatigue mode)
+        this.stressBarLabel = 'Stress (N/mm² = MPa)';
+        this.stressBarUnit = 'MPa';
+
+        // Displacement visualization
+        this.displacementData = null;  // { U: Float32Array, nx, ny, nz }
+        this.showDisplacement = false;
+        this.displacementScale = 1;
+
         // Cached GPU buffers
         this._meshBuffers = null;
         this._edgeBuffers = null;
@@ -1652,17 +1661,38 @@ export class Viewer3D {
             [0, 0, -1], [0, 0, 1]    // -Z, +Z
         ];
 
+        // Displacement lookup helper.
+        // The AMR/uniform surface mesh generators place all vertices at integer voxel-grid
+        // coordinates (they are always at voxel corners = FEA node positions), so
+        // Math.round() is an exact lookup with no interpolation error.
+        const dispEnabled = this.showDisplacement && this.displacementData && this.displacementData.U;
+        const dispU = dispEnabled ? this.displacementData.U : null;
+        const dispScale = this.displacementScale || 1;
+        const dispNny = ny + 1, dispNnz = nz + 1;
+
+        const _applyDisp = dispEnabled ? (px, py, pz) => {
+            const ix = Math.min(Math.max(Math.round(px), 0), nx);
+            const iy = Math.min(Math.max(Math.round(py), 0), ny);
+            const iz = Math.min(Math.max(Math.round(pz), 0), nz);
+            const nodeIdx = ix * dispNny * dispNnz + iy * dispNnz + iz;
+            return [
+                px + dispU[3 * nodeIdx] * dispScale,
+                py + dispU[3 * nodeIdx + 1] * dispScale,
+                pz + dispU[3 * nodeIdx + 2] * dispScale
+            ];
+        } : (px, py, pz) => [px, py, pz];
+
         // Process triangle pairs (each quad = 2 triangles = 6 indices)
         for (let qi = 0; qi < indices.length; qi += 6) {
             // Quad indices: tri1 = (i0, i1, i2), tri2 = (i0, i2, i3)
             const a0 = indices[qi], a1 = indices[qi + 1], a2 = indices[qi + 2];
             const a5 = indices[qi + 5]; // Fourth corner of quad
 
-            // Quad corners
-            const v0 = [meshPositions[a0 * 3], meshPositions[a0 * 3 + 1], meshPositions[a0 * 3 + 2]];
-            const v1 = [meshPositions[a1 * 3], meshPositions[a1 * 3 + 1], meshPositions[a1 * 3 + 2]];
-            const v2 = [meshPositions[a2 * 3], meshPositions[a2 * 3 + 1], meshPositions[a2 * 3 + 2]];
-            const v3 = [meshPositions[a5 * 3], meshPositions[a5 * 3 + 1], meshPositions[a5 * 3 + 2]];
+            // Quad corners (with optional displacement applied)
+            const v0 = _applyDisp(meshPositions[a0 * 3], meshPositions[a0 * 3 + 1], meshPositions[a0 * 3 + 2]);
+            const v1 = _applyDisp(meshPositions[a1 * 3], meshPositions[a1 * 3 + 1], meshPositions[a1 * 3 + 2]);
+            const v2 = _applyDisp(meshPositions[a2 * 3], meshPositions[a2 * 3 + 1], meshPositions[a2 * 3 + 2]);
+            const v3 = _applyDisp(meshPositions[a5 * 3], meshPositions[a5 * 3 + 1], meshPositions[a5 * 3 + 2]);
 
             // Face normal from cross product (flat shading)
             const e1x = v1[0] - v0[0], e1y = v1[1] - v0[1], e1z = v1[2] - v0[2];
@@ -1673,11 +1703,11 @@ export class Viewer3D {
             const flen = Math.sqrt(fnx * fnx + fny * fny + fnz * fnz);
             if (flen > 0) { fnx /= flen; fny /= flen; fnz /= flen; }
 
-            // Find which voxel this face belongs to:
+            // Find which voxel this face belongs to using un-displaced positions:
             // Face center minus half-normal step lands inside the active voxel
-            const cx = (v0[0] + v1[0] + v2[0] + v3[0]) * 0.25;
-            const cy = (v0[1] + v1[1] + v2[1] + v3[1]) * 0.25;
-            const cz = (v0[2] + v1[2] + v2[2] + v3[2]) * 0.25;
+            const cx = (meshPositions[a0*3] + meshPositions[a1*3] + meshPositions[a2*3] + meshPositions[a5*3]) * 0.25;
+            const cy = (meshPositions[a0*3+1] + meshPositions[a1*3+1] + meshPositions[a2*3+1] + meshPositions[a5*3+1]) * 0.25;
+            const cz = (meshPositions[a0*3+2] + meshPositions[a1*3+2] + meshPositions[a2*3+2] + meshPositions[a5*3+2]) * 0.25;
             const vx = Math.min(Math.max(Math.floor(cx - fnx * 0.5), 0), nx - 1);
             const vy = Math.min(Math.max(Math.floor(cy - fny * 0.5), 0), ny - 1);
             const vz = Math.min(Math.max(Math.floor(cz - fnz * 0.5), 0), nz - 1);
@@ -2667,7 +2697,7 @@ export class Viewer3D {
         ctx.textAlign = 'center';
         ctx.translate(barX + barWidth + 16, barY + barHeight / 2);
         ctx.rotate(-Math.PI / 2);
-        ctx.fillText('Stress (N/mm² = MPa)', 0, 0);
+        ctx.fillText(this.stressBarLabel, 0, 0);
         ctx.restore();
 
         // Draw hover indicator on the scale bar
@@ -2696,7 +2726,7 @@ export class Viewer3D {
         const maxStress = this.maxStress || 1;
         const stressVal = this._hoverStressValue * maxStress;
 
-        const text = `${stressVal.toFixed(2)} MPa`;
+        const text = `${stressVal.toFixed(2)} ${this.stressBarUnit}`;
         ctx.font = 'bold 12px Arial';
         const metrics = ctx.measureText(text);
         const padding = 6;
@@ -2904,6 +2934,49 @@ export class Viewer3D {
         this.draw();
     }
 
+    /**
+     * Set the displacement vector data from a FEA solve.
+     * @param {{ U: Float32Array, nx: number, ny: number, nz: number } | null} data
+     */
+    setDisplacementData(data) {
+        this.displacementData = data;
+        if (!data) this.showDisplacement = false;
+        this._needsRebuild = true;
+        this.draw();
+    }
+
+    /**
+     * Toggle whether the deformed shape is shown using the stored displacement data.
+     */
+    toggleDisplacement() {
+        if (!this.displacementData) return;
+        this.showDisplacement = !this.showDisplacement;
+        this._needsRebuild = true;
+        this.draw();
+    }
+
+    /**
+     * Set the displacement magnification scale factor.
+     * @param {number} scale
+     */
+    setDisplacementScale(scale) {
+        this.displacementScale = Math.max(0, scale);
+        if (this.showDisplacement) {
+            this._needsRebuild = true;
+            this.draw();
+        }
+    }
+
+    /**
+     * Update the stress scale bar label and unit (e.g. for fatigue mode).
+     * @param {string} label - Text for the rotated bar title
+     * @param {string} unit  - Unit shown in hover tooltip
+     */
+    setStressBarLabel(label, unit) {
+        this.stressBarLabel = label || 'Stress (N/mm² = MPa)';
+        this.stressBarUnit = unit || 'MPa';
+    }
+
     toggleWireframe() {
         this.wireframe = !this.wireframe;
         this._needsRebuild = true;
@@ -2999,6 +3072,10 @@ export class Viewer3D {
         this.selectionShapes = [];
         this._nextShapeId = 1;
         this._shapeHighlightFaces = new Set();
+        this.displacementData = null;
+        this.showDisplacement = false;
+        this.stressBarLabel = 'Stress (N/mm² = MPa)';
+        this.stressBarUnit = 'MPa';
         this._needsRebuild = true;
         this.draw();
     }

@@ -782,6 +782,25 @@ class TopologyApp {
                 densityThresholdValue.textContent = effective.toFixed(2);
             });
         }
+
+        // Displacement toggle and scale slider
+        const dispToggle = document.getElementById('toggleDisplacement');
+        const dispScaleSlider = document.getElementById('displacementScaleSlider');
+        const dispScaleValue = document.getElementById('displacementScaleValue');
+        if (dispToggle) {
+            dispToggle.addEventListener('change', () => {
+                this.viewer.showDisplacement = dispToggle.checked;
+                this.viewer._needsRebuild = true;
+                this.viewer.draw();
+            });
+        }
+        if (dispScaleSlider) {
+            dispScaleSlider.addEventListener('input', () => {
+                const val = parseInt(dispScaleSlider.value, 10);
+                this.viewer.setDisplacementScale(val);
+                if (dispScaleValue) dispScaleValue.textContent = `${val}×`;
+            });
+        }
     }
 
     _updateForceVector() {
@@ -1590,6 +1609,10 @@ class TopologyApp {
         this.viewer.meshData = null;
         this.viewer.densities = null;
         this.viewer.setVolumetricStressData(null);
+        this.viewer.setDisplacementData(null);
+        this.viewer.setStressBarLabel('Stress (N/mm² = MPa)', 'MPa');
+        const dispContainerReset = document.getElementById('displacementContainer');
+        if (dispContainerReset) dispContainerReset.classList.add('hidden');
         this.viewer.draw();
         
         // Show progress
@@ -1668,6 +1691,60 @@ class TopologyApp {
                 };
             }
             this._applyVolumetricSnapshot(this.finalVolumetricData, 'complete');
+
+            // Apply fatigue mode label to stress bar if applicable
+            if (result.fatigueMode) {
+                this.viewer.setStressBarLabel('Fatigue Risk (0=safe, 1=high)', '');
+            } else {
+                this.viewer.setStressBarLabel('Stress (N/mm² = MPa)', 'MPa');
+            }
+
+            // Store displacement data from FEA/fatigue solve and show controls
+            if (result.displacementU && result.nx && result.ny && result.nz) {
+                const U = result.displacementU;
+                // Normalize U so that max|U| = 1 (display as deformation mode shape).
+                // The FEA solver uses mixed units (GPa stiffness × voxel-space geometry × N force),
+                // so the raw displacement magnitudes are not physically meaningful for visualization.
+                // Normalizing produces a unit mode shape; the scale slider then controls how many
+                // voxels the maximum nodal displacement should appear as on screen.
+                let maxU = 0;
+                for (let i = 0; i < U.length; i++) {
+                    const v = Math.abs(U[i]);
+                    if (v > maxU) maxU = v;
+                }
+                const normalizedU = new Float32Array(U.length);
+                if (maxU > 0) {
+                    for (let i = 0; i < U.length; i++) normalizedU[i] = U[i] / maxU;
+                }
+
+                // Default scale: 10% of the longest model dimension.
+                // This makes the peak displacement clearly visible without distorting the shape.
+                const DISP_SCALE_RATIO = 0.1; // fraction of longest model dimension for default scale
+                const maxDim = Math.max(result.nx, result.ny, result.nz);
+                const defaultScale = Math.max(1, Math.round(DISP_SCALE_RATIO * maxDim));
+
+                this.viewer.setDisplacementData({
+                    U: normalizedU,
+                    nx: result.nx,
+                    ny: result.ny,
+                    nz: result.nz
+                });
+                this.viewer.setDisplacementScale(defaultScale);
+
+                const dispContainer = document.getElementById('displacementContainer');
+                if (dispContainer) dispContainer.classList.remove('hidden');
+                // Sync UI controls with computed defaults
+                const dispToggle = document.getElementById('toggleDisplacement');
+                if (dispToggle) dispToggle.checked = this.viewer.showDisplacement;
+                const dispScaleSlider = document.getElementById('displacementScaleSlider');
+                const dispScaleValue = document.getElementById('displacementScaleValue');
+                if (dispScaleSlider) dispScaleSlider.value = defaultScale;
+                if (dispScaleValue) dispScaleValue.textContent = `${defaultScale}×`;
+            } else {
+                this.viewer.setDisplacementData(null);
+                const dispContainer = document.getElementById('displacementContainer');
+                if (dispContainer) dispContainer.classList.add('hidden');
+            }
             
             // Update viewer with final mesh
             if (result.meshData) {
@@ -1676,7 +1753,7 @@ class TopologyApp {
             
             // Show results
             let resultsHTML = `
-                <strong>Optimization Complete!</strong><br>
+                <strong>${result.feaOnly ? (result.fatigueMode ? 'Fatigue Analysis Complete!' : 'FEA Analysis Complete!') : 'Optimization Complete!'}</strong><br>
                 Final Compliance: ${result.finalCompliance.toFixed(2)}<br>
                 Iterations: ${result.iterations}<br>
                 Volume Fraction: ${(result.volumeFraction * 100).toFixed(1)}%
