@@ -264,6 +264,11 @@ export class Viewer3D {
         this._nextGroupId = 1;
         this.activeGroupId = null;
 
+        // Selection shapes: each shape has { id, shapeType, position, size, rotation }
+        this.selectionShapes = [];
+        this._nextShapeId = 1;
+        this._shapeHighlightFaces = new Set();
+
         // 3D brush
         this.brushSize = 1;
         this._hoverFaces = [];
@@ -802,6 +807,305 @@ export class Viewer3D {
         this.draw();
     }
 
+    // ─── Selection Shape Management ─────────────────────────────────────────
+
+    addSelectionShape(shapeType) {
+        const id = this._nextShapeId++;
+        const nx = this.model ? this.model.nx : 10;
+        const ny = this.model ? this.model.ny : 10;
+        const nz = this.model ? this.model.nz : 10;
+        const defaultSize = Math.max(nx, ny, nz) / 4;
+        const shape = {
+            id,
+            shapeType: shapeType || 'cube',
+            position: [nx / 2, ny / 2, nz / 2],
+            size: [defaultSize, defaultSize, defaultSize],
+            rotation: [0, 0, 0]
+        };
+        this.selectionShapes.push(shape);
+        this._computeShapeHighlights();
+        this.draw();
+        return shape;
+    }
+
+    removeSelectionShape(shapeId) {
+        this.selectionShapes = this.selectionShapes.filter(s => s.id !== shapeId);
+        this._computeShapeHighlights();
+        this.draw();
+    }
+
+    updateSelectionShape(shapeId, props) {
+        const shape = this.selectionShapes.find(s => s.id === shapeId);
+        if (!shape) return;
+        Object.assign(shape, props);
+        this._computeShapeHighlights();
+        this.draw();
+    }
+
+    _computeShapeHighlights() {
+        this._shapeHighlightFaces.clear();
+        if (this.selectionShapes.length === 0) return;
+        for (const bf of this._boundaryFaces) {
+            const v = bf.projVerts;
+            const cx = (v[0].x + v[1].x + v[2].x + v[3].x) / 4;
+            const cy = (v[0].y + v[1].y + v[2].y + v[3].y) / 4;
+            const cz = (v[0].z + v[1].z + v[2].z + v[3].z) / 4;
+            for (const shape of this.selectionShapes) {
+                if (this._isFaceInShape(cx, cy, cz, shape)) {
+                    this._shapeHighlightFaces.add(bf.key);
+                    break;
+                }
+            }
+        }
+    }
+
+    _isFaceInShape(px, py, pz, shape) {
+        const { position, size, rotation, shapeType } = shape;
+        // Translate to shape-local origin
+        let x = px - position[0];
+        let y = py - position[1];
+        let z = pz - position[2];
+
+        // Build rotation matrix R = Rz * Ry * Rx (XYZ Euler order)
+        const cosX = Math.cos(rotation[0] * Math.PI / 180);
+        const sinX = Math.sin(rotation[0] * Math.PI / 180);
+        const cosY = Math.cos(rotation[1] * Math.PI / 180);
+        const sinY = Math.sin(rotation[1] * Math.PI / 180);
+        const cosZ = Math.cos(rotation[2] * Math.PI / 180);
+        const sinZ = Math.sin(rotation[2] * Math.PI / 180);
+
+        const R00 = cosY * cosZ;
+        const R10 = cosY * sinZ;
+        const R20 = -sinY;
+        const R01 = sinX * sinY * cosZ - cosX * sinZ;
+        const R11 = sinX * sinY * sinZ + cosX * cosZ;
+        const R21 = sinX * cosY;
+        const R02 = cosX * sinY * cosZ + sinX * sinZ;
+        const R12 = cosX * sinY * sinZ - sinX * cosZ;
+        const R22 = cosX * cosY;
+
+        // Apply inverse rotation (R^T) to transform to local space
+        const lx = R00 * x + R10 * y + R20 * z;
+        const ly = R01 * x + R11 * y + R21 * z;
+        const lz = R02 * x + R12 * y + R22 * z;
+
+        // Scale to unit space (guard against zero-size components)
+        const ux = size[0] > 0 ? lx / size[0] : (lx === 0 ? 0 : Infinity);
+        const uy = size[1] > 0 ? ly / size[1] : (ly === 0 ? 0 : Infinity);
+        const uz = size[2] > 0 ? lz / size[2] : (lz === 0 ? 0 : Infinity);
+
+        switch (shapeType) {
+            case 'cube':
+                return Math.abs(ux) <= 1 && Math.abs(uy) <= 1 && Math.abs(uz) <= 1;
+            case 'sphere':
+                return ux * ux + uy * uy + uz * uz <= 1;
+            case 'cylinder':
+                // Y-axis cylinder: circular cross-section in XZ, extent along Y
+                return ux * ux + uz * uz <= 1 && Math.abs(uy) <= 1;
+            default:
+                return false;
+        }
+    }
+
+    applyShapeSelectionToGroup(groupId, shapeId) {
+        const targetId = groupId !== undefined ? groupId : this.activeGroupId;
+        const group = this.selectionGroups.find(g => g.id === targetId);
+        if (!group) return;
+
+        if (shapeId !== undefined) {
+            // Apply only the faces from the specified shape
+            const shape = this.selectionShapes.find(s => s.id === shapeId);
+            if (!shape) return;
+            for (const bf of this._boundaryFaces) {
+                const v = bf.projVerts;
+                const cx = (v[0].x + v[1].x + v[2].x + v[3].x) / 4;
+                const cy = (v[0].y + v[1].y + v[2].y + v[3].y) / 4;
+                const cz = (v[0].z + v[1].z + v[2].z + v[3].z) / 4;
+                if (this._isFaceInShape(cx, cy, cz, shape)) {
+                    group.faces.add(bf.key);
+                }
+            }
+        } else {
+            // Apply all shape highlights
+            this._computeShapeHighlights();
+            for (const key of this._shapeHighlightFaces) {
+                group.faces.add(key);
+            }
+        }
+
+        this._syncGroupsToFaceSets();
+        this._needsRebuild = true;
+        this.draw();
+    }
+
+    _generateShapeGeometry(shape) {
+        const { shapeType, position, size, rotation } = shape;
+        const unitPos = [];
+        const unitNorm = [];
+
+        if (shapeType === 'cube') {
+            const faceData = [
+                { n: [0, 0, 1],  v: [[-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]] },
+                { n: [0, 0, -1], v: [[1, -1, -1], [-1, -1, -1], [-1, 1, -1], [1, 1, -1]] },
+                { n: [-1, 0, 0], v: [[-1, -1, -1], [-1, -1, 1], [-1, 1, 1], [-1, 1, -1]] },
+                { n: [1, 0, 0],  v: [[1, -1, 1], [1, -1, -1], [1, 1, -1], [1, 1, 1]] },
+                { n: [0, 1, 0],  v: [[-1, 1, 1], [1, 1, 1], [1, 1, -1], [-1, 1, -1]] },
+                { n: [0, -1, 0], v: [[-1, -1, -1], [1, -1, -1], [1, -1, 1], [-1, -1, 1]] }
+            ];
+            for (const { n, v } of faceData) {
+                const [v0, v1, v2, v3] = v;
+                unitPos.push(...v0, ...v1, ...v2, ...v0, ...v2, ...v3);
+                unitNorm.push(...n, ...n, ...n, ...n, ...n, ...n);
+            }
+        } else if (shapeType === 'sphere') {
+            const segs = 16;
+            for (let lat = 0; lat < segs; lat++) {
+                const t0 = (lat / segs) * Math.PI;
+                const t1 = ((lat + 1) / segs) * Math.PI;
+                for (let lon = 0; lon < segs; lon++) {
+                    const p0 = (lon / segs) * 2 * Math.PI;
+                    const p1 = ((lon + 1) / segs) * 2 * Math.PI;
+                    const v00 = [Math.sin(t0) * Math.cos(p0), Math.cos(t0), Math.sin(t0) * Math.sin(p0)];
+                    const v01 = [Math.sin(t0) * Math.cos(p1), Math.cos(t0), Math.sin(t0) * Math.sin(p1)];
+                    const v10 = [Math.sin(t1) * Math.cos(p0), Math.cos(t1), Math.sin(t1) * Math.sin(p0)];
+                    const v11 = [Math.sin(t1) * Math.cos(p1), Math.cos(t1), Math.sin(t1) * Math.sin(p1)];
+                    unitPos.push(...v00, ...v10, ...v11, ...v00, ...v11, ...v01);
+                    unitNorm.push(...v00, ...v10, ...v11, ...v00, ...v11, ...v01);
+                }
+            }
+        } else if (shapeType === 'cylinder') {
+            const segs = 32;
+            for (let i = 0; i < segs; i++) {
+                const a0 = (i / segs) * 2 * Math.PI;
+                const a1 = ((i + 1) / segs) * 2 * Math.PI;
+                const x0 = Math.cos(a0), z0 = Math.sin(a0);
+                const x1 = Math.cos(a1), z1 = Math.sin(a1);
+                // Side
+                unitPos.push(x0, -1, z0, x1, -1, z1, x1, 1, z1, x0, -1, z0, x1, 1, z1, x0, 1, z0);
+                unitNorm.push(x0, 0, z0, x1, 0, z1, x1, 0, z1, x0, 0, z0, x1, 0, z1, x0, 0, z0);
+                // Top cap
+                unitPos.push(0, 1, 0, x0, 1, z0, x1, 1, z1);
+                unitNorm.push(0, 1, 0, 0, 1, 0, 0, 1, 0);
+                // Bottom cap
+                unitPos.push(0, -1, 0, x1, -1, z1, x0, -1, z0);
+                unitNorm.push(0, -1, 0, 0, -1, 0, 0, -1, 0);
+            }
+        }
+
+        // Build rotation matrix R = Rz * Ry * Rx
+        const cosX = Math.cos(rotation[0] * Math.PI / 180);
+        const sinX = Math.sin(rotation[0] * Math.PI / 180);
+        const cosY = Math.cos(rotation[1] * Math.PI / 180);
+        const sinY = Math.sin(rotation[1] * Math.PI / 180);
+        const cosZ = Math.cos(rotation[2] * Math.PI / 180);
+        const sinZ = Math.sin(rotation[2] * Math.PI / 180);
+
+        const R00 = cosY * cosZ;
+        const R10 = cosY * sinZ;
+        const R20 = -sinY;
+        const R01 = sinX * sinY * cosZ - cosX * sinZ;
+        const R11 = sinX * sinY * sinZ + cosX * cosZ;
+        const R21 = sinX * cosY;
+        const R02 = cosX * sinY * cosZ + sinX * sinZ;
+        const R12 = cosX * sinY * sinZ - sinX * cosZ;
+        const R22 = cosX * cosY;
+
+        const count = unitPos.length / 3;
+        const worldPos = new Float32Array(unitPos.length);
+        const worldNorm = new Float32Array(unitNorm.length);
+
+        for (let i = 0; i < unitPos.length; i += 3) {
+            // Scale then rotate then translate
+            const sx = unitPos[i] * size[0];
+            const sy = unitPos[i + 1] * size[1];
+            const sz = unitPos[i + 2] * size[2];
+            worldPos[i]     = R00 * sx + R01 * sy + R02 * sz + position[0];
+            worldPos[i + 1] = R10 * sx + R11 * sy + R12 * sz + position[1];
+            worldPos[i + 2] = R20 * sx + R21 * sy + R22 * sz + position[2];
+
+            // Normals: only rotate (no scale, no translate)
+            const nx = unitNorm[i], ny = unitNorm[i + 1], nz = unitNorm[i + 2];
+            worldNorm[i]     = R00 * nx + R01 * ny + R02 * nz;
+            worldNorm[i + 1] = R10 * nx + R11 * ny + R12 * nz;
+            worldNorm[i + 2] = R20 * nx + R21 * ny + R22 * nz;
+        }
+
+        return { positions: worldPos, normals: worldNorm, count };
+    }
+
+    _drawSelectionShapes(gl, projection, modelView, normalMatrix) {
+        if (this.selectionShapes.length === 0) return;
+
+        const prog = this._meshProgram;
+        gl.useProgram(prog);
+
+        gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uProjection'), false, projection);
+        gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uModelView'), false, modelView);
+        gl.uniformMatrix3fv(gl.getUniformLocation(prog, 'uNormalMatrix'), false, normalMatrix);
+
+        const lightDir = vec3Normalize([0.3, 0.5, 0.8]);
+        gl.uniform3fv(gl.getUniformLocation(prog, 'uLightDir'), lightDir);
+        gl.uniform1f(gl.getUniformLocation(prog, 'uAmbient'), 0.5);
+        gl.uniform1f(gl.getUniformLocation(prog, 'uAlpha'), 0.3);
+        gl.uniform1f(gl.getUniformLocation(prog, 'uClipEnabled'), 0.0);
+
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        gl.depthMask(false);
+        gl.disable(gl.DEPTH_TEST);
+        gl.disable(gl.CULL_FACE);
+
+        const posLoc = gl.getAttribLocation(prog, 'aPosition');
+        const normLoc = gl.getAttribLocation(prog, 'aNormal');
+        const colLoc = gl.getAttribLocation(prog, 'aColor');
+
+        const shapeColors = { cube: [0.2, 0.7, 1.0], sphere: [1.0, 0.7, 0.2], cylinder: [0.2, 1.0, 0.5] };
+
+        const posBuf = gl.createBuffer();
+        const normBuf = gl.createBuffer();
+        const colBuf = gl.createBuffer();
+
+        for (const shape of this.selectionShapes) {
+            const { positions, normals, count } = this._generateShapeGeometry(shape);
+            const color = shapeColors[shape.shapeType] || [0.5, 0.5, 1.0];
+            const colors = new Float32Array(count * 3);
+            for (let i = 0; i < count; i++) {
+                colors[i * 3] = color[0]; colors[i * 3 + 1] = color[1]; colors[i * 3 + 2] = color[2];
+            }
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+            gl.bufferData(gl.ARRAY_BUFFER, positions, gl.DYNAMIC_DRAW);
+            gl.enableVertexAttribArray(posLoc);
+            gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, normBuf);
+            gl.bufferData(gl.ARRAY_BUFFER, normals, gl.DYNAMIC_DRAW);
+            gl.enableVertexAttribArray(normLoc);
+            gl.vertexAttribPointer(normLoc, 3, gl.FLOAT, false, 0, 0);
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, colBuf);
+            gl.bufferData(gl.ARRAY_BUFFER, colors, gl.DYNAMIC_DRAW);
+            gl.enableVertexAttribArray(colLoc);
+            gl.vertexAttribPointer(colLoc, 3, gl.FLOAT, false, 0, 0);
+
+            gl.drawArrays(gl.TRIANGLES, 0, count);
+        }
+
+        gl.disableVertexAttribArray(posLoc);
+        gl.disableVertexAttribArray(normLoc);
+        gl.disableVertexAttribArray(colLoc);
+
+        gl.deleteBuffer(posBuf);
+        gl.deleteBuffer(normBuf);
+        gl.deleteBuffer(colBuf);
+
+        gl.depthMask(true);
+        gl.enable(gl.DEPTH_TEST);
+        gl.disable(gl.BLEND);
+        gl.enable(gl.CULL_FACE);
+        gl.uniform1f(gl.getUniformLocation(prog, 'uAlpha'), 0.0);
+    }
+
     // ─── Selection Group Management ─────────────────────────────────────────
 
     addSelectionGroup(type, name) {
@@ -1045,6 +1349,9 @@ export class Viewer3D {
             this._drawReference(gl, projection, modelView, normalMatrix);
         }
 
+        // Draw selection shapes (semi-transparent 3D primitives)
+        this._drawSelectionShapes(gl, projection, modelView, normalMatrix);
+
         // Draw section plane visualization and cross-section cap
         if (this.sectionEnabled) {
             this._drawSectionCap(gl, projection, modelView, normalMatrix, nx, ny, nz);
@@ -1167,6 +1474,8 @@ export class Viewer3D {
         this._generateClosedMeshBuffers(this.gl, nx, ny, nz, visible, densityMap, stressMap);
         this._buildGridBuffers(nx, ny, nz);
         this._buildReferenceBuffers();
+        // Update shape highlight faces after boundary faces are rebuilt
+        this._computeShapeHighlights();
     }
 
     /**
@@ -1723,7 +2032,8 @@ export class Viewer3D {
         const hasCon = this.paintedConstraintFaces.size > 0;
         const hasForce = this.paintedForceFaces.size > 0;
         const hasKeep = this.paintedKeepFaces.size > 0;
-        if (!hasCon && !hasForce && !hasKeep) return;
+        const hasShapeHL = this._shapeHighlightFaces.size > 0;
+        if (!hasCon && !hasForce && !hasKeep && !hasShapeHL) return;
 
         const prog = this._overlayProgram;
         gl.useProgram(prog);
@@ -1798,6 +2108,27 @@ export class Viewer3D {
                 gl.enableVertexAttribArray(posLoc);
                 gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
                 gl.uniform4fv(gl.getUniformLocation(prog, 'uColor'), [0.2, 0.4, 1.0, 0.45]);
+                gl.drawArrays(gl.TRIANGLES, 0, positions.length / 3);
+                gl.disableVertexAttribArray(posLoc);
+                gl.deleteBuffer(buf);
+            }
+        }
+
+        if (hasShapeHL) {
+            const positions = [];
+            for (const bf of this._boundaryFaces) {
+                if (!this._shapeHighlightFaces.has(bf.key)) continue;
+                const v = bf.projVerts;
+                positions.push(v[0].x, v[0].y, v[0].z, v[1].x, v[1].y, v[1].z, v[2].x, v[2].y, v[2].z);
+                positions.push(v[0].x, v[0].y, v[0].z, v[2].x, v[2].y, v[2].z, v[3].x, v[3].y, v[3].z);
+            }
+            if (positions.length > 0) {
+                const buf = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.DYNAMIC_DRAW);
+                gl.enableVertexAttribArray(posLoc);
+                gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+                gl.uniform4fv(gl.getUniformLocation(prog, 'uColor'), [1.0, 0.85, 0.1, 0.55]);
                 gl.drawArrays(gl.TRIANGLES, 0, positions.length / 3);
                 gl.disableVertexAttribArray(posLoc);
                 gl.deleteBuffer(buf);
@@ -2665,6 +2996,9 @@ export class Viewer3D {
         this.selectionGroups = [];
         this._nextGroupId = 1;
         this.activeGroupId = null;
+        this.selectionShapes = [];
+        this._nextShapeId = 1;
+        this._shapeHighlightFaces = new Set();
         this._needsRebuild = true;
         this.draw();
     }

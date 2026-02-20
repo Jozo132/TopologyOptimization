@@ -452,6 +452,24 @@ class TopologyApp {
             document.getElementById('paintConstraint').classList.remove('active-tool');
             this._renderGroupsList();
         });
+
+        // Shape Selection
+        document.getElementById('addShapeCube').addEventListener('click', () => {
+            this.viewer.addSelectionShape('cube');
+            this._renderShapeList();
+        });
+        document.getElementById('addShapeCylinder').addEventListener('click', () => {
+            this.viewer.addSelectionShape('cylinder');
+            this._renderShapeList();
+        });
+        document.getElementById('addShapeBall').addEventListener('click', () => {
+            this.viewer.addSelectionShape('sphere');
+            this._renderShapeList();
+        });
+        document.getElementById('applyAllShapesToGroup').addEventListener('click', () => {
+            this.viewer.applyShapeSelectionToGroup();
+            this._renderGroupsList();
+        });
         
         // Step 3: Solver mode selection
         document.getElementById('solverSelect').addEventListener('change', (e) => {
@@ -988,7 +1006,19 @@ class TopologyApp {
             if (brushSize) brushSize.value = state.brushSize;
             if (brushSizeValue) brushSizeValue.textContent = state.brushSize;
         }
+        if (Array.isArray(state.selectionShapes)) {
+            this.viewer.selectionShapes = state.selectionShapes.map(s => ({
+                id: s.id,
+                shapeType: s.shapeType || 'cube',
+                position: Array.isArray(s.position) ? [...s.position] : [0, 0, 0],
+                size: Array.isArray(s.size) ? [...s.size] : [1, 1, 1],
+                rotation: Array.isArray(s.rotation) ? [...s.rotation] : [0, 0, 0]
+            }));
+            this.viewer._nextShapeId = this.viewer.selectionShapes.reduce((m, s) => Math.max(m, s.id || 0), 0) + 1;
+            this.viewer._computeShapeHighlights();
+        }
         this._renderGroupsList();
+        this._renderShapeList();
     }
 
     async importSetup(file) {
@@ -1075,7 +1105,8 @@ class TopologyApp {
                 activeGroupId: this.viewer.activeGroupId,
                 useAngleSelection: this.viewer.useAngleSelection,
                 angleTolerance: this.viewer.angleTolerance,
-                brushSize: this.viewer.brushSize
+                brushSize: this.viewer.brushSize,
+                selectionShapes: (this.viewer.selectionShapes || []).map(s => ({ ...s }))
             }
         };
 
@@ -1295,6 +1326,105 @@ class TopologyApp {
             paintForce.classList.add('active-tool');
         } else if (type === 'constraint') {
             paintConstraint.classList.add('active-tool');
+        }
+    }
+
+    _renderShapeList() {
+        const container = document.getElementById('shapeSelectionList');
+        if (!container) return;
+        container.innerHTML = '';
+
+        const applyAllBtn = document.getElementById('applyAllShapesToGroup');
+        if (applyAllBtn) {
+            applyAllBtn.style.display = this.viewer.selectionShapes.length > 0 ? '' : 'none';
+        }
+
+        const shapeIcons = { cube: '⬛', sphere: '⚽', cylinder: '🔵' };
+
+        for (const shape of this.viewer.selectionShapes) {
+            const item = document.createElement('div');
+            item.className = 'shape-item';
+
+            // Header row: icon + type label + apply btn + delete btn
+            const header = document.createElement('div');
+            header.style.cssText = 'display:flex; align-items:center; gap:0.35rem; margin-bottom:0.4rem;';
+
+            const icon = document.createElement('span');
+            icon.textContent = shapeIcons[shape.shapeType] || '◆';
+            icon.style.fontSize = '0.8rem';
+
+            const label = document.createElement('span');
+            label.style.cssText = 'font-size:0.75rem; font-weight:600; flex:1; text-transform:capitalize;';
+            label.textContent = shape.shapeType + ' #' + shape.id;
+
+            const applyBtn = document.createElement('button');
+            applyBtn.className = 'btn-secondary';
+            applyBtn.style.cssText = 'font-size:0.65rem; padding:0.1rem 0.4rem;';
+            applyBtn.textContent = 'Apply';
+            applyBtn.title = 'Apply this shape\'s face selection to the active group';
+            applyBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.viewer.applyShapeSelectionToGroup(undefined, shape.id);
+                this._renderGroupsList();
+            });
+
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'group-remove';
+            removeBtn.textContent = '×';
+            removeBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.viewer.removeSelectionShape(shape.id);
+                this._renderShapeList();
+            });
+
+            header.appendChild(icon);
+            header.appendChild(label);
+            header.appendChild(applyBtn);
+            header.appendChild(removeBtn);
+            item.appendChild(header);
+
+            // Controls grid: position, size, rotation
+            const makeRow = (labelText, values, onChange) => {
+                const row = document.createElement('div');
+                row.style.cssText = 'display:grid; grid-template-columns:4rem 1fr 1fr 1fr; gap:0.2rem; align-items:center; margin-bottom:0.2rem;';
+                const lbl = document.createElement('label');
+                lbl.style.cssText = 'font-size:0.65rem; color:var(--text-secondary);';
+                lbl.textContent = labelText;
+                row.appendChild(lbl);
+                ['X', 'Y', 'Z'].forEach((axis, i) => {
+                    const input = document.createElement('input');
+                    input.type = 'number';
+                    input.step = '0.5';
+                    input.style.cssText = 'font-size:0.65rem; padding:0.1rem 0.2rem; border:1px solid var(--border-color); border-radius:3px; background:var(--bg-secondary); width:100%; min-width:0;';
+                    input.value = Math.round(values[i] * 100) / 100;
+                    input.title = axis;
+                    input.addEventListener('input', (e) => {
+                        const v = parseFloat(e.target.value);
+                        if (!isNaN(v)) onChange(i, v);
+                    });
+                    row.appendChild(input);
+                });
+                return row;
+            };
+
+            item.appendChild(makeRow('Position', shape.position, (i, v) => {
+                shape.position[i] = v;
+                this.viewer.updateSelectionShape(shape.id, { position: [...shape.position] });
+            }));
+
+            item.appendChild(makeRow('Size', shape.size, (i, v) => {
+                if (v >= 0.01) {
+                    shape.size[i] = v;
+                    this.viewer.updateSelectionShape(shape.id, { size: [...shape.size] });
+                }
+            }));
+
+            item.appendChild(makeRow('Rotation°', shape.rotation, (i, v) => {
+                shape.rotation[i] = v;
+                this.viewer.updateSelectionShape(shape.id, { rotation: [...shape.rotation] });
+            }));
+
+            container.appendChild(item);
         }
     }
 
