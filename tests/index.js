@@ -4,15 +4,16 @@
 // Provide a minimal FileReader stub so ModelImporter can be instantiated in Node.js
 globalThis.FileReader = class FileReader {};
 
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import { dirname, join } from 'path';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+const toURL = (p) => pathToFileURL(p).href;
 
-const { ModelImporter } = await import(join(__dirname, '..', 'js', 'importer.js'));
-const { STEPParser } = await import(join(__dirname, '..', 'js', 'step-parser.js'));
-const { TopologySolver } = await import(join(__dirname, '..', 'lib', 'topology-solver.js'));
+const { ModelImporter } = await import(toURL(join(__dirname, '..', 'js', 'importer.js')));
+const { STEPParser } = await import(toURL(join(__dirname, '..', 'js', 'step-parser.js')));
+const { TopologySolver } = await import(toURL(join(__dirname, '..', 'lib', 'topology-solver.js')));
 
 const importer = new ModelImporter();
 
@@ -1550,7 +1551,7 @@ console.log('Test 41: Blended curvature mesh – no triangles fills all');
 // AMR Surface Mesh Tests
 // ──────────────────────────────────────────────────
 
-const { generateUniformSurfaceMesh, generateAMRSurfaceMesh, checkWatertight, indexedMeshToTriangles } = await import(join(__dirname, '..', 'js', 'amr-surface-mesh.js'));
+const { generateUniformSurfaceMesh, generateAMRSurfaceMesh, checkWatertight, indexedMeshToTriangles } = await import(toURL(join(__dirname, '..', 'js', 'amr-surface-mesh.js')));
 
 // ──────────────────────────────────────────────────
 // Test 42: Uniform surface mesh – single voxel
@@ -1836,6 +1837,118 @@ console.log('Test 57: TopologySolver library – PETSc KSP solver with MG precon
     assert(typeof result.finalCompliance === 'number', 'PETSc KSP+MG should produce a numeric compliance');
     assert(result.finalCompliance > 0, `PETSc KSP+MG compliance should be > 0, got ${result.finalCompliance}`);
     assert(result.iterations >= 1, `PETSc KSP+MG should complete at least 1 iteration, got ${result.iterations}`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 58: Marching Cubes – solid cube produces a closed surface
+// ──────────────────────────────────────────────────
+const { marchingCubes } = await import(toURL(join(__dirname, '..', 'js', 'marching-cubes.js')));
+
+console.log('Test 58: Marching Cubes – solid cube produces a closed surface');
+{
+    // 2×2×2 grid, all solid (density = 1.0), threshold = 0.5
+    const densities = new Float32Array(8).fill(1.0);
+    const result = marchingCubes({ densities, nx: 2, ny: 2, nz: 2, threshold: 0.5 });
+    assert(result.positions.length > 0, 'MC solid cube should produce vertices');
+    assert(result.indices.length > 0, 'MC solid cube should produce triangles');
+    assert(result.normals.length === result.positions.length, 'MC normals should match positions count');
+    assert(result.indices.length % 3 === 0, 'MC indices should be a multiple of 3');
+}
+
+// ──────────────────────────────────────────────────
+// Test 59: Marching Cubes – empty grid produces no surface
+// ──────────────────────────────────────────────────
+console.log('Test 59: Marching Cubes – empty grid produces no surface');
+{
+    const densities = new Float32Array(8).fill(0);
+    const result = marchingCubes({ densities, nx: 2, ny: 2, nz: 2, threshold: 0.5 });
+    assert(result.positions.length === 0, 'MC empty grid should produce no vertices');
+    assert(result.indices.length === 0, 'MC empty grid should produce no triangles');
+}
+
+// ──────────────────────────────────────────────────
+// Test 60: Marching Cubes – single voxel at center
+// ──────────────────────────────────────────────────
+console.log('Test 60: Marching Cubes – single voxel at center');
+{
+    // 3×3×3 grid, only center voxel is solid
+    const densities = new Float32Array(27).fill(0);
+    densities[1 + 1 * 3 + 1 * 9] = 1.0; // center voxel (1,1,1)
+    const result = marchingCubes({ densities, nx: 3, ny: 3, nz: 3, threshold: 0.1 });
+    assert(result.positions.length > 0, 'MC single voxel should produce vertices');
+    assert(result.indices.length >= 12, `MC single voxel should produce at least 4 triangles, got ${result.indices.length / 3}`);
+
+    // Verify all vertices are within the grid bounds
+    let inBounds = true;
+    for (let i = 0; i < result.positions.length; i += 3) {
+        if (result.positions[i] < 0 || result.positions[i] > 3 ||
+            result.positions[i+1] < 0 || result.positions[i+1] > 3 ||
+            result.positions[i+2] < 0 || result.positions[i+2] > 3) {
+            inBounds = false;
+            break;
+        }
+    }
+    assert(inBounds, 'MC vertices should be within grid bounds');
+}
+
+// ──────────────────────────────────────────────────
+// Test 61: Marching Cubes – smooth normals are normalized
+// ──────────────────────────────────────────────────
+console.log('Test 61: Marching Cubes – smooth normals are normalized');
+{
+    const densities = new Float32Array(27).fill(0);
+    densities[1 + 1 * 3 + 1 * 9] = 1.0;
+    const result = marchingCubes({ densities, nx: 3, ny: 3, nz: 3, threshold: 0.1 });
+    let allNormalized = true;
+    for (let i = 0; i < result.normals.length; i += 3) {
+        const len = Math.sqrt(result.normals[i]**2 + result.normals[i+1]**2 + result.normals[i+2]**2);
+        if (Math.abs(len - 1.0) > 0.01) {
+            allNormalized = false;
+            break;
+        }
+    }
+    assert(allNormalized, 'MC normals should be approximately unit length');
+}
+
+// ──────────────────────────────────────────────────
+// Test 62: Marching Cubes – threshold varies surface position
+// ──────────────────────────────────────────────────
+console.log('Test 62: Marching Cubes – threshold varies surface position');
+{
+    // Full grid with half density → threshold below 0.5 should produce a surface
+    const densities = new Float32Array(8).fill(0.5);
+    const result1 = marchingCubes({ densities, nx: 2, ny: 2, nz: 2, threshold: 0.3 });
+    const result2 = marchingCubes({ densities, nx: 2, ny: 2, nz: 2, threshold: 0.7 });
+    assert(result1.indices.length > 0, 'MC with threshold below density should produce surface');
+    assert(result2.indices.length === 0, 'MC with threshold above density should produce no surface');
+}
+
+// ──────────────────────────────────────────────────
+// Test 63: Marching Cubes – gradient field produces smooth isosurface
+// ──────────────────────────────────────────────────
+console.log('Test 63: Marching Cubes – gradient field produces smooth isosurface');
+{
+    // 4×4×4 grid with linear density gradient along X
+    const nx = 4, ny = 4, nz = 4;
+    const densities = new Float32Array(nx * ny * nz);
+    for (let z = 0; z < nz; z++) {
+        for (let y = 0; y < ny; y++) {
+            for (let x = 0; x < nx; x++) {
+                densities[x + y * nx + z * nx * ny] = x / (nx - 1);
+            }
+        }
+    }
+    const result = marchingCubes({ densities, nx, ny, nz, threshold: 0.5 });
+    assert(result.indices.length > 0, 'MC gradient field should produce surface');
+
+    // Vertices should be near the middle of the X range (around x ≈ 2)
+    let avgX = 0;
+    const vertCount = result.positions.length / 3;
+    for (let i = 0; i < result.positions.length; i += 3) {
+        avgX += result.positions[i];
+    }
+    avgX /= vertCount;
+    assert(Math.abs(avgX - 2.0) < 1.5, `MC gradient isosurface avg X should be near 2, got ${avgX.toFixed(2)}`);
 }
 
 // ──────────────────────────────────────────────────

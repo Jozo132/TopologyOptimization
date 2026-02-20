@@ -2,11 +2,13 @@
 // This runs in a separate thread so the UI stays responsive.
 // Supports both Web Worker (browser) and worker_threads (Node.js) environments.
 
+import { GPUCompute } from './gpu-compute.js';
+
 // Node.js / browser environment compatibility shim
 if (typeof self === 'undefined') {
     const { parentPort } = await import('worker_threads');
     globalThis.self = globalThis;
-    globalThis.postMessage = (data) => parentPort.postMessage(data);
+    globalThis.postMessage = (data, transferList) => parentPort.postMessage(data, transferList);
     parentPort.on('message', (data) => {
         if (typeof globalThis.onmessage === 'function') globalThis.onmessage({ data });
     });
@@ -1404,6 +1406,18 @@ class TopologyOptimizerWorker3D {
         this._pcg_Ap = null;
         this._pcg_Au = null;
         this._U = null;
+
+        // Optional WebGPU acceleration for element-energy kernel
+        this.useGPU = false;
+        this.gpuCompute = null;
+        this._KEflat32 = null;
+
+        // Volumetric stress snapshot state
+        this._volumetricOutputMode = 'on-stop';
+        this._lastVolumetricStress = null;
+        this._lastVolumetricMaxStress = 0;
+        this._lastVolumetricIteration = 0;
+        this._lastVolumetricDims = null;
     }
 
     _flattenKE(KE, size) {
@@ -1539,6 +1553,38 @@ class TopologyOptimizerWorker3D {
         return energy;
     }
 
+    _normalizeVolumetricOutputMode(mode) {
+        if (mode === 'every-iteration') return 'every-iteration';
+        if (mode === 'off') return 'off';
+        return 'on-stop';
+    }
+
+    _buildVolumetricSnapshot(iteration) {
+        if (!this._lastVolumetricStress || !this._lastVolumetricDims) return null;
+        const stressCopy = new Float32Array(this._lastVolumetricStress);
+        return {
+            payload: {
+                nx: this._lastVolumetricDims.nx,
+                ny: this._lastVolumetricDims.ny,
+                nz: this._lastVolumetricDims.nz,
+                iteration,
+                maxStress: this._lastVolumetricMaxStress,
+                stress: stressCopy
+            },
+            transfer: [stressCopy.buffer]
+        };
+    }
+
+    postLatestVolumetricSnapshot(reason = 'on-demand') {
+        const iteration = this._lastVolumetricIteration || 0;
+        const snapshot = this._buildVolumetricSnapshot(iteration);
+        if (snapshot) {
+            postMessage({ type: 'volumetric', reason, volumetricData: snapshot.payload }, snapshot.transfer);
+        } else {
+            postMessage({ type: 'volumetric', reason, volumetricData: null });
+        }
+    }
+
     async optimize(model, config) {
         // Try to load WASM module if not already loaded
         if (!wasmLoaded && !this.wasmLoadAttempted) {
@@ -1564,6 +1610,12 @@ class TopologyOptimizerWorker3D {
         this.rmin = config.filterRadius;
         this.cancelled = false;
         this._paused = false;
+        this.useGPU = !!config.useGPU;
+        this._volumetricOutputMode = this._normalizeVolumetricOutputMode(config.volumetricOutputMode);
+        this._lastVolumetricStress = null;
+        this._lastVolumetricMaxStress = 0;
+        this._lastVolumetricIteration = 0;
+        this._lastVolumetricDims = { nx: nelx, ny: nely, nz: nelz };
         // Allow selecting the linear solver via config (e.g. 'mgpcg' or 'cg')
         if (config.linearSolver) this.linearSolver = config.linearSolver;
 
@@ -1637,6 +1689,10 @@ class TopologyOptimizerWorker3D {
 
             const meshData = this.buildAdaptiveMesh(nelx, nely, nelz, x, elementEnergies, elementForces, null);
             const totalTime = performance.now() - startTime;
+
+            this._lastVolumetricStress = elementStress;
+            this._lastVolumetricMaxStress = maxStress;
+            this._lastVolumetricIteration = 1;
 
             postMessage({
                 type: 'complete',
@@ -1766,7 +1822,23 @@ class TopologyOptimizerWorker3D {
 
         const KE = this.lk();
         const KEflat = this._flattenKE(KE, 24);
+        this._KEflat32 = this._KEflat32 && this._KEflat32.length === KEflat.length
+            ? this._KEflat32
+            : new Float32Array(KEflat.length);
+        for (let i = 0; i < KEflat.length; i++) this._KEflat32[i] = KEflat[i];
         const edofArray = this._precomputeEdofs3D(nelx, nely, nelz);
+
+        if (this.useGPU) {
+            try {
+                if (!this.gpuCompute) this.gpuCompute = new GPUCompute();
+                const ok = await this.gpuCompute.init();
+                if (!ok || !this.gpuCompute.isAvailable()) {
+                    this.useGPU = false;
+                }
+            } catch (_gpuInitError) {
+                this.useGPU = false;
+            }
+        }
 
         // Compute per-element force magnitudes for adaptive mesh info
         const elementForces = this.computeElementForces(nelx, nely, nelz, F);
@@ -1812,11 +1884,31 @@ class TopologyOptimizerWorker3D {
                 if (patch.volumeFraction !== undefined) volfrac = patch.volumeFraction;
                 if (patch.maxIterations !== undefined) maxIterations = patch.maxIterations;
                 if (patch.linearSolver !== undefined) this.linearSolver = patch.linearSolver;
+                if (patch.volumetricOutputMode !== undefined) {
+                    this._volumetricOutputMode = this._normalizeVolumetricOutputMode(patch.volumetricOutputMode);
+                }
+                if (patch.useGPU !== undefined) {
+                    this.useGPU = !!patch.useGPU;
+                    if (this.useGPU) {
+                        try {
+                            if (!this.gpuCompute) this.gpuCompute = new GPUCompute();
+                            const ok = await this.gpuCompute.init();
+                            if (!ok || !this.gpuCompute.isAvailable()) this.useGPU = false;
+                        } catch (_gpuInitError) {
+                            this.useGPU = false;
+                        }
+                    }
+                }
             }
 
             // Pause between iterations if requested
             if (this._paused) {
-                postMessage({ type: 'paused', iteration: loop });
+                const snapshot = this._volumetricOutputMode !== 'off' ? this._buildVolumetricSnapshot(loop) : null;
+                if (snapshot && snapshot.payload) {
+                    postMessage({ type: 'paused', iteration: loop, volumetricData: snapshot.payload }, snapshot.transfer);
+                } else {
+                    postMessage({ type: 'paused', iteration: loop, volumetricData: null });
+                }
                 await new Promise(resolve => { this._resumeResolve = resolve; });
             }
 
@@ -1836,17 +1928,51 @@ class TopologyOptimizerWorker3D {
 
             const dc = new Float32Array(nel);
             const elementEnergies = new Float32Array(nel);
-            const Ue = new Float64Array(24);
+            const elementStress = new Float32Array(nel);
+            let usedGpuThisIter = false;
+
+            if (this.useGPU && this.gpuCompute && this.gpuCompute.isAvailable()) {
+                try {
+                    const gpuEnergies = await this.gpuCompute.computeElementEnergies(
+                        new Float32Array(U),
+                        this._KEflat32,
+                        edofArray,
+                        nel,
+                        24
+                    );
+                    if (gpuEnergies && gpuEnergies.length === nel) {
+                        elementEnergies.set(gpuEnergies);
+                        usedGpuThisIter = true;
+                    }
+                } catch (_gpuIterError) {
+                    this.useGPU = false;
+                    usedGpuThisIter = false;
+                }
+            }
+
+            if (!usedGpuThisIter) {
+                const Ue = new Float64Array(24);
+                for (let e = 0; e < nel; e++) {
+                    const eOff = e * 24;
+                    for (let i = 0; i < 24; i++) {
+                        Ue[i] = U[edofArray[eOff + i]];
+                    }
+                    const energy = this._computeElementEnergyFlat(KEflat, Ue, 24);
+                    elementEnergies[e] = energy;
+                }
+            }
+
             // Precompute Heaviside chain-rule denominator for this iteration
             const tanhBeta = Math.tanh(beta * 0.5);
             const heavisideDenom = 2 * tanhBeta; // tanh(b*0.5) + tanh(b*0.5)
+            let iterMaxStress = 0;
             for (let e = 0; e < nel; e++) {
-                const eOff = e * 24;
-                for (let i = 0; i < 24; i++) {
-                    Ue[i] = U[edofArray[eOff + i]];
-                }
-                const energy = this._computeElementEnergyFlat(KEflat, Ue, 24);
+                const energy = elementEnergies[e];
                 elementEnergies[e] = energy;
+                const stiffness = this.Emin + Math.pow(xPhys[e], currentPenal) * (this.E0 - this.Emin);
+                const stress = stiffness * energy;
+                elementStress[e] = stress;
+                if (stress > iterMaxStress) iterMaxStress = stress;
                 // Sensitivity w.r.t. xPhys
                 const dc_phys = -currentPenal * Math.pow(xPhys[e], currentPenal - 1) * this.E0 * energy;
                 // Chain rule: d(xPhys)/d(x) via Heaviside (1.0 when projection disabled)
@@ -1915,6 +2041,9 @@ class TopologyOptimizerWorker3D {
             x = xnew;
             xnew = tmpX;
             lastElementEnergies = elementEnergies;
+            this._lastVolumetricStress = elementStress;
+            this._lastVolumetricMaxStress = iterMaxStress;
+            this._lastVolumetricIteration = loop;
             
             // Perform AMR refinement if enabled
             if (amrManager) {
@@ -1938,21 +2067,26 @@ class TopologyOptimizerWorker3D {
             const elapsedTime = iterEndTime - startTime;
 
             if (shouldUpdateUI) {
+                const volumetricSnapshot = this._volumetricOutputMode === 'every-iteration'
+                    ? this._buildVolumetricSnapshot(loop)
+                    : null;
                 postMessage({
                     type: 'progress',
                     iteration: loop,
                     compliance: c,
                     meshData: meshData,
                     maxStress: meshData ? meshData.maxStress : 0,
+                    volumetricData: volumetricSnapshot ? volumetricSnapshot.payload : null,
                     penal: currentPenal,
                     beta: beta,
                     timing: {
                         iterationTime: iterTime,
                         avgIterationTime: avgIterTime,
                         elapsedTime: elapsedTime,
-                        usingWasm: this.useWasm
+                        usingWasm: this.useWasm,
+                        usingGPU: usedGpuThisIter
                     }
-                });
+                }, volumetricSnapshot ? volumetricSnapshot.transfer : undefined);
             }
         }
 
@@ -1972,7 +2106,11 @@ class TopologyOptimizerWorker3D {
         // Get AMR statistics if enabled
         const amrStats = amrManager ? amrManager.getStats() : null;
 
-        postMessage({
+        const finalVolumetric = this._volumetricOutputMode !== 'off'
+            ? this._buildVolumetricSnapshot(loop)
+            : null;
+
+        const completePayload = {
             type: 'complete',
             result: {
                 densities: x,
@@ -1984,6 +2122,7 @@ class TopologyOptimizerWorker3D {
                 nz: nelz,
                 meshData: finalMesh,
                 maxStress: finalMesh ? finalMesh.maxStress : 0,
+                volumetricData: finalVolumetric ? finalVolumetric.payload : null,
                 amrStats: amrStats,
                 timing: {
                     totalTime: totalTime,
@@ -1992,7 +2131,13 @@ class TopologyOptimizerWorker3D {
                     usingWasm: this.useWasm
                 }
             }
-        });
+        };
+
+        if (finalVolumetric) {
+            postMessage(completePayload, finalVolumetric.transfer);
+        } else {
+            postMessage(completePayload);
+        }
     }
 
     // Get DOF indices for an 8-node hexahedral element
@@ -2356,6 +2501,7 @@ class TopologyOptimizerWorker3D {
         // Duplicated from constants.js since workers cannot use ES module imports
         const DENSITY_THRESHOLD = 0.3;
         const triangles = [];
+        const amrCells = [];
 
         // Compute stress-based metric: stiffness × strain energy per element
         let maxStress = 0;
@@ -2422,6 +2568,16 @@ class TopologyOptimizerWorker3D {
                 const by0 = minGY, by1 = maxGY + 1;
                 const bz0 = minGZ, bz1 = maxGZ + 1;
                 const bw = bx1 - bx0;
+
+                // AMR cuboid cell payload for crack-free AMR surface meshing in viewer
+                amrCells.push({
+                    x: bx0,
+                    y: by0,
+                    z: bz0,
+                    size: bw,
+                    density: avgDensity,
+                    stress: strain
+                });
 
                 // Is a neighbouring slab of the block fully solid outside?
                 const isNeighbourSolid = (dx, dy, dz) => {
@@ -2533,12 +2689,14 @@ class TopologyOptimizerWorker3D {
                     if (visibleFaces.length === 0) continue;
 
                     const strain = (maxStress > 0 && elementStress) ? elementStress[idx] / maxStress : 0;
+                    amrCells.push({ x: elx, y: ely, z: elz, size: 1, density, stress: strain });
                     this.addSubdividedElement(triangles, elx, ely, elz, density, 1, visibleFaces, strain);
                 }
             }
         }
 
         triangles.maxStress = maxStress;
+        triangles.amrCells = amrCells;
         return triangles;
     }
 
@@ -4286,5 +4444,7 @@ self.onmessage = async function(e) {
         if (optimizer._resumeResolve) { optimizer._resumeResolve(); optimizer._resumeResolve = null; }
     } else if (type === 'updateConfig') {
         optimizer._pendingConfig = e.data.config;
+    } else if (type === 'requestVolumetric') {
+        optimizer.postLatestVolumetricSnapshot('on-demand');
     }
 };

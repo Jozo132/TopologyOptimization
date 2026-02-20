@@ -1,21 +1,25 @@
 // Model exporter for STL and JSON
-// Uses AMR boundary-face meshing for watertight STL export
+// Uses AMR boundary-face meshing or Marching Cubes for watertight STL export
 import { DENSITY_THRESHOLD } from './constants.js';
-import { generateUniformSurfaceMesh, indexedMeshToTriangles } from './amr-surface-mesh.js';
+import { generateUniformSurfaceMesh, generateAMRSurfaceMesh, indexedMeshToTriangles } from './amr-surface-mesh.js';
+import { marchingCubes } from './marching-cubes.js';
 
 export class ModelExporter {
     constructor() {}
 
-    exportSTL(optimizedModel, filename) {
+    exportSTL(optimizedModel, filename, options = {}) {
         const { densities, nx, ny, nz } = optimizedModel;
-        
-        // Generate STL from density field using AMR boundary-face meshing
-        const stl = this.generateSTL(densities, nx, ny, nz);
-        
+        const threshold = options.threshold !== undefined ? options.threshold : DENSITY_THRESHOLD;
+        const amrCells = optimizedModel.amrCells || options.amrCells || null;
+
+        // Generate STL using AMR surface mesh when AMR cells are available,
+        // otherwise fall back to uniform grid extraction
+        const stl = this.generateSTL(densities, nx, ny, nz, { threshold, amrCells });
+
         // Create blob and download
         const blob = new Blob([stl], { type: 'application/octet-stream' });
         this.downloadBlob(blob, filename);
-        
+
         console.log('STL exported:', filename);
     }
 
@@ -44,16 +48,64 @@ export class ModelExporter {
     }
 
     /**
-     * Generate a binary STL from the density field using AMR boundary-face meshing.
-     * Produces a watertight closed surface by extracting only boundary faces
-     * (between active and inactive voxels) with vertex deduplication.
+     * Generate a binary STL from the density field.
+     * When smooth=true, uses Marching Cubes for smooth isosurface geometry.
+     * Otherwise uses AMR boundary-face meshing for watertight box-face STL.
      */
-    generateSTL(densities, nx, ny, nz) {
-        // Generate watertight surface mesh via AMR boundary-face extraction
-        const mesh = generateUniformSurfaceMesh({ densities, nx, ny, nz });
+    generateSTL(densities, nx, ny, nz, options = {}) {
+        const threshold = options.threshold !== undefined ? options.threshold : DENSITY_THRESHOLD;
+        const amrCells = options.amrCells || null;
+        const smooth = options.smooth !== undefined ? options.smooth : false;
+
+        if (smooth && densities) {
+            return this._generateSmoothSTL(densities, nx, ny, nz, threshold);
+        }
+
+        let mesh;
+        if (amrCells && amrCells.length > 0) {
+            // Use AMR-aware surface mesh generation for multi-resolution grids
+            mesh = generateAMRSurfaceMesh({ cells: amrCells, threshold });
+        } else {
+            // Uniform grid boundary-face extraction
+            mesh = generateUniformSurfaceMesh({ densities, nx, ny, nz, threshold });
+        }
         const triangles = indexedMeshToTriangles(mesh);
-        
-        // Create binary STL
+
+        return this._buildSTLBuffer(triangles);
+    }
+
+    /**
+     * Generate a smooth STL using Marching Cubes isosurface extraction.
+     */
+    _generateSmoothSTL(densities, nx, ny, nz, threshold) {
+        const mc = marchingCubes({ densities, nx, ny, nz, threshold });
+        const { positions, normals, indices } = mc;
+
+        // Build triangle array from MC output
+        const triangles = [];
+        for (let i = 0; i < indices.length; i += 3) {
+            const i0 = indices[i], i1 = indices[i + 1], i2 = indices[i + 2];
+            // Compute face normal from vertices for STL (flat normal per triangle)
+            const v0 = [positions[i0 * 3], positions[i0 * 3 + 1], positions[i0 * 3 + 2]];
+            const v1 = [positions[i1 * 3], positions[i1 * 3 + 1], positions[i1 * 3 + 2]];
+            const v2 = [positions[i2 * 3], positions[i2 * 3 + 1], positions[i2 * 3 + 2]];
+            const e1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
+            const e2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
+            let nx_ = e1[1] * e2[2] - e1[2] * e2[1];
+            let ny_ = e1[2] * e2[0] - e1[0] * e2[2];
+            let nz_ = e1[0] * e2[1] - e1[1] * e2[0];
+            const len = Math.sqrt(nx_ * nx_ + ny_ * ny_ + nz_ * nz_);
+            if (len > 0) { nx_ /= len; ny_ /= len; nz_ /= len; }
+            triangles.push({ normal: [nx_, ny_, nz_], vertices: [v0, v1, v2] });
+        }
+
+        return this._buildSTLBuffer(triangles);
+    }
+
+    /**
+     * Build a binary STL buffer from an array of {normal, vertices} triangles.
+     */
+    _buildSTLBuffer(triangles) {
         const buffer = new ArrayBuffer(84 + triangles.length * 50);
         const view = new DataView(buffer);
         

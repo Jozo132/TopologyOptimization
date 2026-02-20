@@ -1,5 +1,6 @@
 // 3D Viewer using WebGL for professional CAD-like rendering
 import { DENSITY_THRESHOLD } from './constants.js';
+import { generateUniformSurfaceMesh, generateAMRSurfaceMesh } from './amr-surface-mesh.js';
 
 // ─── Color Constants ────────────────────────────────────────────────────────
 
@@ -220,11 +221,21 @@ export class Viewer3D {
 
         this.densities = null;
         this.meshData = null;
+        this.amrCells = null;
 
         // Strain range filter (0..1 normalized)
         this.strainMin = 0;
         this.strainMax = 1;
         this.maxStress = 0; // Max stress value (for MPa scale)
+
+        // Density threshold for visibility (user-adjustable)
+        this.densityThreshold = DENSITY_THRESHOLD;
+
+        // Cached visibility array (shared between buffer build and section drawing)
+        this._cachedVisible = null;
+        this._cachedDensityMap = null;
+        this._cachedStressMap = null;
+        this._volumetricStressMap = null;
 
         // Hover stress tooltip
         this._hoverStressValue = null; // Stress value at hovered position
@@ -624,7 +635,7 @@ export class Viewer3D {
         const mx = (e.clientX - rect.left) * (this.canvas.width / rect.width);
         const my = (e.clientY - rect.top) * (this.canvas.height / rect.height);
 
-        if (!this.model || !this.meshData || this.meshData.length === 0) {
+        if (!this.model || !this._boundaryFaces || this._boundaryFaces.length === 0) {
             if (this._hoverStressValue !== null) {
                 this._hoverStressValue = null;
                 this._hoverScreenPos = null;
@@ -639,22 +650,28 @@ export class Viewer3D {
         const proj = mat4Perspective(Math.PI / 4, aspect, 0.1, 1000);
         const mv = this._buildModelView(nx, ny, nz);
 
-        // Find closest mesh triangle to cursor (normalized stress 0..1)
+        // Find closest rendered boundary face center to cursor (normalized stress 0..1)
         let bestZ = Infinity;
         let closestStress = null;
 
-        for (let i = 0; i < this.meshData.length; i++) {
-            const tri = this.meshData[i];
-            const v = tri.vertices;
-            // Project triangle center to screen
-            const cx3d = (v[0][0] + v[1][0] + v[2][0]) / 3;
-            const cy3d = (v[0][1] + v[1][1] + v[2][1]) / 3;
-            const cz3d = (v[0][2] + v[1][2] + v[2][2]) / 3;
+        const stressMap = this._cachedStressMap || null;
+        for (let i = 0; i < this._boundaryFaces.length; i++) {
+            const face = this._boundaryFaces[i];
+            const v = face.projVerts;
+            const cx3d = (v[0].x + v[1].x + v[2].x + v[3].x) * 0.25;
+            const cy3d = (v[0].y + v[1].y + v[2].y + v[3].y) * 0.25;
+            const cz3d = (v[0].z + v[1].z + v[2].z + v[3].z) * 0.25;
             const sp = this._projectToScreen({ x: cx3d, y: cy3d, z: cz3d }, mv, proj, width, height);
             const dist = Math.sqrt((mx - sp.x) ** 2 + (my - sp.y) ** 2);
             if (dist < 20 && sp.z < bestZ) {
                 bestZ = sp.z;
-                closestStress = tri.strain !== undefined ? tri.strain : 0;
+                if (stressMap && face.voxel) {
+                    const [vx, vy, vz] = face.voxel;
+                    const idx = vx + vy * nx + vz * nx * ny;
+                    closestStress = stressMap[idx] || 0;
+                } else {
+                    closestStress = 0;
+                }
             }
         }
 
@@ -955,6 +972,8 @@ export class Viewer3D {
         this.model = model;
         this.densities = null;
         this.meshData = null;
+        this.amrCells = null;
+        this._volumetricStressMap = null;
         this.paintedConstraintFaces = new Set();
         this.paintedForceFaces = new Set();
         this._needsRebuild = true;
@@ -1022,7 +1041,7 @@ export class Viewer3D {
         }
 
         // Draw reference model (original high-res STL/STEP mesh) as semi-transparent overlay
-        if (this.showReference && this._referenceBuffers && this._referenceBuffers.count > 0) {
+        if (!this.sectionEnabled && this.showReference && this._referenceBuffers && this._referenceBuffers.count > 0) {
             this._drawReference(gl, projection, modelView, normalMatrix);
         }
 
@@ -1091,11 +1110,61 @@ export class Viewer3D {
     // ─── Buffer building ────────────────────────────────────────────────────
 
     _rebuildBuffers(nx, ny, nz) {
-        if (this.viewMode !== 'voxel' && this.meshData && this.meshData.length > 0) {
-            this._buildTriangleMeshBuffers(nx, ny, nz);
-        } else {
-            this._buildVoxelBuffers(nx, ny, nz);
+        // Build voxel density/stress maps shared by all render paths.
+        const total = nx * ny * nz;
+        const { elements } = this.model;
+        const densityMap = new Float32Array(total);
+        for (let i = 0; i < total; i++) {
+            densityMap[i] = this.densities ? this.densities[i] : elements[i];
         }
+
+        // Stress map in normalized range [0..1], default 0 when unavailable.
+        const stressSum = new Float32Array(total);
+        const stressCount = new Uint16Array(total);
+        if (this.meshData && this.meshData.length > 0) {
+            for (const tri of this.meshData) {
+                const v = tri.vertices[0];
+                const ex = Math.min(Math.max(Math.floor(v[0]), 0), nx - 1);
+                const ey = Math.min(Math.max(Math.floor(v[1]), 0), ny - 1);
+                const ez = Math.min(Math.max(Math.floor(v[2]), 0), nz - 1);
+                const idx = ex + ey * nx + ez * nx * ny;
+
+                if (tri.density !== undefined) densityMap[idx] = tri.density;
+
+                const stress = tri.strain !== undefined ? tri.strain : 0;
+                stressSum[idx] += stress;
+                stressCount[idx] += 1;
+            }
+        }
+        let stressMap = new Float32Array(total);
+        if (this._volumetricStressMap && this._volumetricStressMap.length === total) {
+            stressMap = this._volumetricStressMap;
+        } else {
+            for (let i = 0; i < total; i++) {
+                stressMap[i] = stressCount[i] > 0 ? (stressSum[i] / stressCount[i]) : 0;
+            }
+        }
+
+        // Build visibility mask (shared with section cap/plane)
+        const visible = new Uint8Array(total);
+        const hasStrainFilter = this.strainMin > 0 || this.strainMax < 1;
+
+        for (let i = 0; i < total; i++) {
+            if (densityMap[i] <= this.densityThreshold) continue;
+            if (hasStrainFilter) {
+                const stress = stressMap[i]; // 0 when null/unavailable
+                if (stress < this.strainMin || stress > this.strainMax) continue;
+            }
+            visible[i] = 1;
+        }
+
+        // Cache for section cap/plane to reuse
+        this._cachedVisible = visible;
+        this._cachedDensityMap = densityMap;
+        this._cachedStressMap = stressMap;
+
+        // Unified rendering path: AMR boundary-face surface mesh for all modes.
+        this._generateClosedMeshBuffers(this.gl, nx, ny, nz, visible, densityMap, stressMap);
         this._buildGridBuffers(nx, ny, nz);
         this._buildReferenceBuffers();
     }
@@ -1116,6 +1185,7 @@ export class Viewer3D {
         // Build per-element visibility map and metadata from mesh triangles
         const visibleElements = new Uint8Array(nx * ny * nz);
         const elementDensity = new Float32Array(nx * ny * nz);
+        const elementStress = new Float32Array(nx * ny * nz);
 
         for (const tri of this.meshData) {
             const v = tri.vertices[0];
@@ -1126,23 +1196,24 @@ export class Viewer3D {
             const idx = ex + ey * nx + ez * nx * ny;
             elementDensity[idx] = tri.density;
             const strain = tri.strain !== undefined ? tri.strain : 0;
+            elementStress[idx] = strain;
 
             if (hasStrainFilter) {
                 if (strain >= this.strainMin && strain <= this.strainMax) {
                     visibleElements[idx] = 1;
                 }
             } else {
-                if (tri.density > DENSITY_THRESHOLD) {
+                if (tri.density > this.densityThreshold) {
                     visibleElements[idx] = 1;
                 }
             }
         }
 
         // Generate closed mesh from visible elements
-        this._generateClosedMeshBuffers(gl, nx, ny, nz, visibleElements, elementDensity, true);
+        this._generateClosedMeshBuffers(gl, nx, ny, nz, visibleElements, elementDensity, elementStress);
     }
 
-    _buildDirectTriangleMeshBuffers(gl) {
+    _buildDirectTriangleMeshBuffers(gl, applyStrainFilter = false) {
         const positions = [];
         const normals = [];
         const colors = [];
@@ -1156,12 +1227,20 @@ export class Viewer3D {
         for (let ti = 0; ti < this.meshData.length; ti++) {
             const tri = this.meshData[ti];
             const density = tri.density !== undefined ? tri.density : DEFAULT_TRIANGLE_DENSITY;
+            if (density <= this.densityThreshold) continue;
+
+            if (applyStrainFilter) {
+                const strain = tri.strain !== undefined ? tri.strain : 0;
+                if (strain < this.strainMin || strain > this.strainMax) continue;
+            }
+
             const n = tri.normal || [0, 0, 1];
             const r = density;
             const g = DENSITY_COLOR_GREEN;
             const b = 1 - density;
 
-            positions.push(...tri.vertices[0], ...tri.vertices[1], ...tri.vertices[2]);
+            // Flip winding for worker triangles so outward faces are front faces (CCW)
+            positions.push(...tri.vertices[0], ...tri.vertices[2], ...tri.vertices[1]);
             normals.push(...n, ...n, ...n);
             colors.push(r, g, b, r, g, b, r, g, b);
 
@@ -1191,111 +1270,151 @@ export class Viewer3D {
         const gl = this.gl;
         const { elements } = this.model;
 
-        const occupied = new Uint8Array(nx * ny * nz);
         const densityMap = new Float32Array(nx * ny * nz);
-
-        for (let x = 0; x < nx; x++) {
-            for (let y = 0; y < ny; y++) {
-                for (let z = 0; z < nz; z++) {
-                    const index = x + y * nx + z * nx * ny;
-                    const density = this.densities ? this.densities[index] : elements[index];
-                    densityMap[index] = density;
-                    if (density > DENSITY_THRESHOLD) {
-                        occupied[index] = 1;
-                    }
-                }
-            }
+        for (let i = 0; i < nx * ny * nz; i++) {
+            densityMap[i] = this.densities ? this.densities[i] : elements[i];
         }
+        const stressMap = this._cachedStressMap || new Float32Array(nx * ny * nz);
 
-        this._generateClosedMeshBuffers(gl, nx, ny, nz, occupied, densityMap, !!this.densities);
+        // Use AMR surface mesh module for boundary-face extraction
+        const mesh = generateUniformSurfaceMesh({
+            densities: densityMap,
+            nx, ny, nz,
+            threshold: this.densityThreshold
+        });
+
+        this._buildBuffersFromIndexedMesh(gl, mesh, nx, ny, nz, densityMap, stressMap);
     }
 
     /**
      * Core mesh generation: creates a watertight closed surface from a visibility grid.
-     * Every boundary face (between visible and non-visible voxels) is emitted.
+     * Delegates boundary-face extraction to the AMR surface mesh module.
      */
-    _generateClosedMeshBuffers(gl, nx, ny, nz, visibleElements, densityMap, hasDensityColors) {
+    _generateClosedMeshBuffers(gl, nx, ny, nz, visibleElements, densityMap, stressMap) {
+        let mesh;
+
+        if (this.amrCells && this.amrCells.length > 0) {
+            const hasStrainFilter = this.strainMin > 0 || this.strainMax < 1;
+            const filteredCells = [];
+            for (const cell of this.amrCells) {
+                const d = cell.density !== undefined ? cell.density : 0;
+                if (d <= this.densityThreshold) continue;
+                const s = cell.stress !== undefined ? cell.stress : 0;
+                if (hasStrainFilter && (s < this.strainMin || s > this.strainMax)) continue;
+                filteredCells.push(cell);
+            }
+
+            mesh = generateAMRSurfaceMesh({
+                cells: filteredCells,
+                threshold: this.densityThreshold
+            });
+        } else {
+            // Uniform fallback with pre-built visibility mask
+            mesh = generateUniformSurfaceMesh({
+                densities: densityMap,
+                nx, ny, nz,
+                visible: visibleElements
+            });
+        }
+
+        this._buildBuffersFromIndexedMesh(gl, mesh, nx, ny, nz, densityMap, stressMap);
+    }
+
+    /**
+     * Convert an indexed surface mesh (from the AMR surface mesh module) into
+     * flat WebGL buffers with per-face colors, edge lines, and picking cache.
+     */
+    _buildBuffersFromIndexedMesh(gl, mesh, nx, ny, nz, densityMap, stressMap) {
+        const { positions: meshPositions, indices } = mesh;
+
         const positions = [];
         const normals = [];
         const colors = [];
         const edgePositions = [];
         const edgeColors = [];
 
-        const isVisible = (x, y, z) => {
-            if (x < 0 || x >= nx || y < 0 || y >= ny || z < 0 || z >= nz) return false;
-            return visibleElements[x + y * nx + z * nx * ny] === 1;
-        };
-
-        // Face definitions: [normal, neighbor direction, 4 vertex offsets (CCW from outside)]
-        const faceDefinitions = [
-            { normal: [-1, 0, 0], dir: [-1, 0, 0], verts: [[0,0,0],[0,0,1],[0,1,1],[0,1,0]] },
-            { normal: [1, 0, 0],  dir: [1, 0, 0],  verts: [[1,0,1],[1,0,0],[1,1,0],[1,1,1]] },
-            { normal: [0, -1, 0], dir: [0, -1, 0], verts: [[0,0,0],[1,0,0],[1,0,1],[0,0,1]] },
-            { normal: [0, 1, 0],  dir: [0, 1, 0],  verts: [[0,1,0],[0,1,1],[1,1,1],[1,1,0]] },
-            { normal: [0, 0, -1], dir: [0, 0, -1], verts: [[0,0,0],[0,1,0],[1,1,0],[1,0,0]] },
-            { normal: [0, 0, 1],  dir: [0, 0, 1],  verts: [[0,0,1],[1,0,1],[1,1,1],[0,1,1]] },
-        ];
-
         this._boundaryFaces = [];
         this._boundaryFaceMap = {};
 
-        for (let x = 0; x < nx; x++) {
-            for (let y = 0; y < ny; y++) {
-                for (let z = 0; z < nz; z++) {
-                    if (!isVisible(x, y, z)) continue;
-                    const idx = x + y * nx + z * nx * ny;
-                    const density = densityMap[idx];
+        // Face normals for face-index lookup
+        const FACE_NORMALS = [
+            [-1, 0, 0], [1, 0, 0],   // -X, +X
+            [0, -1, 0], [0, 1, 0],   // -Y, +Y
+            [0, 0, -1], [0, 0, 1]    // -Z, +Z
+        ];
 
-                    for (let fi = 0; fi < 6; fi++) {
-                        const face = faceDefinitions[fi];
-                        const [dx, dy, dz] = face.dir;
-                        if (isVisible(x + dx, y + dy, z + dz)) continue;
+        // Process triangle pairs (each quad = 2 triangles = 6 indices)
+        for (let qi = 0; qi < indices.length; qi += 6) {
+            // Quad indices: tri1 = (i0, i1, i2), tri2 = (i0, i2, i3)
+            const a0 = indices[qi], a1 = indices[qi + 1], a2 = indices[qi + 2];
+            const a5 = indices[qi + 5]; // Fourth corner of quad
 
-                        // Compute color
-                        let r, g, b;
-                        if (hasDensityColors) {
-                            r = density;
-                            g = DENSITY_COLOR_GREEN;
-                            b = 1 - density;
-                        } else {
-                            r = DEFAULT_MESH_COLOR[0];
-                            g = DEFAULT_MESH_COLOR[1];
-                            b = DEFAULT_MESH_COLOR[2];
-                        }
+            // Quad corners
+            const v0 = [meshPositions[a0 * 3], meshPositions[a0 * 3 + 1], meshPositions[a0 * 3 + 2]];
+            const v1 = [meshPositions[a1 * 3], meshPositions[a1 * 3 + 1], meshPositions[a1 * 3 + 2]];
+            const v2 = [meshPositions[a2 * 3], meshPositions[a2 * 3 + 1], meshPositions[a2 * 3 + 2]];
+            const v3 = [meshPositions[a5 * 3], meshPositions[a5 * 3 + 1], meshPositions[a5 * 3 + 2]];
 
-                        const verts = face.verts.map(([vx, vy, vz]) => [x + vx, y + vy, z + vz]);
-                        const n = face.normal;
+            // Face normal from cross product (flat shading)
+            const e1x = v1[0] - v0[0], e1y = v1[1] - v0[1], e1z = v1[2] - v0[2];
+            const e2x = v2[0] - v0[0], e2y = v2[1] - v0[1], e2z = v2[2] - v0[2];
+            let fnx = e1y * e2z - e1z * e2y;
+            let fny = e1z * e2x - e1x * e2z;
+            let fnz = e1x * e2y - e1y * e2x;
+            const flen = Math.sqrt(fnx * fnx + fny * fny + fnz * fnz);
+            if (flen > 0) { fnx /= flen; fny /= flen; fnz /= flen; }
 
-                        // Two triangles per quad (CCW)
-                        const triIndices = [[0, 1, 2], [0, 2, 3]];
-                        for (const [i0, i1, i2] of triIndices) {
-                            positions.push(...verts[i0], ...verts[i1], ...verts[i2]);
-                            normals.push(...n, ...n, ...n);
-                            colors.push(r, g, b, r, g, b, r, g, b);
-                        }
+            // Find which voxel this face belongs to:
+            // Face center minus half-normal step lands inside the active voxel
+            const cx = (v0[0] + v1[0] + v2[0] + v3[0]) * 0.25;
+            const cy = (v0[1] + v1[1] + v2[1] + v3[1]) * 0.25;
+            const cz = (v0[2] + v1[2] + v2[2] + v3[2]) * 0.25;
+            const vx = Math.min(Math.max(Math.floor(cx - fnx * 0.5), 0), nx - 1);
+            const vy = Math.min(Math.max(Math.floor(cy - fny * 0.5), 0), ny - 1);
+            const vz = Math.min(Math.max(Math.floor(cz - fnz * 0.5), 0), nz - 1);
+            const cellIdx = vx + vy * nx + vz * nx * ny;
+            const stressRaw = stressMap ? stressMap[cellIdx] : 0;
+            const stress = Math.max(0, Math.min(1, stressRaw || 0));
 
-                        // Edge lines for wireframe
-                        for (let i = 0; i < 4; i++) {
-                            const j = (i + 1) % 4;
-                            edgePositions.push(...verts[i], ...verts[j]);
-                            edgeColors.push(0.2, 0.2, 0.2, 0.2, 0.2, 0.2);
-                        }
+            // Per-face color from closest voxel stress (0 when unavailable)
+            const r = stress;
+            const g = DENSITY_COLOR_GREEN;
+            const b = 1 - stress;
 
-                        // Cache boundary face for paint picking
-                        const key = `${x},${y},${z},${fi}`;
-                        const faceObj = {
-                            key,
-                            projVerts: verts.map(v => ({ x: v[0], y: v[1], z: v[2] })),
-                            normal: n,
-                            voxel: [x, y, z],
-                            faceIndex: fi,
-                            avgDepth: 0
-                        };
-                        this._boundaryFaces.push(faceObj);
-                        this._boundaryFaceMap[key] = faceObj;
-                    }
-                }
+            // Two triangles for this quad
+            positions.push(...v0, ...v1, ...v2, ...v0, ...v2, ...v3);
+            normals.push(fnx, fny, fnz, fnx, fny, fnz, fnx, fny, fnz,
+                         fnx, fny, fnz, fnx, fny, fnz, fnx, fny, fnz);
+            colors.push(r, g, b, r, g, b, r, g, b,
+                        r, g, b, r, g, b, r, g, b);
+
+            // Edge lines (4 edges of the quad)
+            edgePositions.push(...v0, ...v1, ...v1, ...v2, ...v2, ...v3, ...v3, ...v0);
+            edgeColors.push(0.2, 0.2, 0.2, 0.2, 0.2, 0.2,
+                            0.2, 0.2, 0.2, 0.2, 0.2, 0.2,
+                            0.2, 0.2, 0.2, 0.2, 0.2, 0.2,
+                            0.2, 0.2, 0.2, 0.2, 0.2, 0.2);
+
+            // Determine face index from normal for picking
+            let fi = 0;
+            let bestDot = -2;
+            for (let f = 0; f < 6; f++) {
+                const d = fnx * FACE_NORMALS[f][0] + fny * FACE_NORMALS[f][1] + fnz * FACE_NORMALS[f][2];
+                if (d > bestDot) { bestDot = d; fi = f; }
             }
+
+            // Cache boundary face for paint picking
+            const key = `${vx},${vy},${vz},${fi}`;
+            const faceObj = {
+                key,
+                projVerts: [v0, v1, v2, v3].map(v => ({ x: v[0], y: v[1], z: v[2] })),
+                normal: [fnx, fny, fnz],
+                voxel: [vx, vy, vz],
+                faceIndex: fi,
+                avgDepth: 0
+            };
+            this._boundaryFaces.push(faceObj);
+            this._boundaryFaceMap[key] = faceObj;
         }
 
         this._uploadMeshBuffers(gl, positions, normals, colors);
@@ -1694,50 +1813,53 @@ export class Viewer3D {
         const n = this.sectionNormal;
         const d = this.sectionOffset;
 
-        // Build per-voxel visibility (same logic as _drawSectionCap)
-        const total = nx * ny * nz;
-        const visible = new Uint8Array(total);
+        // Intersect section plane with model bounding box so border is perfectly aligned.
+        const boxCorners = [
+            [0, 0, 0], [nx, 0, 0], [0, ny, 0], [nx, ny, 0],
+            [0, 0, nz], [nx, 0, nz], [0, ny, nz], [nx, ny, nz]
+        ];
+        const boxEdges = [[0,1],[2,3],[4,5],[6,7],[0,2],[1,3],[4,6],[5,7],[0,4],[1,5],[2,6],[3,7]];
 
-        const elements = this.model.elements;
-        for (let i = 0; i < total; i++) {
-            const density = this.densities ? this.densities[i] : elements[i];
-            if (density > DENSITY_THRESHOLD) visible[i] = 1;
+        const dists = new Float64Array(8);
+        for (let i = 0; i < 8; i++) {
+            const p = boxCorners[i];
+            dists[i] = n[0] * p[0] + n[1] * p[1] + n[2] * p[2] - d;
         }
 
-        if (this.viewMode !== 'voxel' && this.meshData && this.meshData.length > 0) {
-            const hasStrainFilter = this.strainMin > 0 || this.strainMax < 1;
-            if (hasStrainFilter) {
-                const surfaceVoxels = new Set();
-                const strainPassVoxels = new Set();
-                for (const tri of this.meshData) {
-                    const v = tri.vertices[0];
-                    const ex = Math.min(Math.max(Math.floor(v[0]), 0), nx - 1);
-                    const ey = Math.min(Math.max(Math.floor(v[1]), 0), ny - 1);
-                    const ez = Math.min(Math.max(Math.floor(v[2]), 0), nz - 1);
-                    const idx = ex + ey * nx + ez * nx * ny;
-                    surfaceVoxels.add(idx);
-                    const strain = tri.strain !== undefined ? tri.strain : 0;
-                    if (strain >= this.strainMin && strain <= this.strainMax) {
-                        strainPassVoxels.add(idx);
-                    }
-                }
-                for (const idx of surfaceVoxels) {
-                    if (!strainPassVoxels.has(idx)) {
-                        visible[idx] = 0;
-                    }
-                }
+        const pts = [];
+        const addPointUnique = (p) => {
+            const eps = 1e-6;
+            for (const q of pts) {
+                if (Math.abs(p[0] - q[0]) < eps && Math.abs(p[1] - q[1]) < eps && Math.abs(p[2] - q[2]) < eps) return;
+            }
+            pts.push(p);
+        };
+
+        for (const [a, b] of boxEdges) {
+            const da = dists[a];
+            const db = dists[b];
+            const pa = boxCorners[a];
+            const pb = boxCorners[b];
+
+            if (Math.abs(da) < 1e-9) addPointUnique([pa[0], pa[1], pa[2]]);
+            if (Math.abs(db) < 1e-9) addPointUnique([pb[0], pb[1], pb[2]]);
+            if ((da > 0) !== (db > 0)) {
+                const t = da / (da - db);
+                addPointUnique([
+                    pa[0] + t * (pb[0] - pa[0]),
+                    pa[1] + t * (pb[1] - pa[1]),
+                    pa[2] + t * (pb[2] - pa[2])
+                ]);
             }
         }
 
-        // Cube corners and edges for plane-cube intersection
-        const corners = [[0,0,0],[1,0,0],[0,1,0],[1,1,0],[0,0,1],[1,0,1],[0,1,1],[1,1,1]];
-        const edges = [[0,1],[2,3],[4,5],[6,7],[0,2],[1,3],[4,6],[5,7],[0,4],[1,5],[2,6],[3,7]];
+        if (pts.length < 3) return;
 
-        const positions = [];
-        const lineColors = [];
+        const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length;
+        const cy = pts.reduce((s, p) => s + p[1], 0) / pts.length;
+        const cz = pts.reduce((s, p) => s + p[2], 0) / pts.length;
 
-        // Build local 2D basis on the plane (computed once)
-        let up = Math.abs(n[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+        const up = Math.abs(n[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
         const t1 = vec3Normalize([
             up[1] * n[2] - up[2] * n[1],
             up[2] * n[0] - up[0] * n[2],
@@ -1749,56 +1871,22 @@ export class Viewer3D {
             n[0] * t1[1] - n[1] * t1[0]
         ];
 
-        for (let x = 0; x < nx; x++) {
-            for (let y = 0; y < ny; y++) {
-                for (let z = 0; z < nz; z++) {
-                    const idx = x + y * nx + z * nx * ny;
-                    if (!visible[idx]) continue;
+        pts.sort((a, b) => {
+            const da = [a[0] - cx, a[1] - cy, a[2] - cz];
+            const db = [b[0] - cx, b[1] - cy, b[2] - cz];
+            const angleA = Math.atan2(da[0]*t2[0]+da[1]*t2[1]+da[2]*t2[2], da[0]*t1[0]+da[1]*t1[1]+da[2]*t1[2]);
+            const angleB = Math.atan2(db[0]*t2[0]+db[1]*t2[1]+db[2]*t2[2], db[0]*t1[0]+db[1]*t1[1]+db[2]*t1[2]);
+            return angleA - angleB;
+        });
 
-                    // Signed distances from each corner to the plane
-                    const dists = new Float64Array(8);
-                    let hasPos = false, hasNeg = false;
-                    for (let c = 0; c < 8; c++) {
-                        dists[c] = n[0] * (x + corners[c][0]) + n[1] * (y + corners[c][1]) + n[2] * (z + corners[c][2]) - d;
-                        if (dists[c] > 0) hasPos = true;
-                        else hasNeg = true;
-                    }
-                    if (!hasPos || !hasNeg) continue; // plane doesn't intersect this voxel
-
-                    // Compute intersection points on edges where sign changes
-                    const pts = [];
-                    for (const [a, b] of edges) {
-                        if ((dists[a] > 0) !== (dists[b] > 0)) {
-                            const t = dists[a] / (dists[a] - dists[b]);
-                            pts.push([
-                                x + corners[a][0] + t * (corners[b][0] - corners[a][0]),
-                                y + corners[a][1] + t * (corners[b][1] - corners[a][1]),
-                                z + corners[a][2] + t * (corners[b][2] - corners[a][2])
-                            ]);
-                        }
-                    }
-                    if (pts.length < 3) continue;
-
-                    // Sort points in winding order around centroid
-                    const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length;
-                    const cy = pts.reduce((s, p) => s + p[1], 0) / pts.length;
-                    const cz = pts.reduce((s, p) => s + p[2], 0) / pts.length;
-                    pts.sort((a, b) => {
-                        const da = [a[0] - cx, a[1] - cy, a[2] - cz];
-                        const db = [b[0] - cx, b[1] - cy, b[2] - cz];
-                        const angleA = Math.atan2(da[0]*t2[0]+da[1]*t2[1]+da[2]*t2[2], da[0]*t1[0]+da[1]*t1[1]+da[2]*t1[2]);
-                        const angleB = Math.atan2(db[0]*t2[0]+db[1]*t2[1]+db[2]*t2[2], db[0]*t1[0]+db[1]*t1[1]+db[2]*t1[2]);
-                        return angleA - angleB;
-                    });
-
-                    // Build outline as line segments (closed polygon)
-                    for (let i = 0; i < pts.length; i++) {
-                        const next = (i + 1) % pts.length;
-                        positions.push(...pts[i], ...pts[next]);
-                        lineColors.push(0.3, 0.5, 0.8, 0.3, 0.5, 0.8);
-                    }
-                }
-            }
+        const positions = [];
+        for (let i = 0; i < pts.length; i++) {
+            const j = (i + 1) % pts.length;
+            positions.push(...pts[i], ...pts[j]);
+        }
+        const lineColors = [];
+        for (let i = 0; i < positions.length / 3; i++) {
+            lineColors.push(0.45, 0.65, 1.0);
         }
 
         if (positions.length === 0) return;
@@ -1808,7 +1896,7 @@ export class Viewer3D {
 
         gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uProjection'), false, projection);
         gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uModelView'), false, modelView);
-        gl.uniform1f(gl.getUniformLocation(prog, 'uAlpha'), 0.5);
+        gl.uniform1f(gl.getUniformLocation(prog, 'uAlpha'), 0.9);
         // Do not clip the plane outline itself
         gl.uniform1f(gl.getUniformLocation(prog, 'uClipEnabled'), 0.0);
 
@@ -1850,144 +1938,145 @@ export class Viewer3D {
     _drawSectionCap(gl, projection, modelView, normalMatrix, nx, ny, nz) {
         const n = this.sectionNormal;
         const d = this.sectionOffset;
+        const planeEps = 1e-7;
 
-        // Build per-voxel visibility (same logic as buffer builders)
         const total = nx * ny * nz;
-        const visible = new Uint8Array(total);
-        const densityMap = new Float32Array(total);
+        const visible = this._cachedVisible || new Uint8Array(total);
+        const stressMap = this._cachedStressMap || new Float32Array(total);
 
-        // Always use density/elements data for ALL voxels so that interior
-        // solid voxels (which have no surface triangles in meshData) also
-        // receive section-cap polygons.
-        const elements = this.model.elements;
-        for (let i = 0; i < total; i++) {
-            const density = this.densities ? this.densities[i] : elements[i];
-            densityMap[i] = density;
-            if (density > DENSITY_THRESHOLD) visible[i] = 1;
-        }
-
-        if (this.viewMode !== 'voxel' && this.meshData && this.meshData.length > 0) {
-            const hasStrainFilter = this.strainMin > 0 || this.strainMax < 1;
-            if (hasStrainFilter) {
-                // Determine which surface voxels pass the strain filter
-                const surfaceVoxels = new Set();
-                const strainPassVoxels = new Set();
-                for (const tri of this.meshData) {
-                    const v = tri.vertices[0];
-                    const ex = Math.min(Math.max(Math.floor(v[0]), 0), nx - 1);
-                    const ey = Math.min(Math.max(Math.floor(v[1]), 0), ny - 1);
-                    const ez = Math.min(Math.max(Math.floor(v[2]), 0), nz - 1);
-                    const idx = ex + ey * nx + ez * nx * ny;
-                    densityMap[idx] = tri.density;
-                    surfaceVoxels.add(idx);
-                    const strain = tri.strain !== undefined ? tri.strain : 0;
-                    if (strain >= this.strainMin && strain <= this.strainMax) {
-                        strainPassVoxels.add(idx);
-                    }
-                }
-                // Exclude surface voxels that don't pass the strain filter
-                for (const idx of surfaceVoxels) {
-                    if (!strainPassVoxels.has(idx)) {
-                        visible[idx] = 0;
-                    }
-                }
-            }
-        }
-
-        // Cube edges: 12 edges of a unit cube, each defined by two corner indices
-        // Corners: 0=(0,0,0) 1=(1,0,0) 2=(0,1,0) 3=(1,1,0) 4=(0,0,1) 5=(1,0,1) 6=(0,1,1) 7=(1,1,1)
         const corners = [[0,0,0],[1,0,0],[0,1,0],[1,1,0],[0,0,1],[1,0,1],[0,1,1],[1,1,1]];
         const edges = [[0,1],[2,3],[4,5],[6,7],[0,2],[1,3],[4,6],[5,7],[0,4],[1,5],[2,6],[3,7]];
 
         const positions = [];
         const normals = [];
         const colors = [];
-        const edgePositions = [];
-        const edgeColors = [];
-        const capNormal = [-n[0], -n[1], -n[2]]; // face toward the camera (opposite to clip discard direction)
+        const capNormal = [-n[0], -n[1], -n[2]];
 
-        for (let x = 0; x < nx; x++) {
-            for (let y = 0; y < ny; y++) {
-                for (let z = 0; z < nz; z++) {
-                    const idx = x + y * nx + z * nx * ny;
-                    if (!visible[idx]) continue;
+        const appendIntersectionPolygon = (pts, stress) => {
+            if (pts.length < 3) return;
 
-                    // Signed distances from each corner to the plane
-                    const dists = new Float64Array(8);
-                    let hasPos = false, hasNeg = false;
-                    for (let c = 0; c < 8; c++) {
-                        dists[c] = n[0] * (x + corners[c][0]) + n[1] * (y + corners[c][1]) + n[2] * (z + corners[c][2]) - d;
-                        if (dists[c] > 0) hasPos = true;
-                        else hasNeg = true;
+            const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length;
+            const cy = pts.reduce((s, p) => s + p[1], 0) / pts.length;
+            const cz = pts.reduce((s, p) => s + p[2], 0) / pts.length;
+
+            const up = Math.abs(n[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+            const t1 = vec3Normalize([
+                up[1] * n[2] - up[2] * n[1],
+                up[2] * n[0] - up[0] * n[2],
+                up[0] * n[1] - up[1] * n[0]
+            ]);
+            const t2 = [
+                capNormal[1] * t1[2] - capNormal[2] * t1[1],
+                capNormal[2] * t1[0] - capNormal[0] * t1[2],
+                capNormal[0] * t1[1] - capNormal[1] * t1[0]
+            ];
+
+            pts.sort((a, b) => {
+                const da = [a[0] - cx, a[1] - cy, a[2] - cz];
+                const db = [b[0] - cx, b[1] - cy, b[2] - cz];
+                const angleA = Math.atan2(da[0]*t2[0]+da[1]*t2[1]+da[2]*t2[2], da[0]*t1[0]+da[1]*t1[1]+da[2]*t1[2]);
+                const angleB = Math.atan2(db[0]*t2[0]+db[1]*t2[1]+db[2]*t2[2], db[0]*t1[0]+db[1]*t1[1]+db[2]*t1[2]);
+                return angleA - angleB;
+            });
+
+            const s = Math.max(0, Math.min(1, stress || 0));
+            const cr = s;
+            const cg = DENSITY_COLOR_GREEN;
+            const cb = 1 - s;
+
+            for (let i = 1; i < pts.length - 1; i++) {
+                positions.push(...pts[0], ...pts[i], ...pts[i + 1]);
+                normals.push(...capNormal, ...capNormal, ...capNormal);
+                colors.push(cr, cg, cb, cr, cg, cb, cr, cg, cb);
+            }
+        };
+
+        if (this.amrCells && this.amrCells.length > 0) {
+            const hasStrainFilter = this.strainMin > 0 || this.strainMax < 1;
+            for (const cell of this.amrCells) {
+                const density = cell.density !== undefined ? cell.density : 0;
+                if (density <= this.densityThreshold) continue;
+
+                const stress = cell.stress !== undefined ? cell.stress : 0;
+                if (hasStrainFilter && (stress < this.strainMin || stress > this.strainMax)) continue;
+
+                const size = Math.max(1e-6, cell.size || 1);
+                const bx0 = cell.x;
+                const by0 = cell.y;
+                const bz0 = cell.z;
+                const bx1 = bx0 + size;
+                const by1 = by0 + size;
+                const bz1 = bz0 + size;
+
+                const cellCorners = [
+                    [bx0, by0, bz0], [bx1, by0, bz0], [bx0, by1, bz0], [bx1, by1, bz0],
+                    [bx0, by0, bz1], [bx1, by0, bz1], [bx0, by1, bz1], [bx1, by1, bz1]
+                ];
+
+                const dists = new Float64Array(8);
+                let hasStrictPos = false, hasStrictNeg = false;
+                let hasZero = false;
+                for (let c = 0; c < 8; c++) {
+                    const p = cellCorners[c];
+                    dists[c] = n[0] * p[0] + n[1] * p[1] + n[2] * p[2] - d;
+                    if (dists[c] > planeEps) hasStrictPos = true;
+                    else if (dists[c] < -planeEps) hasStrictNeg = true;
+                    else hasZero = true;
+                }
+
+                // Plane must strictly pass through cell volume to create a cap.
+                // If it only touches a face/edge/corner (coplanar tangent), skip
+                // to avoid double-drawing existing surface polygons.
+                if (!(hasStrictPos && hasStrictNeg)) continue;
+
+                const pts = [];
+                for (const [a, b] of edges) {
+                    if ((dists[a] > planeEps) !== (dists[b] > planeEps)) {
+                        const t = dists[a] / (dists[a] - dists[b]);
+                        const pa = cellCorners[a];
+                        const pb = cellCorners[b];
+                        pts.push([
+                            pa[0] + t * (pb[0] - pa[0]),
+                            pa[1] + t * (pb[1] - pa[1]),
+                            pa[2] + t * (pb[2] - pa[2])
+                        ]);
                     }
-                    if (!hasPos || !hasNeg) continue; // plane doesn't intersect this voxel
+                }
 
-                    // Compute intersection points on edges where sign changes
-                    const pts = [];
-                    for (const [a, b] of edges) {
-                        if ((dists[a] > 0) !== (dists[b] > 0)) {
-                            const t = dists[a] / (dists[a] - dists[b]);
-                            pts.push([
-                                x + corners[a][0] + t * (corners[b][0] - corners[a][0]),
-                                y + corners[a][1] + t * (corners[b][1] - corners[a][1]),
-                                z + corners[a][2] + t * (corners[b][2] - corners[a][2])
-                            ]);
+                appendIntersectionPolygon(pts, stress);
+            }
+        } else {
+            for (let x = 0; x < nx; x++) {
+                for (let y = 0; y < ny; y++) {
+                    for (let z = 0; z < nz; z++) {
+                        const idx = x + y * nx + z * nx * ny;
+                        if (!visible[idx]) continue;
+
+                        const dists = new Float64Array(8);
+                        let hasStrictPos = false, hasStrictNeg = false;
+                        let hasZero = false;
+                        for (let c = 0; c < 8; c++) {
+                            dists[c] = n[0] * (x + corners[c][0]) + n[1] * (y + corners[c][1]) + n[2] * (z + corners[c][2]) - d;
+                            if (dists[c] > planeEps) hasStrictPos = true;
+                            else if (dists[c] < -planeEps) hasStrictNeg = true;
+                            else hasZero = true;
                         }
-                    }
-                    if (pts.length < 3) continue;
 
-                    // Sort points in winding order around centroid
-                    const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length;
-                    const cy = pts.reduce((s, p) => s + p[1], 0) / pts.length;
-                    const cz = pts.reduce((s, p) => s + p[2], 0) / pts.length;
-                    // Build local 2D basis on the plane (avoid parallel up vector)
-                    let up = Math.abs(n[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
-                    const t1 = vec3Normalize([
-                        up[1] * n[2] - up[2] * n[1],
-                        up[2] * n[0] - up[0] * n[2],
-                        up[0] * n[1] - up[1] * n[0]
-                    ]);
-                    // Second tangent: cross(capNormal, t1)
-                    const t2 = [
-                        capNormal[1] * t1[2] - capNormal[2] * t1[1],
-                        capNormal[2] * t1[0] - capNormal[0] * t1[2],
-                        capNormal[0] * t1[1] - capNormal[1] * t1[0]
-                    ];
-                    pts.sort((a, b) => {
-                        const da = [a[0] - cx, a[1] - cy, a[2] - cz];
-                        const db = [b[0] - cx, b[1] - cy, b[2] - cz];
-                        const angleA = Math.atan2(da[0]*t2[0]+da[1]*t2[1]+da[2]*t2[2], da[0]*t1[0]+da[1]*t1[1]+da[2]*t1[2]);
-                        const angleB = Math.atan2(db[0]*t2[0]+db[1]*t2[1]+db[2]*t2[2], db[0]*t1[0]+db[1]*t1[1]+db[2]*t1[2]);
-                        return angleA - angleB;
-                    });
+                        if (!(hasStrictPos && hasStrictNeg)) continue;
 
-                    // Determine color from density
-                    const density = densityMap[idx];
-                    const hasDensityColors = !!(this.densities || (this.meshData && this.meshData.length > 0));
-                    let cr, cg, cb;
-                    if (hasDensityColors) {
-                        cr = density;
-                        cg = DENSITY_COLOR_GREEN;
-                        cb = 1 - density;
-                    } else {
-                        cr = DEFAULT_MESH_COLOR[0];
-                        cg = DEFAULT_MESH_COLOR[1];
-                        cb = DEFAULT_MESH_COLOR[2];
-                    }
+                        const pts = [];
+                        for (const [a, b] of edges) {
+                            if ((dists[a] > planeEps) !== (dists[b] > planeEps)) {
+                                const t = dists[a] / (dists[a] - dists[b]);
+                                pts.push([
+                                    x + corners[a][0] + t * (corners[b][0] - corners[a][0]),
+                                    y + corners[a][1] + t * (corners[b][1] - corners[a][1]),
+                                    z + corners[a][2] + t * (corners[b][2] - corners[a][2])
+                                ]);
+                            }
+                        }
 
-                    // Fan triangulation
-                    for (let i = 1; i < pts.length - 1; i++) {
-                        positions.push(...pts[0], ...pts[i], ...pts[i + 1]);
-                        normals.push(...capNormal, ...capNormal, ...capNormal);
-                        colors.push(cr, cg, cb, cr, cg, cb, cr, cg, cb);
-                    }
-
-                    // Build outline edges for this voxel's cap polygon
-                    const ec = WIREFRAME_EDGE_COLOR;
-                    for (let i = 0; i < pts.length; i++) {
-                        const next = (i + 1) % pts.length;
-                        edgePositions.push(...pts[i], ...pts[next]);
-                        edgeColors.push(ec, ec, ec, ec, ec, ec);
+                        appendIntersectionPolygon(pts, stressMap[idx] || 0);
                     }
                 }
             }
@@ -1995,7 +2084,6 @@ export class Viewer3D {
 
         if (positions.length === 0) return;
 
-        // Upload to GPU
         if (!this._sectionCapBuffer) {
             this._sectionCapBuffer = { position: gl.createBuffer(), normal: gl.createBuffer(), color: gl.createBuffer() };
         }
@@ -2007,7 +2095,6 @@ export class Viewer3D {
         gl.bindBuffer(gl.ARRAY_BUFFER, scb.color);
         gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.DYNAMIC_DRAW);
 
-        // Draw using mesh shader (with lighting) but no clipping on the cap itself
         const prog = this._meshProgram;
         gl.useProgram(prog);
         gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uProjection'), false, projection);
@@ -2016,7 +2103,7 @@ export class Viewer3D {
         const lightDir = vec3Normalize([0.3, 0.5, 0.8]);
         gl.uniform3fv(gl.getUniformLocation(prog, 'uLightDir'), lightDir);
         gl.uniform1f(gl.getUniformLocation(prog, 'uAmbient'), 0.4);
-        gl.uniform1f(gl.getUniformLocation(prog, 'uClipEnabled'), 0.0); // don't clip cap faces
+        gl.uniform1f(gl.getUniformLocation(prog, 'uClipEnabled'), 0.0);
 
         gl.disable(gl.CULL_FACE);
         const posLoc = gl.getAttribLocation(prog, 'aPosition');
@@ -2033,49 +2120,11 @@ export class Viewer3D {
         gl.enableVertexAttribArray(colLoc);
         gl.vertexAttribPointer(colLoc, 3, gl.FLOAT, false, 0, 0);
 
-        const count = positions.length / 3;
-        gl.drawArrays(gl.TRIANGLES, 0, count);
+        gl.drawArrays(gl.TRIANGLES, 0, positions.length / 3);
 
         gl.disableVertexAttribArray(posLoc);
         gl.disableVertexAttribArray(normLoc);
         gl.disableVertexAttribArray(colLoc);
-
-        // Draw outline edges around each voxel's cap polygon
-        if (edgePositions.length > 0) {
-            if (!this._sectionCapEdgeBuffer) {
-                this._sectionCapEdgeBuffer = { position: gl.createBuffer(), color: gl.createBuffer() };
-            }
-            const sce = this._sectionCapEdgeBuffer;
-
-            const lineProg = this._lineProgram;
-            gl.useProgram(lineProg);
-            gl.uniformMatrix4fv(gl.getUniformLocation(lineProg, 'uProjection'), false, projection);
-            gl.uniformMatrix4fv(gl.getUniformLocation(lineProg, 'uModelView'), false, modelView);
-            gl.uniform1f(gl.getUniformLocation(lineProg, 'uAlpha'), 0.6);
-            gl.uniform1f(gl.getUniformLocation(lineProg, 'uClipEnabled'), 0.0);
-
-            gl.enable(gl.POLYGON_OFFSET_FILL);
-            gl.polygonOffset(-1, -1);
-
-            const eposLoc = gl.getAttribLocation(lineProg, 'aPosition');
-            const ecolLoc = gl.getAttribLocation(lineProg, 'aColor');
-
-            gl.bindBuffer(gl.ARRAY_BUFFER, sce.position);
-            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(edgePositions), gl.DYNAMIC_DRAW);
-            gl.enableVertexAttribArray(eposLoc);
-            gl.vertexAttribPointer(eposLoc, 3, gl.FLOAT, false, 0, 0);
-
-            gl.bindBuffer(gl.ARRAY_BUFFER, sce.color);
-            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(edgeColors), gl.DYNAMIC_DRAW);
-            gl.enableVertexAttribArray(ecolLoc);
-            gl.vertexAttribPointer(ecolLoc, 3, gl.FLOAT, false, 0, 0);
-
-            gl.drawArrays(gl.LINES, 0, edgePositions.length / 3);
-
-            gl.disableVertexAttribArray(eposLoc);
-            gl.disableVertexAttribArray(ecolLoc);
-            gl.disable(gl.POLYGON_OFFSET_FILL);
-        }
 
         gl.enable(gl.CULL_FACE);
     }
@@ -2385,9 +2434,22 @@ export class Viewer3D {
     // ─── 2D Overlay (axes) ──────────────────────────────────────────────────
 
     _drawAxesOverlay() {
+        if (!this.model) return;
+
         const axisOriginX = 50;
         const axisOriginY = this.overlayCanvas.height - 50;
         const axisLen = 35;
+
+        const { nx, ny, nz } = this.model;
+        const width = this.canvas.width;
+        const height = this.canvas.height;
+        const aspect = width / height;
+        const projection = mat4Perspective(Math.PI / 4, aspect, 0.1, 1000);
+        const modelView = this._buildModelView(nx, ny, nz);
+
+        // Use the actual model center as axis origin so overlay orientation matches scene exactly.
+        const center = { x: nx * 0.5, y: ny * 0.5, z: nz * 0.5 };
+        const centerScreen = this._projectToScreen(center, modelView, projection, width, height);
 
         const axes = [
             { dir: [1, 0, 0], color: '#ff0000', label: 'X' },
@@ -2397,10 +2459,18 @@ export class Viewer3D {
 
         for (const axis of axes) {
             const [dx, dy, dz] = axis.dir;
-            const projected = this._projectDir(dx, dy, dz);
+            const tipWorld = { x: center.x + dx, y: center.y + dy, z: center.z + dz };
+            const tipScreen = this._projectToScreen(tipWorld, modelView, projection, width, height);
 
-            const ex = axisOriginX + projected.x * axisLen;
-            const ey = axisOriginY - projected.y * axisLen;
+            let vx = tipScreen.x - centerScreen.x;
+            let vy = centerScreen.y - tipScreen.y; // invert screen Y to overlay Y-up
+            const vlen = Math.hypot(vx, vy);
+            if (vlen < 1e-6) continue;
+            vx /= vlen;
+            vy /= vlen;
+
+            const ex = axisOriginX + vx * axisLen;
+            const ey = axisOriginY - vy * axisLen;
 
             this.ctx.strokeStyle = axis.color;
             this.ctx.lineWidth = 2;
@@ -2412,7 +2482,7 @@ export class Viewer3D {
             this.ctx.fillStyle = axis.color;
             this.ctx.font = 'bold 12px Arial';
             this.ctx.textAlign = 'center';
-            this.ctx.fillText(axis.label, ex + (projected.x * 10), ey - (projected.y * 10));
+            this.ctx.fillText(axis.label, ex + (vx * 10), ey - (vy * 10));
         }
         this.ctx.lineWidth = 1;
     }
@@ -2434,7 +2504,48 @@ export class Viewer3D {
 
     updateMesh(meshData, maxStress) {
         this.meshData = meshData;
+        this.amrCells = (meshData && meshData.amrCells && meshData.amrCells.length > 0) ? meshData.amrCells : null;
         if (maxStress !== undefined) this.maxStress = maxStress;
+        this._needsRebuild = true;
+        this.draw();
+    }
+
+    setVolumetricStressData(volumetricData) {
+        if (!volumetricData || !this.model) {
+            this._volumetricStressMap = null;
+            this._needsRebuild = true;
+            this.draw();
+            return;
+        }
+
+        const { nx, ny, nz } = this.model;
+        if (volumetricData.nx !== nx || volumetricData.ny !== ny || volumetricData.nz !== nz || !volumetricData.stress) {
+            return;
+        }
+
+        const source = volumetricData.stress;
+        const total = nx * ny * nz;
+        if (source.length !== total) {
+            return;
+        }
+
+        let maxStress = volumetricData.maxStress || 0;
+        if (!maxStress || !Number.isFinite(maxStress) || maxStress <= 0) {
+            for (let i = 0; i < source.length; i++) {
+                if (source[i] > maxStress) maxStress = source[i];
+            }
+        }
+
+        const normalized = new Float32Array(total);
+        if (maxStress > 0) {
+            const invMax = 1 / maxStress;
+            for (let i = 0; i < total; i++) {
+                normalized[i] = Math.max(0, Math.min(1, source[i] * invMax));
+            }
+        }
+
+        this._volumetricStressMap = normalized;
+        this.maxStress = maxStress;
         this._needsRebuild = true;
         this.draw();
     }
@@ -2452,8 +2563,19 @@ export class Viewer3D {
         this.draw();
     }
 
+    setDensityThreshold(value) {
+        let clamped = Math.max(0, Math.min(1, value));
+        // Keep the top endpoint usable: threshold 1.0 would otherwise hide
+        // everything with strict `density > threshold` comparisons.
+        if (clamped >= 1) clamped = 0.99;
+        this.densityThreshold = clamped;
+        this._needsRebuild = true;
+        this.draw();
+    }
+
     toggleWireframe() {
         this.wireframe = !this.wireframe;
+        this._needsRebuild = true;
         this.draw();
     }
 
@@ -2511,9 +2633,15 @@ export class Viewer3D {
         this.model = null;
         this.densities = null;
         this.meshData = null;
+        this.amrCells = null;
         this.strainMin = 0;
         this.strainMax = 1;
         this.maxStress = 0;
+        this.densityThreshold = DENSITY_THRESHOLD;
+        this._cachedVisible = null;
+        this._cachedDensityMap = null;
+        this._cachedStressMap = null;
+        this._volumetricStressMap = null;
         this._hoverStressValue = null;
         this._hoverScreenPos = null;
         this.viewMode = 'auto';

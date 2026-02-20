@@ -57,6 +57,7 @@ function posKey(x, y, z) {
  * @param {number}       options.ny          - Grid size Y
  * @param {number}       options.nz          - Grid size Z
  * @param {number}      [options.threshold]  - Density threshold (default DENSITY_THRESHOLD)
+ * @param {Uint8Array}  [options.visible]    - Pre-built visibility mask (overrides density/threshold)
  * @param {Float32Array}[options.stress]     - Optional per-voxel stress values
  * @param {boolean}     [options.smoothNormals] - Average normals for smooth shading
  * @returns {{ positions: Float32Array, normals: Float32Array, indices: Uint32Array, stress: Float32Array|null, watertight: boolean }}
@@ -64,12 +65,15 @@ function posKey(x, y, z) {
 export function generateUniformSurfaceMesh(options) {
     const { densities, nx, ny, nz } = options;
     const threshold = options.threshold !== undefined ? options.threshold : DENSITY_THRESHOLD;
+    const visibleMask = options.visible || null;
     const stressField = options.stress || null;
     const smooth = !!options.smoothNormals;
 
     const isActive = (x, y, z) => {
         if (x < 0 || x >= nx || y < 0 || y >= ny || z < 0 || z >= nz) return false;
-        return densities[x + y * nx + z * nx * ny] > threshold;
+        const idx = x + y * nx + z * nx * ny;
+        if (visibleMask) return visibleMask[idx] !== 0;
+        return densities[idx] > threshold;
     };
 
     // Collect vertices and triangles with dedup
@@ -210,9 +214,10 @@ export function generateAMRSurfaceMesh(options) {
         };
     }
 
-    // Build spatial index: map from quantized cell center → cell data
-    // We use a hash map for O(1) neighbor lookups
+    // Build spatial index: map from quantized cell origin → cell data
+    // plus active cell list for robust point-coverage queries.
     const cellMap = new Map();
+    const activeCells = [];
     let minSize = Infinity;
 
     for (const cell of cells) {
@@ -220,82 +225,90 @@ export function generateAMRSurfaceMesh(options) {
         // Key by the cell origin (x, y, z) for lookup
         const key = posKey(cell.x, cell.y, cell.z);
         cellMap.set(key, cell);
+        if (cell.density > threshold) activeCells.push(cell);
     }
 
-    /**
-     * Check if a point is covered by an active cell.
-     * For AMR, we need to check cells at all possible sizes.
-     */
-    function findCellAt(px, py, pz) {
-        // Check at the finest resolution first, then coarser
-        const key = posKey(px, py, pz);
-        const cell = cellMap.get(key);
-        if (cell) return cell;
+    function pointInsideCell(cell, px, py, pz, eps = 1e-9) {
+        return (
+            px >= cell.x - eps && px < cell.x + cell.size - eps &&
+            py >= cell.y - eps && py < cell.y + cell.size - eps &&
+            pz >= cell.z - eps && pz < cell.z + cell.size - eps
+        );
+    }
+
+    function findActiveCellCoveringPoint(px, py, pz) {
+        // Fast exact-origin hit (common for aligned same-size neighbors)
+        const exact = cellMap.get(posKey(px, py, pz));
+        if (exact && exact.density > threshold) return exact;
+
+        for (const c of activeCells) {
+            if (pointInsideCell(c, px, py, pz)) return c;
+        }
         return null;
     }
 
-    /**
-     * Find all leaf cells that touch a given face of a cell.
-     * A face at position (fx, fy, fz) with size (sw, sh) on a given axis.
-     * Returns the finest resolution found among neighbors.
-     */
-    function findNeighborCells(cell, faceIdx) {
-        const face = FACE_DEFS[faceIdx];
-        const [dx, dy, dz] = face.dir;
-        const size = cell.size;
+    function overlapLength(a0, a1, b0, b1) {
+        return Math.min(a1, b1) - Math.max(a0, b0);
+    }
 
-        // Neighbor region: offset cell position by face direction * size
-        const nx = cell.x + dx * size;
-        const ny = cell.y + dy * size;
-        const nz = cell.z + dz * size;
+    function getFaceAxis(faceIdx) {
+        if (faceIdx <= 1) return 0; // ±X
+        if (faceIdx <= 3) return 1; // ±Y
+        return 2;                   // ±Z
+    }
 
-        // Check for a same-size neighbor
-        const sameKey = posKey(nx, ny, nz);
-        const sameNeighbor = cellMap.get(sameKey);
-        if (sameNeighbor && sameNeighbor.size === size) {
-            return { active: sameNeighbor.density > threshold, finestSize: size };
-        }
+    function estimateFinestNeighborSize(cell, faceIdx) {
+        const axis = getFaceAxis(faceIdx);
+        const sign = FACE_DEFS[faceIdx].normal[axis] > 0 ? 1 : -1;
+        const plane = axis === 0
+            ? cell.x + (sign > 0 ? cell.size : 0)
+            : axis === 1
+                ? cell.y + (sign > 0 ? cell.size : 0)
+                : cell.z + (sign > 0 ? cell.size : 0);
 
-        // Check for finer neighbors: subdivide the face region
-        let anyActive = false;
-        let finestSize = size;
+        const eps = Math.max(1e-6, minSize * 1e-3);
+        let finest = cell.size;
 
-        // Determine the face tangent axes
-        const tangents = getFaceTangents(faceIdx);
-        const [tu, tv] = tangents;
+        for (const n of activeCells) {
+            if (n === cell) continue;
 
-        // Try all possible fine cells in the neighbor region at finest resolution
-        if (minSize < size) {
-            const subdiv = Math.round(size / minSize);
-            for (let iu = 0; iu < subdiv; iu++) {
-                for (let iv = 0; iv < subdiv; iv++) {
-                    const px = nx + tu[0] * iu * minSize + tv[0] * iv * minSize;
-                    const py = ny + tu[1] * iu * minSize + tv[1] * iv * minSize;
-                    const pz = nz + tu[2] * iu * minSize + tv[2] * iv * minSize;
-                    const fineCell = findCellAt(px, py, pz);
-                    if (fineCell) {
-                        if (fineCell.density > threshold) anyActive = true;
-                        if (fineCell.size < finestSize) finestSize = fineCell.size;
-                    }
-                }
+            let touchesPlane = false;
+            if (axis === 0) {
+                touchesPlane = sign > 0
+                    ? Math.abs(n.x - plane) <= eps
+                    : Math.abs((n.x + n.size) - plane) <= eps;
+                if (!touchesPlane) continue;
+                if (overlapLength(cell.y, cell.y + cell.size, n.y, n.y + n.size) <= eps) continue;
+                if (overlapLength(cell.z, cell.z + cell.size, n.z, n.z + n.size) <= eps) continue;
+            } else if (axis === 1) {
+                touchesPlane = sign > 0
+                    ? Math.abs(n.y - plane) <= eps
+                    : Math.abs((n.y + n.size) - plane) <= eps;
+                if (!touchesPlane) continue;
+                if (overlapLength(cell.x, cell.x + cell.size, n.x, n.x + n.size) <= eps) continue;
+                if (overlapLength(cell.z, cell.z + cell.size, n.z, n.z + n.size) <= eps) continue;
+            } else {
+                touchesPlane = sign > 0
+                    ? Math.abs(n.z - plane) <= eps
+                    : Math.abs((n.z + n.size) - plane) <= eps;
+                if (!touchesPlane) continue;
+                if (overlapLength(cell.x, cell.x + cell.size, n.x, n.x + n.size) <= eps) continue;
+                if (overlapLength(cell.y, cell.y + cell.size, n.y, n.y + n.size) <= eps) continue;
             }
+
+            if (n.size < finest) finest = n.size;
         }
 
-        // Also check for coarser neighbor
-        if (!sameNeighbor) {
-            // Try to find a larger cell that contains this neighbor position
-            for (const [, c] of cellMap) {
-                if (c.size <= size) continue;
-                if (nx >= c.x && nx < c.x + c.size &&
-                    ny >= c.y && ny < c.y + c.size &&
-                    nz >= c.z && nz < c.z + c.size) {
-                    if (c.density > threshold) anyActive = true;
-                    break;
-                }
-            }
-        }
+        return Math.max(minSize, finest);
+    }
 
-        return { active: anyActive, finestSize };
+    function isPatchCoveredByActiveNeighbor(centerX, centerY, centerZ, faceIdx) {
+        const [dx, dy, dz] = FACE_DEFS[faceIdx].dir;
+        const eps = Math.max(1e-6, minSize * 1e-3);
+        const sx = centerX + dx * eps;
+        const sy = centerY + dy * eps;
+        const sz = centerZ + dz * eps;
+        return !!findActiveCellCoveringPoint(sx, sy, sz);
     }
 
     // Face tangent axes for subdivision, derived from face vertex definitions.
@@ -336,8 +349,7 @@ export function generateAMRSurfaceMesh(options) {
         const size = cell.size;
 
         for (let fi = 0; fi < 6; fi++) {
-            const { active, finestSize } = findNeighborCells(cell, fi);
-            if (active) continue; // Neighbor is active, not a boundary face
+            const finestSize = estimateFinestNeighborSize(cell, fi);
 
             const face = FACE_DEFS[fi];
             const [fnx, fny, fnz] = face.normal;
@@ -361,6 +373,11 @@ export function generateAMRSurfaceMesh(options) {
                     const px = faceOriginX + tu[0] * iu * patchSize + tv[0] * iv * patchSize;
                     const py = faceOriginY + tu[1] * iu * patchSize + tv[1] * iv * patchSize;
                     const pz = faceOriginZ + tu[2] * iu * patchSize + tv[2] * iv * patchSize;
+
+                    const centerX = px + (tu[0] + tv[0]) * patchSize * 0.5;
+                    const centerY = py + (tu[1] + tv[1]) * patchSize * 0.5;
+                    const centerZ = pz + (tu[2] + tv[2]) * patchSize * 0.5;
+                    if (isPatchCoveredByActiveNeighbor(centerX, centerY, centerZ, fi)) continue;
 
                     // 4 corners of the patch quad
                     const c0 = [px, py, pz];

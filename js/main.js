@@ -38,9 +38,13 @@ class TopologyApp {
         
         this.currentModel = null;
         this.optimizedModel = null;
+        this.pausedVolumetricData = null;
+        this.finalVolumetricData = null;
+        this.lastVolumetricData = null;
         this._optimizationPaused = false;
         this.config = {
             solver: 'auto',
+            petscPC: 'bddc',
             volumeFraction: 0.1,
             forceDirection: 'down',
             forceVector: null, // Custom force vector [fx, fy, fz]
@@ -59,6 +63,8 @@ class TopologyApp {
             manufacturingAngle: 90,
             manufacturingMinRadius: 0,
             manufacturingMaxDepth: 0,
+            useGPU: false,
+            volumetricOutputMode: 'on-stop',
             useAMR: true,
             amrInterval: 3,
             minGranuleSize: 0.02,
@@ -90,6 +96,14 @@ class TopologyApp {
         
         this.importer = new ModelImporter();
         this.optimizer = new TopologySolver();
+        this.optimizer.onPaused = (msg) => {
+            this.pausedVolumetricData = msg?.volumetricData || null;
+            this._applyVolumetricSnapshot(this.pausedVolumetricData, 'pause');
+        };
+        this.optimizer.onVolumetric = (msg) => {
+            const volumetricData = msg?.volumetricData || null;
+            this._applyVolumetricSnapshot(volumetricData, msg?.reason || 'update');
+        };
         this.exporter = new ModelExporter();
         this.workflow = new WorkflowManager();
         this.workflow.init();
@@ -105,6 +119,7 @@ class TopologyApp {
         
         // Setup event listeners
         this.setupEventListeners();
+        await this._initGPUControls();
         
         console.log('App initialized successfully');
     }
@@ -421,10 +436,23 @@ class TopologyApp {
         
         // Step 3: Solve
         document.getElementById('solverSelect').addEventListener('change', (e) => {
-            this.config.solver = e.target.value;
+            const solverValue = e.target.value;
+            if (solverValue === 'petsc-bddc') {
+                this.config.solver = 'petsc';
+                this.config.petscPC = 'bddc';
+            } else if (solverValue === 'petsc-mg') {
+                this.config.solver = 'petsc';
+                this.config.petscPC = 'mg';
+            } else if (solverValue === 'petsc-jacobi') {
+                this.config.solver = 'petsc';
+                this.config.petscPC = 'jacobi';
+            } else {
+                this.config.solver = solverValue;
+                if (solverValue !== 'petsc') this.config.petscPC = 'bddc';
+            }
             const geneticPanel = document.getElementById('geneticPanel');
             if (geneticPanel) {
-                geneticPanel.style.display = e.target.value === 'genetic' ? '' : 'none';
+                geneticPanel.style.display = solverValue === 'genetic' ? '' : 'none';
             }
         });
 
@@ -439,6 +467,31 @@ class TopologyApp {
         document.getElementById('filterRadius').addEventListener('input', (e) => {
             this.config.filterRadius = parseFloat(e.target.value);
         });
+
+        const useGPUCheckbox = document.getElementById('useGPU');
+        if (useGPUCheckbox) {
+            useGPUCheckbox.addEventListener('change', (e) => {
+                this.config.useGPU = e.target.checked;
+            });
+        }
+
+        const volumetricOutputModeSelect = document.getElementById('volumetricOutputMode');
+        if (volumetricOutputModeSelect) {
+            volumetricOutputModeSelect.value = this.config.volumetricOutputMode;
+            volumetricOutputModeSelect.addEventListener('change', (e) => {
+                this.config.volumetricOutputMode = e.target.value;
+                this.optimizer.updateConfig({ volumetricOutputMode: this.config.volumetricOutputMode });
+                this._updateVolumetricControlState();
+            });
+        }
+
+        const extractVolumetricStressButton = document.getElementById('extractVolumetricStress');
+        if (extractVolumetricStressButton) {
+            extractVolumetricStressButton.addEventListener('click', () => {
+                this.requestVolumetricSnapshot();
+            });
+        }
+        this._updateVolumetricControlState();
         
         document.getElementById('minCrossSection').addEventListener('input', (e) => {
             this.config.minCrossSection = parseFloat(e.target.value);
@@ -576,6 +629,28 @@ class TopologyApp {
         document.getElementById('downloadJSON').addEventListener('click', () => {
             this.exportJSON();
         });
+
+        document.getElementById('resetSolution').addEventListener('click', () => {
+            this.resetSolution();
+        });
+
+        document.getElementById('exportSetup').addEventListener('click', () => {
+            this.exportSetup();
+        });
+
+        document.getElementById('importSetup').addEventListener('click', () => {
+            const input = document.getElementById('importSetupFile');
+            if (input) {
+                input.value = '';
+                input.click();
+            }
+        });
+
+        document.getElementById('importSetupFile').addEventListener('change', async (e) => {
+            const file = e.target.files && e.target.files[0];
+            if (!file) return;
+            await this.importSetup(file);
+        });
         
         document.getElementById('resetApp').addEventListener('click', () => {
             this.reset();
@@ -648,6 +723,19 @@ class TopologyApp {
         this.viewer.onStrainRangeChange = (min, max) => {
             // Optional: external sync point
         };
+
+        // Density threshold slider
+        const densityThresholdSlider = document.getElementById('densityThresholdSlider');
+        const densityThresholdValue = document.getElementById('densityThresholdValue');
+        if (densityThresholdSlider) {
+            densityThresholdSlider.addEventListener('input', () => {
+                const val = parseFloat(densityThresholdSlider.value);
+                this.viewer.setDensityThreshold(val);
+                const effective = this.viewer.densityThreshold;
+                densityThresholdSlider.value = effective.toFixed(2);
+                densityThresholdValue.textContent = effective.toFixed(2);
+            });
+        }
     }
 
     _updateForceVector() {
@@ -689,6 +777,350 @@ class TopologyApp {
         const previewEl = document.getElementById('dofPreviewText');
         if (!previewEl) return;
         previewEl.textContent = DOF_DESCRIPTIONS[dofValue] || DOF_DESCRIPTIONS['all'];
+    }
+
+    _updateVolumetricControlState() {
+        const extractButton = document.getElementById('extractVolumetricStress');
+        if (!extractButton) return;
+        extractButton.disabled = this.config.volumetricOutputMode === 'every-iteration';
+    }
+
+    _applyVolumetricSnapshot(volumetricData, source) {
+        if (!volumetricData) return;
+        this.lastVolumetricData = volumetricData;
+        if (source === 'pause') this.pausedVolumetricData = volumetricData;
+        if (source === 'complete') this.finalVolumetricData = volumetricData;
+        this.viewer.setVolumetricStressData(volumetricData);
+    }
+
+    requestVolumetricSnapshot() {
+        this.optimizer.requestVolumetricSnapshot();
+    }
+
+    _serializeModel(model) {
+        if (!model) return null;
+        return {
+            ...model,
+            elements: model.elements ? Array.from(model.elements) : null,
+            originalVertices: model.originalVertices ? model.originalVertices : null
+        };
+    }
+
+    _deserializeModel(serializedModel) {
+        if (!serializedModel) return null;
+        const model = { ...serializedModel };
+        if (Array.isArray(serializedModel.elements)) {
+            model.elements = new Float32Array(serializedModel.elements);
+        }
+        return model;
+    }
+
+    _applyConfigToUI() {
+        const cfg = this.config;
+
+        const solverSelect = document.getElementById('solverSelect');
+        if (solverSelect) {
+            let solverValue = cfg.solver || 'auto';
+            if (solverValue === 'petsc') {
+                if (cfg.petscPC === 'mg') solverValue = 'petsc-mg';
+                else if (cfg.petscPC === 'jacobi') solverValue = 'petsc-jacobi';
+                else solverValue = 'petsc-bddc';
+            }
+            solverSelect.value = solverValue;
+            const geneticPanel = document.getElementById('geneticPanel');
+            if (geneticPanel) {
+                geneticPanel.style.display = solverValue === 'genetic' ? '' : 'none';
+            }
+        }
+
+        const setValue = (id, value) => {
+            const el = document.getElementById(id);
+            if (el && value !== undefined && value !== null) el.value = value;
+        };
+        const setChecked = (id, value) => {
+            const el = document.getElementById(id);
+            if (el && value !== undefined) el.checked = !!value;
+        };
+
+        setValue('materialSelect', cfg.material || 'custom');
+        setValue('youngsModulus', cfg.youngsModulus);
+        setValue('poissonsRatio', cfg.poissonsRatio);
+        setValue('volumeFraction', cfg.volumeFraction);
+        setValue('forceDirection', cfg.forceDirection || 'down');
+        setValue('forceType', cfg.forceType || 'total');
+        setValue('forceMagnitude', cfg.forceMagnitude);
+        setValue('constraintPosition', cfg.constraintPosition || 'left');
+        setValue('constraintDOFs', cfg.constraintDOFs || 'all');
+        setValue('maxIterations', cfg.maxIterations);
+        setValue('penaltyFactor', cfg.penaltyFactor);
+        setValue('filterRadius', cfg.filterRadius);
+        setValue('minCrossSection', cfg.minCrossSection);
+        setValue('manufacturingAngle', cfg.manufacturingAngle);
+        setValue('manufacturingAngleInput', cfg.manufacturingAngle);
+        setValue('manufacturingMinRadius', cfg.manufacturingMinRadius);
+        setValue('manufacturingMaxDepth', cfg.manufacturingMaxDepth);
+        setValue('populationSize', cfg.populationSize);
+        setValue('eliteCount', cfg.eliteCount);
+        setValue('mutationRate', cfg.mutationRate);
+        setValue('crossoverRate', cfg.crossoverRate);
+        setValue('tournamentSize', cfg.tournamentSize);
+        setValue('volumePenalty', cfg.volumePenalty);
+        setValue('penalStart', cfg.penalStart);
+        setValue('continuationIters', cfg.continuationIters);
+        setValue('betaMax', cfg.betaMax);
+        setValue('betaInterval', cfg.betaInterval);
+        setValue('minGranuleSize', cfg.minGranuleSize);
+        setValue('maxGranuleSize', cfg.maxGranuleSize);
+        setValue('amrInterval', cfg.amrInterval);
+        setValue('volumetricOutputMode', cfg.volumetricOutputMode || 'on-stop');
+
+        setChecked('useGPU', cfg.useGPU);
+        setChecked('constrainToSolid', cfg.constrainToSolid);
+        setChecked('preventVoids', cfg.preventVoids);
+        setChecked('manufacturingConstraint', cfg.manufacturingConstraint);
+        setChecked('useProjection', cfg.useProjection !== false);
+        setChecked('useAMR', cfg.useAMR !== false);
+
+        const volumeFractionValue = document.getElementById('volumeFractionValue');
+        if (volumeFractionValue) volumeFractionValue.textContent = `${Math.round((cfg.volumeFraction || 0) * 100)}%`;
+
+        const manufacturingControls = document.getElementById('manufacturingControls');
+        if (manufacturingControls) manufacturingControls.style.display = cfg.manufacturingConstraint ? '' : 'none';
+        const projectionControls = document.getElementById('projectionControls');
+        if (projectionControls) projectionControls.style.display = cfg.useProjection !== false ? '' : 'none';
+        const projectionControls2 = document.getElementById('projectionControls2');
+        if (projectionControls2) projectionControls2.style.display = cfg.useProjection !== false ? '' : 'none';
+        const amrControls = document.getElementById('amrControls');
+        if (amrControls) amrControls.style.display = cfg.useAMR !== false ? '' : 'none';
+        const amrControls2 = document.getElementById('amrControls2');
+        if (amrControls2) amrControls2.style.display = cfg.useAMR !== false ? '' : 'none';
+        const amrControls3 = document.getElementById('amrControls3');
+        if (amrControls3) amrControls3.style.display = cfg.useAMR !== false ? '' : 'none';
+
+        const forceLabel = document.getElementById('forceMagnitudeLabel');
+        if (forceLabel) {
+            forceLabel.textContent = (cfg.forceType === 'pressure') ? 'Pressure (N/mm² = MPa)' : 'Force Magnitude (N)';
+        }
+
+        if (Array.isArray(cfg.forceVector) && cfg.forceVector.length >= 3) {
+            setValue('forceVectorX', cfg.forceVector[0]);
+            setValue('forceVectorY', cfg.forceVector[1]);
+            setValue('forceVectorZ', cfg.forceVector[2]);
+        }
+
+        this._updateDOFPreview(cfg.constraintDOFs || 'all');
+        this._updateVolumetricControlState();
+
+        this.viewer.forceDirection = cfg.forceDirection || 'down';
+        this.viewer.forceType = cfg.forceType || 'total';
+        this.viewer.forceMagnitude = cfg.forceMagnitude || 1000;
+        this.viewer.forceVector = Array.isArray(cfg.forceVector) ? cfg.forceVector : null;
+        this.viewer.draw();
+    }
+
+    _applySelectionState(selectionState) {
+        const state = selectionState || {};
+        const groups = Array.isArray(state.selectionGroups) ? state.selectionGroups : [];
+
+        this.viewer.selectionGroups = groups.map((g) => ({
+            ...g,
+            faces: new Set(Array.isArray(g.faces) ? g.faces : [])
+        }));
+        this.viewer._nextGroupId = this.viewer.selectionGroups.reduce((maxId, g) => Math.max(maxId, g.id || 0), 0) + 1;
+        this.viewer.activeGroupId = state.activeGroupId || (this.viewer.selectionGroups[0]?.id ?? null);
+
+        if (this.viewer.selectionGroups.length > 0) {
+            this.viewer._syncGroupsToFaceSets();
+        } else {
+            this.viewer.paintedConstraintFaces = new Set(state.paintedConstraints || []);
+            this.viewer.paintedForceFaces = new Set(state.paintedForces || []);
+            this.viewer.paintedKeepFaces = new Set(state.paintedKeep || []);
+        }
+
+        if (state.useAngleSelection !== undefined) {
+            this.viewer.useAngleSelection = !!state.useAngleSelection;
+            const useAngleSelection = document.getElementById('useAngleSelection');
+            if (useAngleSelection) useAngleSelection.checked = this.viewer.useAngleSelection;
+            const angleToleranceControls = document.getElementById('angleToleranceControls');
+            if (angleToleranceControls) {
+                angleToleranceControls.style.display = this.viewer.useAngleSelection ? '' : 'none';
+            }
+        }
+        if (state.angleTolerance !== undefined) {
+            this.viewer.angleTolerance = state.angleTolerance;
+            const angleTolerance = document.getElementById('angleTolerance');
+            const angleToleranceInput = document.getElementById('angleToleranceInput');
+            if (angleTolerance) angleTolerance.value = state.angleTolerance;
+            if (angleToleranceInput) angleToleranceInput.value = state.angleTolerance;
+        }
+        if (state.brushSize !== undefined) {
+            this.viewer.brushSize = state.brushSize;
+            const brushSize = document.getElementById('brushSize');
+            const brushSizeValue = document.getElementById('brushSizeValue');
+            if (brushSize) brushSize.value = state.brushSize;
+            if (brushSizeValue) brushSizeValue.textContent = state.brushSize;
+        }
+        this._renderGroupsList();
+    }
+
+    async importSetup(file) {
+        try {
+            const text = await file.text();
+            const setup = JSON.parse(text);
+
+            if (!setup || !setup.model || !setup.config) {
+                throw new Error('Invalid setup file: missing model/config');
+            }
+
+            const importedModel = this._deserializeModel(setup.model);
+            if (!importedModel || !importedModel.nx || !importedModel.ny || !importedModel.nz) {
+                throw new Error('Invalid setup file: malformed model dimensions');
+            }
+
+            this.currentModel = importedModel;
+            this.optimizedModel = null;
+            this.pausedVolumetricData = null;
+            this.finalVolumetricData = null;
+            this.lastVolumetricData = null;
+
+            this.config = {
+                ...this.config,
+                ...setup.config
+            };
+
+            this.viewer.setModel(importedModel);
+            if (setup.referenceModel && Array.isArray(setup.referenceModel.vertices)) {
+                this.viewer.setReferenceModel(setup.referenceModel.vertices, setup.referenceModel.bounds || null);
+            }
+
+            this._applyConfigToUI();
+            this._applySelectionState(setup.selectionState || {});
+            this.viewer.setVolumetricStressData(null);
+
+            const info = document.getElementById('modelInfo');
+            info.classList.remove('hidden');
+            info.innerHTML = `
+                <strong>Setup imported:</strong> ${file.name}<br>
+                <strong>Grid:</strong> ${importedModel.nx} × ${importedModel.ny} × ${importedModel.nz}<br>
+                <strong>Elements:</strong> ${importedModel.nx * importedModel.ny * importedModel.nz}<br>
+                <em>Ready to re-run with restored parameters, forces and constraints.</em>
+            `;
+
+            document.getElementById('progressContainer').classList.add('hidden');
+            document.getElementById('optimizationResults').innerHTML = '<em>Imported setup. Ready to solve.</em>';
+            this.workflow.enableStep(2);
+            this.workflow.enableStep(3);
+            this.workflow.goToStep(3);
+        } catch (error) {
+            console.error('Failed to import setup:', error);
+            alert(`Failed to import setup: ${error.message}`);
+        }
+    }
+
+    exportSetup() {
+        if (!this.currentModel) {
+            alert('Please import or create a model first');
+            return;
+        }
+
+        const payload = {
+            schema: 'topology-setup-v1',
+            timestamp: new Date().toISOString(),
+            config: { ...this.config },
+            model: this._serializeModel(this.currentModel),
+            referenceModel: {
+                vertices: this.viewer.referenceVertices || null,
+                bounds: this.viewer._referenceBounds || null
+            },
+            selectionState: {
+                paintedConstraints: Array.from(this.viewer.paintedConstraintFaces || []),
+                paintedForces: Array.from(this.viewer.paintedForceFaces || []),
+                paintedKeep: Array.from(this.viewer.paintedKeepFaces || []),
+                selectionGroups: (this.viewer.selectionGroups || []).map((g) => ({
+                    ...g,
+                    faces: Array.from(g.faces || [])
+                })),
+                activeGroupId: this.viewer.activeGroupId,
+                useAngleSelection: this.viewer.useAngleSelection,
+                angleTolerance: this.viewer.angleTolerance,
+                brushSize: this.viewer.brushSize
+            }
+        };
+
+        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+        const ts = new Date();
+        const pad = (n) => String(n).padStart(2, '0');
+        const filename = `setup-${ts.getFullYear()}${pad(ts.getMonth() + 1)}${pad(ts.getDate())}-${pad(ts.getHours())}${pad(ts.getMinutes())}${pad(ts.getSeconds())}.json`;
+        this.exporter.downloadBlob(blob, filename);
+    }
+
+    resetSolution() {
+        this.optimizer.cancel();
+        this._optimizationPaused = false;
+        this.optimizedModel = null;
+        this.pausedVolumetricData = null;
+        this.finalVolumetricData = null;
+        this.lastVolumetricData = null;
+
+        this.viewer.meshData = null;
+        this.viewer.densities = null;
+        this.viewer.amrCells = null;
+        this.viewer.maxStress = 0;
+        this.viewer.setVolumetricStressData(null);
+        this.viewer._needsRebuild = true;
+        this.viewer.draw();
+
+        const progressContainer = document.getElementById('progressContainer');
+        const progressFill = document.getElementById('progressFill');
+        const progressText = document.getElementById('progressText');
+        const complianceText = document.getElementById('complianceText');
+        const runButton = document.getElementById('runOptimization');
+        const cancelButton = document.getElementById('cancelOptimization');
+        const pauseButton = document.getElementById('pauseOptimization');
+
+        progressContainer.classList.add('hidden');
+        progressFill.style.width = '0%';
+        progressText.textContent = 'Iteration 0 / 100';
+        complianceText.textContent = '';
+        runButton.classList.remove('hidden');
+        cancelButton.classList.add('hidden');
+        if (pauseButton) {
+            pauseButton.classList.add('hidden');
+            pauseButton.textContent = 'Pause';
+        }
+
+        document.getElementById('optimizationResults').innerHTML = '<em>Solution reset. Configuration, forces, constraints and model are preserved.</em>';
+
+        this.workflow.disableStep(4);
+        this.workflow.enableStep(3);
+        this.workflow.goToStep(3);
+    }
+
+    async _initGPUControls() {
+        const useGPUCheckbox = document.getElementById('useGPU');
+        const gpuStatus = document.getElementById('gpuStatus');
+        if (!useGPUCheckbox || !gpuStatus) return;
+
+        useGPUCheckbox.checked = false;
+        useGPUCheckbox.disabled = true;
+        this.config.useGPU = false;
+
+        if (typeof navigator === 'undefined' || !navigator.gpu) {
+            gpuStatus.textContent = 'WebGPU not available in this browser.';
+            return;
+        }
+
+        try {
+            const adapter = await navigator.gpu.requestAdapter();
+            if (!adapter) {
+                gpuStatus.textContent = 'No compatible GPU adapter found.';
+                return;
+            }
+            useGPUCheckbox.disabled = false;
+            gpuStatus.textContent = 'WebGPU available. Enable GPU acceleration if desired.';
+        } catch (_err) {
+            gpuStatus.textContent = 'WebGPU probe failed; using CPU path.';
+        }
     }
 
     _renderGroupsList() {
@@ -934,6 +1366,7 @@ class TopologyApp {
         // Reset mesh data so the viewer shows the original model while solving
         this.viewer.meshData = null;
         this.viewer.densities = null;
+        this.viewer.setVolumetricStressData(null);
         this.viewer.draw();
         
         // Show progress
@@ -952,6 +1385,9 @@ class TopologyApp {
         cancelButton.classList.remove('hidden');
         if (pauseButton) { pauseButton.classList.remove('hidden'); pauseButton.textContent = 'Pause'; }
         this._optimizationPaused = false;
+        this.pausedVolumetricData = null;
+        this.finalVolumetricData = null;
+        this.lastVolumetricData = null;
         
         try {
             // Include painted constraint/force/keep data and selection groups in config
@@ -970,7 +1406,7 @@ class TopologyApp {
             const result = await this.optimizer.optimize(
                 this.currentModel,
                 optimConfig,
-                (iteration, compliance, meshData, timing, maxStress) => {
+                (iteration, compliance, meshData, timing, maxStress, volumetricData) => {
                     // Progress callback
                     const progress = (iteration / this.config.maxIterations) * 100;
                     progressFill.style.width = `${progress}%`;
@@ -990,10 +1426,25 @@ class TopologyApp {
                     if (meshData) {
                         this.viewer.updateMesh(meshData, maxStress);
                     }
+                    if (volumetricData) {
+                        this._applyVolumetricSnapshot(volumetricData, 'iteration');
+                    }
                 }
             );
             
             this.optimizedModel = result;
+            this.finalVolumetricData = result.volumetricData || null;
+            if (!this.finalVolumetricData && result.elementStress && result.nx && result.ny && result.nz) {
+                this.finalVolumetricData = {
+                    nx: result.nx,
+                    ny: result.ny,
+                    nz: result.nz,
+                    iteration: result.iterations || 0,
+                    maxStress: result.maxStress || 0,
+                    stress: result.elementStress
+                };
+            }
+            this._applyVolumetricSnapshot(this.finalVolumetricData, 'complete');
             
             // Update viewer with final mesh
             if (result.meshData) {
@@ -1088,7 +1539,9 @@ class TopologyApp {
         }
         
         console.log('Exporting STL...');
-        this.exporter.exportSTL(this.optimizedModel, 'optimized_model.stl');
+        this.exporter.exportSTL(this.optimizedModel, 'optimized_model.stl', {
+            threshold: this.viewer.densityThreshold
+        });
     }
 
     exportJSON() {
@@ -1110,6 +1563,9 @@ class TopologyApp {
         
         this.currentModel = null;
         this.optimizedModel = null;
+        this.pausedVolumetricData = null;
+        this.finalVolumetricData = null;
+        this.lastVolumetricData = null;
         
         // Clear UI
         document.getElementById('modelInfo').classList.add('hidden');
