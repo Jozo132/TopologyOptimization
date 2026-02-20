@@ -665,6 +665,11 @@
                     </div>
                 </div>
             </div>
+            <div class="viewer-params-nav">
+                <button class="viewer-params-nav-btn active" data-target="densityThresholdContainer">Density</button>
+                <button class="viewer-params-nav-btn hidden-tab" data-target="displacementContainer">Displacement</button>
+                <button class="viewer-params-nav-btn hidden-tab" data-target="sectionSliderContainer">Section</button>
+            </div>
         </div>
     </div>
 
@@ -687,12 +692,76 @@
                 minimized = !minimized;
                 container.classList.toggle('workflow-minimized', minimized);
                 workflow.classList.toggle('minimized', minimized);
-                // Flip the chevron icon
                 icon.setAttribute('points', minimized ? '6 9 12 15 18 9' : '18 15 12 9 6 15');
                 btn.title = minimized ? 'Expand Settings' : 'Minimize Settings';
-                // Trigger viewer resize
                 window.dispatchEvent(new Event('resize'));
             });
+
+            // Params tab navigation for mobile carousel
+            const navBtns = document.querySelectorAll('.viewer-params-nav-btn');
+            const paramsRow = document.querySelector('.viewer-params-row');
+            const paramContainers = paramsRow ? paramsRow.querySelectorAll('.section-slider-container') : [];
+
+            function updateNavTabs() {
+                navBtns.forEach(function(btn) {
+                    var target = document.getElementById(btn.dataset.target);
+                    if (!target) return;
+                    var isHidden = target.classList.contains('hidden');
+                    btn.classList.toggle('hidden-tab', isHidden);
+                });
+                // If active tab is now hidden, switch to first visible
+                var activeBtn = document.querySelector('.viewer-params-nav-btn.active');
+                if (activeBtn && activeBtn.classList.contains('hidden-tab')) {
+                    var firstVisible = document.querySelector('.viewer-params-nav-btn:not(.hidden-tab)');
+                    if (firstVisible) firstVisible.click();
+                }
+            }
+
+            function showTab(targetId) {
+                if (!isMobile()) return;
+                paramContainers.forEach(function(c) {
+                    if (c.classList.contains('hidden')) return;
+                    c.style.display = (c.id === targetId) ? '' : 'none';
+                });
+                navBtns.forEach(function(b) {
+                    b.classList.toggle('active', b.dataset.target === targetId);
+                });
+            }
+
+            navBtns.forEach(function(b) {
+                b.addEventListener('click', function() {
+                    showTab(b.dataset.target);
+                });
+            });
+
+            // Observe container class changes to sync tab visibility
+            var observer = new MutationObserver(function() {
+                updateNavTabs();
+                // On desktop, reset inline display styles
+                if (!isMobile()) {
+                    paramContainers.forEach(function(c) { c.style.display = ''; });
+                }
+            });
+            paramContainers.forEach(function(c) {
+                observer.observe(c, { attributes: true, attributeFilter: ['class'] });
+            });
+
+            // Handle resize between mobile/desktop
+            window.addEventListener('resize', function() {
+                if (!isMobile()) {
+                    paramContainers.forEach(function(c) { c.style.display = ''; });
+                } else {
+                    var activeBtn = document.querySelector('.viewer-params-nav-btn.active:not(.hidden-tab)');
+                    if (activeBtn) showTab(activeBtn.dataset.target);
+                }
+            });
+
+            // Initial sync
+            updateNavTabs();
+            if (isMobile()) {
+                var activeBtn = document.querySelector('.viewer-params-nav-btn.active:not(.hidden-tab)');
+                if (activeBtn) showTab(activeBtn.dataset.target);
+            }
         })();
     </script>
 

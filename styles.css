@@ -89,6 +89,10 @@ header h1 span {
     background: rgba(248, 250, 252, 0.1);
 }
 
+.viewer-params-nav {
+    display: none;
+}
+
 .workflow {
     grid-column: 1;
     overflow-y: auto;
@@ -514,10 +518,10 @@ button {
 /* 3D Model Parameter Panels */
 .viewer-params-row {
     position: absolute;
-    top: 0;
+    bottom: 1rem;
     right: 0;
-    left: 0;
-    bottom: 0;
+    left: auto;
+    top: auto;
     pointer-events: none;
     z-index: 10;
 }
@@ -527,15 +531,15 @@ button {
 }
 
 .section-slider-container {
-    position: absolute;
-    top: 3.5rem;
-    right: 1rem;
+    position: relative;
     background: rgba(255, 255, 255, 0.92);
     padding: 0.5rem 0.75rem;
     border-radius: 0.5rem;
     box-shadow: var(--shadow-lg);
     min-width: 200px;
     z-index: 10;
+    margin-right: 1rem;
+    margin-bottom: 0.5rem;
 }
 
 .section-slider-container.hidden {
@@ -593,15 +597,15 @@ button {
         flex: 1;
     }
 
-    /* Group 3D model parameter containers in a horizontal scrollable row */
+    /* Full-width carousel for 3D model parameter panels */
     .viewer-container .section-slider-container {
         position: static;
-        display: inline-block;
-        vertical-align: top;
-        min-width: 180px;
-        max-width: 220px;
+        min-width: 100%;
+        max-width: 100%;
         margin: 0;
         flex-shrink: 0;
+        border-radius: 0;
+        box-shadow: none;
     }
 
     .viewer-container .section-slider-container.hidden {
@@ -621,12 +625,43 @@ button {
         position: static;
         display: flex;
         flex-wrap: nowrap;
-        gap: 0.5rem;
-        overflow-x: auto;
-        padding: 0.25rem 0.5rem;
-        background: rgba(255, 255, 255, 0.92);
-        -webkit-overflow-scrolling: touch;
+        overflow: hidden;
+        background: rgba(255, 255, 255, 0.95);
         pointer-events: auto;
+        left: auto;
+        right: auto;
+        top: auto;
+        bottom: auto;
+    }
+
+    .viewer-params-nav {
+        display: flex;
+        background: rgba(255, 255, 255, 0.95);
+        border-top: 1px solid var(--border-color);
+    }
+
+    .viewer-params-nav-btn {
+        flex: 1;
+        padding: 0.25rem 0.5rem;
+        font-size: 0.7rem;
+        font-weight: 600;
+        background: transparent;
+        border: none;
+        border-bottom: 2px solid transparent;
+        color: var(--text-secondary);
+        cursor: pointer;
+        white-space: nowrap;
+        min-height: 1.75rem;
+        transition: color 0.2s, border-color 0.2s;
+    }
+
+    .viewer-params-nav-btn.active {
+        color: var(--primary-color);
+        border-bottom-color: var(--primary-color);
+    }
+
+    .viewer-params-nav-btn.hidden-tab {
+        display: none;
     }
 }
 
@@ -707,10 +742,6 @@ button {
     .modal {
         width: 95%;
         max-height: 90vh;
-    }
-
-    .section-slider-container {
-        min-width: 160px;
     }
 
     .viewer-controls {
