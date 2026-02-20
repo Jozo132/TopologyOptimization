@@ -460,6 +460,10 @@ button {
     flex-direction: column;
 }
 
+.export-controls.hidden {
+    display: none;
+}
+
 .export-info {
     background: var(--bg-color);
     padding: 1rem;
@@ -924,4 +928,90 @@ button {
 
 .sub-panel.collapsed .sub-panel-header {
     border-radius: 0.5rem;
+}
+
+/* Start Option Cards */
+.start-options {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.start-option-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 1.5rem 1rem;
+    border: 2px solid var(--border-color);
+    border-radius: 0.75rem;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    text-align: center;
+    background: var(--card-bg);
+}
+
+.start-option-card:hover {
+    border-color: var(--primary-color);
+    background: rgba(37, 99, 235, 0.04);
+    box-shadow: 0 4px 12px rgba(37, 99, 235, 0.12);
+}
+
+.start-option-card svg {
+    color: var(--primary-color);
+}
+
+.start-option-card strong {
+    font-size: 1rem;
+}
+
+.start-option-card small {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+}
+
+/* Manufacturing Option Cards */
+.manufacturing-options {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.625rem;
+}
+
+.manufacturing-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 1rem 0.5rem;
+    border: 2px solid var(--border-color);
+    border-radius: 0.625rem;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    text-align: center;
+    background: var(--card-bg);
+}
+
+.manufacturing-card:hover {
+    border-color: var(--primary-color);
+    background: rgba(37, 99, 235, 0.04);
+}
+
+.manufacturing-card.selected {
+    border-color: var(--primary-color);
+    background: rgba(37, 99, 235, 0.06);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+.manufacturing-icon {
+    font-size: 1.5rem;
+}
+
+.manufacturing-card strong {
+    font-size: 0.8rem;
+}
+
+.manufacturing-card small {
+    color: var(--text-secondary);
+    font-size: 0.7rem;
+    line-height: 1.3;
 }

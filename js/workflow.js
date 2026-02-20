@@ -3,7 +3,8 @@ export class WorkflowManager {
     constructor() {
         this.currentStep = 1;
         this.maxReachedStep = 1;
-        this.steps = [1, 2, 3, 4];
+        this.steps = [1, 2, 3, 4, 5, 6];
+        this.totalSteps = 6;
         this.onStepChange = null; // callback(stepNumber)
     }
 
@@ -27,7 +28,7 @@ export class WorkflowManager {
                 nav.appendChild(backBtn);
             }
 
-            if (stepNum < 4) {
+            if (stepNum < this.totalSteps) {
                 const nextBtn = document.createElement('button');
                 nextBtn.className = 'btn-primary step-nav-next';
                 nextBtn.textContent = 'Next →';
@@ -60,13 +61,12 @@ export class WorkflowManager {
             }
         });
 
-        // Enable next button - goToStep handles whether navigation is allowed
-        // But disable Next on step 3 until optimization completes (step 4 enabled)
+        // Update next button state
         const currentEl = document.querySelector(`[data-step="${stepNumber}"]`);
         if (currentEl) {
             const nextBtn = currentEl.querySelector('.step-nav-next');
             if (nextBtn) {
-                nextBtn.disabled = (stepNumber >= this.maxReachedStep && stepNumber >= 3);
+                nextBtn.disabled = false;
             }
         }
 
@@ -75,9 +75,9 @@ export class WorkflowManager {
     }
 
     goToStep(stepNumber) {
-        if (stepNumber < 1 || stepNumber > 4) return;
-        // Allow advancing to the immediate next step from current (but not to step 4 which requires optimization)
-        if (stepNumber === this.currentStep + 1 && stepNumber === this.maxReachedStep + 1 && stepNumber < 4) {
+        if (stepNumber < 1 || stepNumber > this.totalSteps) return;
+        // Allow advancing to the immediate next step from current
+        if (stepNumber === this.currentStep + 1 && stepNumber === this.maxReachedStep + 1) {
             this.maxReachedStep = stepNumber;
         }
         if (stepNumber > this.maxReachedStep) return;
@@ -87,14 +87,6 @@ export class WorkflowManager {
     enableStep(stepNumber) {
         if (stepNumber > this.maxReachedStep) {
             this.maxReachedStep = stepNumber;
-        }
-        // Update next button on current step in case it was disabled
-        const currentEl = document.querySelector(`[data-step="${this.currentStep}"]`);
-        if (currentEl) {
-            const nextBtn = currentEl.querySelector('.step-nav-next');
-            if (nextBtn) {
-                nextBtn.disabled = (this.currentStep >= this.maxReachedStep && this.currentStep >= 3);
-            }
         }
     }
 

@@ -1,7 +1,7 @@
 {
   "name": "topologyoptimization",
   "version": "1.0.0",
-  "description": "A minimalistic but fully functional web-based topology optimization application using vanilla JavaScript and ES6 modules.",
+  "description": "A high-performance web-based topology optimization application powered by AssemblyScript WASM and GPU acceleration with multiple solvers and a guided 6-step workflow.",
   "type": "module",
   "main": "./lib/topology-solver.js",
   "scripts": {

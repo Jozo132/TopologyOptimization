@@ -1,12 +1,12 @@
 # Topology Optimization Web App
 
-A minimalistic but fully functional web-based topology optimization application using vanilla JavaScript and ES6 modules.
+A high-performance web-based topology optimization application powered by AssemblyScript WASM and GPU acceleration (WebGPU / WebGL2). Features multiple solvers, real-time 3D preview, and a guided 6-step workflow — all with zero external dependencies.
 
 **[Try it out on GitHub Pages](https://jozo132.github.io/TopologyOptimization)**
 
 ## Features
 
-- 🚀 **4-Step Workflow**: Import → Assign → Solve → Export
+- 🚀 **6-Step Guided Workflow**: Get Started → Import → Preview → Material → Manufacturing → Solve & Export
 - 🎨 **3D Visualization**: Real-time 3D rendering using Canvas 2D with interactive controls
 - 🔧 **SIMP Algorithm**: Solid Isotropic Material with Penalization
 - 🎯 **Full 3D Optimization**: True 3D FEA with 8-node hexahedral elements
@@ -26,14 +26,14 @@ A minimalistic but fully functional web-based topology optimization application 
 
 ## Technology Stack
 
-- **HTML5/CSS3**: Modern, responsive UI
+- **HTML5/CSS3**: Modern, responsive UI with guided step-by-step workflow
 - **Vanilla JavaScript**: No frameworks, pure ES6 modules
 - **Web Workers**: Background thread for heavy computation
-- **WebAssembly**: High-performance matrix operations via AssemblyScript
-- **WebGL2 GPGPU**: Render-to-texture compute for GPU-accelerated matrix ops
+- **WebAssembly (WASM)**: High-performance matrix operations via AssemblyScript (5-15x faster CG solver)
 - **WebGPU Compute**: Native compute shaders for modern GPU acceleration
+- **WebGL2 GPGPU**: Render-to-texture compute fallback for GPU-accelerated matrix ops
 - **Canvas 2D**: Interactive 3D visualization with no external dependencies
-- **SIMP Algorithm**: Industry-standard topology optimization
+- **SIMP Algorithm**: Industry-standard topology optimization with multiple solver backends
 
 ## New in This Version
 
@@ -79,32 +79,41 @@ A minimalistic but fully functional web-based topology optimization application 
 
 ## Usage
 
-1. **Import Model**
+1. **Get Started**
+   - Choose **New Project** to import a 3D model or use a template
+   - Choose **Import Project** to load a previously exported setup (.json)
+
+2. **Import Model**
    - Upload an STL or STEP file (AP203/AP214), or
    - Use a pre-defined template:
      - **Cantilever Beam**: Classic 2D beam optimization
      - **Bridge**: 2D bridge span optimization
      - **Cube Test (3D)**: Full 3D optimization demo
 
-2. **Assign Loads & Constraints**
-   - Set volume fraction (target material percentage)
-   - Choose force direction and magnitude
-   - Select constraint position (fixed boundary)
-   - **Or** use paint tools to manually mark constraints and forces on the model
+3. **Preview & Mode**
+   - Preview the 3D model in the viewer
+   - Select 2D or 3D solving mode (or auto-detect)
+   - Optionally transform the model (scale, rotate)
 
-3. **Solve Optimization**
-   - Configure optimization parameters:
-     - Max iterations (default: 100)
-     - Penalty factor (default: 3)
-     - Filter radius (default: 1.5)
-     - Min cross-section (default: 0 = disabled)
-   - Run the optimization and watch progress
-   - Cancel at any time using the Cancel button
+4. **Material & Grain Size**
+   - Choose a material preset (plastic, aluminum, steel) or set custom properties
+   - Set grain / voxel size to control mesh resolution
 
-4. **Export Result**
-   - Download optimized model as STL file
-   - Export optimization data as JSON
-   - Start over for a new optimization
+5. **Manufacturing Method** *(optional)*
+   - Select a manufacturing method to auto-configure constraints:
+     - **3D Printed** — allows overhangs up to 45°, prevents internal voids
+     - **CNC Milled** — no overhangs (90°), tool radius constraints
+     - **Injection Molded** — mold-friendly geometry, 88° draft angle
+     - **No Constraint** — skip and optimize for pure structural performance
+   - Fine-tune advanced manufacturing settings if needed
+
+6. **Solve & Export**
+   - Configure forces, constraints, and solver parameters
+   - Use paint tools to manually mark constraints and forces on the model
+   - Run the optimization and watch real-time progress
+   - Cancel or pause at any time
+   - Download optimized model as STL or JSON
+   - Export/import project setup for later use
 
 ## Performance Benchmarking
 
@@ -217,15 +226,6 @@ The source code is in `assembly/index.ts` and includes:
 - `applyDensityFilter()` - Density smoothing with spatial radius
 - `computeElementEnergies()` - Strain energy computation
 - And more utility functions
-
-## Technology Stack
-
-- **HTML5/CSS3**: Modern, responsive UI
-- **Vanilla JavaScript**: No frameworks, pure ES6 modules
-- **Web Workers**: Background thread for heavy computation
-- **WebAssembly (WASM)**: High-performance math operations via AssemblyScript
-- **Canvas 2D**: Interactive 3D visualization with no external dependencies
-- **SIMP Algorithm**: Industry-standard topology optimization
 
 ## Algorithm
 

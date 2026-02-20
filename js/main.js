@@ -108,9 +108,9 @@ class TopologyApp {
         this.workflow = new WorkflowManager();
         this.workflow.init();
         
-        // Clear paint mode when leaving step 2
+        // Clear paint mode when leaving step 6 (solve & export)
         this.workflow.onStepChange = (step) => {
-            if (step !== 2) {
+            if (step !== 6) {
                 this.viewer.setPaintMode(null);
                 document.getElementById('paintConstraint').classList.remove('active-tool');
                 document.getElementById('paintForce').classList.remove('active-tool');
@@ -125,7 +125,25 @@ class TopologyApp {
     }
 
     setupEventListeners() {
-        // Step 1: Import
+        // Step 1: Get Started
+        document.getElementById('startNewProject').addEventListener('click', () => {
+            this.workflow.enableStep(2);
+            this.workflow.goToStep(2);
+        });
+        document.getElementById('startImportProject').addEventListener('click', () => {
+            const input = document.getElementById('importSetupFile');
+            if (input) {
+                input.value = '';
+                input.click();
+            }
+        });
+        document.getElementById('importSetupFile').addEventListener('change', async (e) => {
+            const file = e.target.files && e.target.files[0];
+            if (!file) return;
+            await this.importSetup(file);
+        });
+
+        // Step 2: Import
         const uploadArea = document.getElementById('uploadArea');
         const fileInput = document.getElementById('fileInput');
         
@@ -296,7 +314,7 @@ class TopologyApp {
             handleVoxelSizeChange(val);
         });
         
-        // Step 2: Assign - Material selection
+        // Step 4: Material selection
         document.getElementById('materialSelect').addEventListener('change', (e) => {
             const material = e.target.value;
             this.config.material = material;
@@ -321,7 +339,7 @@ class TopologyApp {
             this.config.material = 'custom';
         });
 
-        // Step 2: Assign
+        // Step 6: Forces and constraints
         document.getElementById('volumeFraction').addEventListener('input', (e) => {
             const value = parseFloat(e.target.value);
             this.config.volumeFraction = value;
@@ -434,7 +452,7 @@ class TopologyApp {
             this._renderGroupsList();
         });
         
-        // Step 3: Solve
+        // Step 3: Solver mode selection
         document.getElementById('solverSelect').addEventListener('change', (e) => {
             const solverValue = e.target.value;
             if (solverValue === 'petsc-bddc') {
@@ -495,6 +513,15 @@ class TopologyApp {
         
         document.getElementById('minCrossSection').addEventListener('input', (e) => {
             this.config.minCrossSection = parseFloat(e.target.value);
+        });
+
+        // Step 5: Manufacturing method card selection
+        document.querySelectorAll('.manufacturing-card').forEach(card => {
+            card.addEventListener('click', () => {
+                document.querySelectorAll('.manufacturing-card').forEach(c => c.classList.remove('selected'));
+                card.classList.add('selected');
+                this._applyManufacturingPreset(card.dataset.method);
+            });
         });
 
         document.getElementById('constrainToSolid').addEventListener('change', (e) => {
@@ -621,7 +648,7 @@ class TopologyApp {
             this.togglePauseOptimization();
         });
         
-        // Step 4: Export
+        // Step 6: Export (now part of solve & export)
         document.getElementById('downloadSTL').addEventListener('click', () => {
             this.exportSTL();
         });
@@ -644,12 +671,6 @@ class TopologyApp {
                 input.value = '';
                 input.click();
             }
-        });
-
-        document.getElementById('importSetupFile').addEventListener('change', async (e) => {
-            const file = e.target.files && e.target.files[0];
-            if (!file) return;
-            await this.importSetup(file);
         });
         
         document.getElementById('resetApp').addEventListener('click', () => {
@@ -1007,10 +1028,14 @@ class TopologyApp {
             `;
 
             document.getElementById('progressContainer').classList.add('hidden');
+            document.getElementById('exportSection').classList.add('hidden');
             document.getElementById('optimizationResults').innerHTML = '<em>Imported setup. Ready to solve.</em>';
             this.workflow.enableStep(2);
             this.workflow.enableStep(3);
-            this.workflow.goToStep(3);
+            this.workflow.enableStep(4);
+            this.workflow.enableStep(5);
+            this.workflow.enableStep(6);
+            this.workflow.goToStep(6);
         } catch (error) {
             console.error('Failed to import setup:', error);
             alert(`Failed to import setup: ${error.message}`);
@@ -1054,6 +1079,64 @@ class TopologyApp {
         this.exporter.downloadBlob(blob, filename);
     }
 
+    _applyManufacturingPreset(method) {
+        const constrainToSolid = document.getElementById('constrainToSolid');
+        const preventVoids = document.getElementById('preventVoids');
+        const manufacturingConstraint = document.getElementById('manufacturingConstraint');
+        const manufacturingAngle = document.getElementById('manufacturingAngle');
+        const manufacturingAngleInput = document.getElementById('manufacturingAngleInput');
+        const manufacturingControls = document.getElementById('manufacturingControls');
+
+        switch (method) {
+            case '3d-print':
+                this.config.manufacturingConstraint = true;
+                this.config.manufacturingAngle = 45;
+                this.config.preventVoids = true;
+                this.config.constrainToSolid = false;
+                constrainToSolid.checked = false;
+                preventVoids.checked = true;
+                manufacturingConstraint.checked = true;
+                manufacturingAngle.value = 45;
+                manufacturingAngleInput.value = 45;
+                manufacturingControls.style.display = '';
+                break;
+            case 'cnc':
+                this.config.manufacturingConstraint = true;
+                this.config.manufacturingAngle = 90;
+                this.config.preventVoids = false;
+                this.config.constrainToSolid = true;
+                constrainToSolid.checked = true;
+                preventVoids.checked = false;
+                manufacturingConstraint.checked = true;
+                manufacturingAngle.value = 90;
+                manufacturingAngleInput.value = 90;
+                manufacturingControls.style.display = '';
+                break;
+            case 'injection':
+                this.config.manufacturingConstraint = true;
+                this.config.manufacturingAngle = 88;
+                this.config.preventVoids = true;
+                this.config.constrainToSolid = false;
+                constrainToSolid.checked = false;
+                preventVoids.checked = true;
+                manufacturingConstraint.checked = true;
+                manufacturingAngle.value = 88;
+                manufacturingAngleInput.value = 88;
+                manufacturingControls.style.display = '';
+                break;
+            case 'none':
+            default:
+                this.config.manufacturingConstraint = false;
+                this.config.preventVoids = false;
+                this.config.constrainToSolid = false;
+                constrainToSolid.checked = false;
+                preventVoids.checked = false;
+                manufacturingConstraint.checked = false;
+                manufacturingControls.style.display = 'none';
+                break;
+        }
+    }
+
     resetSolution() {
         this.optimizer.cancel();
         this._optimizationPaused = false;
@@ -1090,10 +1173,10 @@ class TopologyApp {
         }
 
         document.getElementById('optimizationResults').innerHTML = '<em>Solution reset. Configuration, forces, constraints and model are preserved.</em>';
+        document.getElementById('exportSection').classList.add('hidden');
 
-        this.workflow.disableStep(4);
-        this.workflow.enableStep(3);
-        this.workflow.goToStep(3);
+        // Stay in step 6 (solve & export) for re-running
+        this.workflow.goToStep(6);
     }
 
     async _initGPUControls() {
@@ -1314,9 +1397,9 @@ class TopologyApp {
         // Clean up pending import
         this._pendingImport = null;
 
-        // Enable and navigate to step 2
-        this.workflow.enableStep(2);
-        this.workflow.goToStep(2);
+        // Enable and navigate to step 3 (preview)
+        this.workflow.enableStep(3);
+        this.workflow.goToStep(3);
     }
 
     loadTemplate(type) {
@@ -1350,9 +1433,9 @@ class TopologyApp {
         // Visualize
         this.viewer.setModel(model);
         
-        // Enable and navigate to step 2
-        this.workflow.enableStep(2);
-        this.workflow.goToStep(2);
+        // Enable and navigate to step 3 (preview)
+        this.workflow.enableStep(3);
+        this.workflow.goToStep(3);
     }
 
     async runOptimization() {
@@ -1483,9 +1566,8 @@ class TopologyApp {
                 this.addBenchmark(this.currentModel.type || 'custom', result);
             }
             
-            // Enable export step and navigate to it
-            this.workflow.enableStep(4);
-            this.workflow.goToStep(4);
+            // Show export section within step 6
+            document.getElementById('exportSection').classList.remove('hidden');
             
             console.log('Optimization completed successfully');
             
@@ -1577,6 +1659,9 @@ class TopologyApp {
         if (pauseBtn) { pauseBtn.classList.add('hidden'); pauseBtn.textContent = 'Pause'; }
         document.getElementById('transformControls').classList.add('hidden');
         document.getElementById('meshMethodSelector').classList.add('hidden');
+        document.getElementById('exportSection').classList.add('hidden');
+        // Clear manufacturing card selection
+        document.querySelectorAll('.manufacturing-card').forEach(c => c.classList.remove('selected'));
         this._pendingImport = null;
         
         // Reset transform inputs
