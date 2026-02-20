@@ -670,6 +670,7 @@
             const icon = document.getElementById('mobileToggleIcon');
             const workflow = document.querySelector('.workflow');
             const container = document.querySelector('.container');
+            if (!btn || !icon || !workflow || !container) return;
             let minimized = false;
 
             function isMobile() {
