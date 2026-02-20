@@ -713,13 +713,37 @@ export class ModelImporter {
         return dims[type] || 20;
     }
 
+    /**
+     * Generate 12 triangles (36 vertices) for a solid box from (0,0,0) to (lx,ly,lz).
+     * Vertices are returned as an array of {x,y,z} objects matching the format used
+     * by STL originalVertices so the reference mesh overlay works correctly.
+     */
+    _generateBoxTriangles(lx, ly, lz) {
+        const v = (x, y, z) => ({ x, y, z });
+        const faces = [
+            [v(0, 0, 0), v(lx, 0, 0), v(lx, 0, lz), v(0, 0, lz)],    // -Y (y=0 plane)
+            [v(0, ly, 0), v(lx, ly, 0), v(lx, ly, lz), v(0, ly, lz)],  // +Y (y=ly plane)
+            [v(0, 0, 0), v(lx, 0, 0), v(lx, ly, 0), v(0, ly, 0)],      // -Z (z=0 plane)
+            [v(0, 0, lz), v(lx, 0, lz), v(lx, ly, lz), v(0, ly, lz)],  // +Z (z=lz plane)
+            [v(0, 0, 0), v(0, 0, lz), v(0, ly, lz), v(0, ly, 0)],      // -X (x=0 plane)
+            [v(lx, 0, 0), v(lx, ly, 0), v(lx, ly, lz), v(lx, 0, lz)],  // +X (x=lx plane)
+        ];
+        const verts = [];
+        for (const [a, b, c, d] of faces) {
+            verts.push(a, b, c, a, c, d);
+        }
+        return verts;
+    }
+
     createBeamTemplate(resolution = 30) {
         // Cantilever beam: 30×10×10 mm, resolution = voxels along max axis (30mm)
-        const scale = resolution / 30;
-        const nx = Math.max(5, Math.round(30 * scale));
-        const ny = Math.max(3, Math.round(10 * scale));
-        const nz = Math.max(3, Math.round(10 * scale));
+        const baseNx = 30, baseNy = 10, baseNz = 10;
+        const scale = resolution / baseNx;
+        const nx = Math.max(5, Math.round(baseNx * scale));
+        const ny = Math.max(3, Math.round(baseNy * scale));
+        const nz = Math.max(3, Math.round(baseNz * scale));
         const elements = new Float32Array(nx * ny * nz).fill(1);
+        const voxelSize = baseNx / nx;
         
         return {
             nx,
@@ -727,17 +751,22 @@ export class ModelImporter {
             nz,
             elements,
             type: 'beam',
-            templateScale: { baseNx: 30, baseNy: 10, baseNz: 10 }
+            templateScale: { baseNx, baseNy, baseNz },
+            voxelSize,
+            bounds: { minX: 0, maxX: baseNx, minY: 0, maxY: baseNy, minZ: 0, maxZ: baseNz },
+            originalVertices: this._generateBoxTriangles(baseNx, baseNy, baseNz)
         };
     }
 
     createBridgeTemplate(resolution = 40) {
         // Bridge: 40×15×8 mm, resolution = voxels along max axis (40mm)
-        const scale = resolution / 40;
-        const nx = Math.max(5, Math.round(40 * scale));
-        const ny = Math.max(3, Math.round(15 * scale));
-        const nz = Math.max(3, Math.round(8 * scale));
+        const baseNx = 40, baseNy = 15, baseNz = 8;
+        const scale = resolution / baseNx;
+        const nx = Math.max(5, Math.round(baseNx * scale));
+        const ny = Math.max(3, Math.round(baseNy * scale));
+        const nz = Math.max(3, Math.round(baseNz * scale));
         const elements = new Float32Array(nx * ny * nz).fill(1);
+        const voxelSize = baseNx / nx;
         
         return {
             nx,
@@ -745,7 +774,10 @@ export class ModelImporter {
             nz,
             elements,
             type: 'bridge',
-            templateScale: { baseNx: 40, baseNy: 15, baseNz: 8 }
+            templateScale: { baseNx, baseNy, baseNz },
+            voxelSize,
+            bounds: { minX: 0, maxX: baseNx, minY: 0, maxY: baseNy, minZ: 0, maxZ: baseNz },
+            originalVertices: this._generateBoxTriangles(baseNx, baseNy, baseNz)
         };
     }
 
@@ -758,6 +790,7 @@ export class ModelImporter {
         const ny = scaledSize;
         const nz = scaledSize;
         const elements = new Float32Array(nx * ny * nz).fill(1);
+        const voxelSize = baseSize / nx;
         
         return {
             nx,
@@ -766,6 +799,9 @@ export class ModelImporter {
             elements,
             type: 'cube',
             templateScale: { baseNx: baseSize, baseNy: baseSize, baseNz: baseSize },
+            voxelSize,
+            bounds: { minX: 0, maxX: baseSize, minY: 0, maxY: baseSize, minZ: 0, maxZ: baseSize },
+            originalVertices: this._generateBoxTriangles(baseSize, baseSize, baseSize),
             // Predefined boundary conditions for cube test
             forcePosition: 'top-center',  // Force at top center
             constraintPositions: 'bottom-corners'  // Constraints at bottom 4 corners

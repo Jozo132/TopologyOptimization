@@ -239,20 +239,9 @@ class TopologyApp {
             if (this.currentModel) {
                 let newModel = null;
                 
-                // Check if it's an STL model with original vertices
-                if (this.currentModel.originalVertices) {
-                    newModel = this.importer.voxelizeVertices(
-                        this.currentModel.originalVertices,
-                        null,
-                        voxelSizeMM
-                    );
-                    // Preserve the model type if it was set
-                    if (this.currentModel.type) {
-                        newModel.type = this.currentModel.type;
-                    }
-                }
-                // Check if it's a template with scaling info
-                else if (this.currentModel.templateScale) {
+                // Check if it's a template with scaling info (must check before originalVertices
+                // since templates now also have originalVertices for the reference mesh)
+                if (this.currentModel.templateScale) {
                     // For templates, convert mm size to resolution based on template dimensions
                     const baseNx = this.currentModel.templateScale.baseNx;
                     const baseNy = this.currentModel.templateScale.baseNy;
@@ -269,6 +258,18 @@ class TopologyApp {
                     }
                     if (this.currentModel.constraintPositions) {
                         newModel.constraintPositions = this.currentModel.constraintPositions;
+                    }
+                }
+                // Check if it's an STL model with original vertices
+                else if (this.currentModel.originalVertices) {
+                    newModel = this.importer.voxelizeVertices(
+                        this.currentModel.originalVertices,
+                        null,
+                        voxelSizeMM
+                    );
+                    // Preserve the model type if it was set
+                    if (this.currentModel.type) {
+                        newModel.type = this.currentModel.type;
                     }
                 }
                 
@@ -704,6 +705,12 @@ class TopologyApp {
             this._updateSectionSliders();
         });
         
+        document.getElementById('toggleReference').addEventListener('click', () => {
+            this.viewer.toggleReference();
+            const btn = document.getElementById('toggleReference');
+            btn.classList.toggle('active-tool', !this.viewer.showReference);
+        });
+
         document.getElementById('resetCamera').addEventListener('click', () => {
             this.viewer.resetCamera();
             document.getElementById('toggleSection').classList.remove('active-tool');
@@ -1430,8 +1437,11 @@ class TopologyApp {
             <strong>Dimensions:</strong> ${model.nx} x ${model.ny} x ${model.nz}
         `;
         
-        // Visualize
+        // Visualize and reset camera for fresh template view
         this.viewer.setModel(model);
+        this.viewer.resetCamera();
+        document.getElementById('toggleSection').classList.remove('active-tool');
+        this._updateSectionSliders();
         
         // Enable and navigate to step 3 (preview)
         this.workflow.enableStep(3);
