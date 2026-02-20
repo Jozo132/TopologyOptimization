@@ -228,6 +228,10 @@ export class Viewer3D {
         this.strainMax = 1;
         this.maxStress = 0; // Max stress value (for MPa scale)
 
+        // Yield strength visualization
+        this.yieldStrength = 0; // Yield strength in MPa (0 = not set)
+        this._yieldNormalized = 0; // Yield threshold normalized to [0..1] stress range
+
         // Density threshold for visibility (user-adjustable)
         this.densityThreshold = DENSITY_THRESHOLD;
 
@@ -1799,9 +1803,19 @@ export class Viewer3D {
             const stress = Math.max(0, Math.min(1, stressRaw || 0));
 
             // Per-face color from closest voxel stress (0 when unavailable)
-            const r = stress;
-            const g = DENSITY_COLOR_GREEN;
-            const b = 1 - stress;
+            // Highlight voxels exceeding yield strength with orange→red gradient
+            let r, g, b;
+            const yieldNorm = this._yieldNormalized;
+            if (yieldNorm > 0 && yieldNorm < 1 && stress > yieldNorm) {
+                const t = Math.min(1, (stress - yieldNorm) / (1 - yieldNorm));
+                r = 1.0;
+                g = 0.6 * (1 - t);
+                b = 0;
+            } else {
+                r = stress;
+                g = DENSITY_COLOR_GREEN;
+                b = 1 - stress;
+            }
 
             // Two triangles for this quad
             positions.push(...v0, ...v1, ...v2, ...v0, ...v2, ...v3);
@@ -2391,6 +2405,23 @@ export class Viewer3D {
         const corners = [[0,0,0],[1,0,0],[0,1,0],[1,1,0],[0,0,1],[1,0,1],[0,1,1],[1,1,1]];
         const edges = [[0,1],[2,3],[4,5],[6,7],[0,2],[1,3],[4,6],[5,7],[0,4],[1,5],[2,6],[3,7]];
 
+        // Displacement lookup (mirrors _buildBuffersFromIndexedMesh logic)
+        const dispEnabled = this.showDisplacement && this.displacementData && this.displacementData.U;
+        const dispU = dispEnabled ? this.displacementData.U : null;
+        const dispScale = this.displacementScale || 1;
+        const dispNny = ny + 1, dispNnz = nz + 1;
+        const _applyDisp = dispEnabled ? (px, py, pz) => {
+            const ix = Math.min(Math.max(Math.round(px), 0), nx);
+            const iy = Math.min(Math.max(Math.round(py), 0), ny);
+            const iz = Math.min(Math.max(Math.round(pz), 0), nz);
+            const nodeIdx = ix * dispNny * dispNnz + iy * dispNnz + iz;
+            return [
+                px + dispU[3 * nodeIdx] * dispScale,
+                py + dispU[3 * nodeIdx + 1] * dispScale,
+                pz + dispU[3 * nodeIdx + 2] * dispScale
+            ];
+        } : null;
+
         const positions = [];
         const normals = [];
         const colors = [];
@@ -2423,14 +2454,42 @@ export class Viewer3D {
                 return angleA - angleB;
             });
 
+            // Color based on stress and yield threshold
             const s = Math.max(0, Math.min(1, stress || 0));
-            const cr = s;
-            const cg = DENSITY_COLOR_GREEN;
-            const cb = 1 - s;
+            let cr, cg, cb;
+            const yieldNorm = this._yieldNormalized;
+            if (yieldNorm > 0 && yieldNorm < 1 && s > yieldNorm) {
+                // Plastic zone: interpolate orange→red above yield
+                const t = Math.min(1, (s - yieldNorm) / (1 - yieldNorm));
+                cr = 1.0;
+                cg = 0.6 * (1 - t);
+                cb = 0;
+            } else {
+                cr = s;
+                cg = DENSITY_COLOR_GREEN;
+                cb = 1 - s;
+            }
+
+            // Apply displacement to sorted polygon points before rendering
+            if (_applyDisp) {
+                for (let i = 0; i < pts.length; i++) {
+                    pts[i] = _applyDisp(pts[i][0], pts[i][1], pts[i][2]);
+                }
+            }
+
+            // Recompute cap normal from displaced points for correct shading
+            const capN = _applyDisp ? (() => {
+                if (pts.length < 3) return capNormal;
+                const e1 = [pts[1][0]-pts[0][0], pts[1][1]-pts[0][1], pts[1][2]-pts[0][2]];
+                const e2 = [pts[2][0]-pts[0][0], pts[2][1]-pts[0][1], pts[2][2]-pts[0][2]];
+                const nx2 = e1[1]*e2[2]-e1[2]*e2[1], ny2 = e1[2]*e2[0]-e1[0]*e2[2], nz2 = e1[0]*e2[1]-e1[1]*e2[0];
+                const len = Math.sqrt(nx2*nx2+ny2*ny2+nz2*nz2);
+                return len > 0 ? [nx2/len, ny2/len, nz2/len] : capNormal;
+            })() : capNormal;
 
             for (let i = 1; i < pts.length - 1; i++) {
                 positions.push(...pts[0], ...pts[i], ...pts[i + 1]);
-                normals.push(...capNormal, ...capNormal, ...capNormal);
+                normals.push(...capN, ...capN, ...capN);
                 colors.push(cr, cg, cb, cr, cg, cb, cr, cg, cb);
             }
         };
@@ -2683,12 +2742,21 @@ export class Viewer3D {
         this._stressBarRect = { x: barX, y: barY, width: barWidth, height: barHeight };
 
         // Draw gradient bar (blue at bottom = low stress, red at top = high stress)
-        // Uses DENSITY_COLOR_GREEN to match the mesh coloring scheme
+        // When yield strength is set, above-yield region uses orange→red gradient
+        const yieldNorm = this._yieldNormalized;
         for (let i = 0; i < barHeight; i++) {
             const t = 1 - i / barHeight; // 0 at bottom, 1 at top
-            const r = t;
-            const g = DENSITY_COLOR_GREEN;
-            const b = 1 - t;
+            let r, g, b;
+            if (yieldNorm > 0 && yieldNorm < 1 && t > yieldNorm) {
+                const tp = Math.min(1, (t - yieldNorm) / (1 - yieldNorm));
+                r = 1.0;
+                g = 0.6 * (1 - tp);
+                b = 0;
+            } else {
+                r = t;
+                g = DENSITY_COLOR_GREEN;
+                b = 1 - t;
+            }
             ctx.fillStyle = `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`;
             ctx.fillRect(barX, barY + i, barWidth, 1);
         }
@@ -2783,6 +2851,26 @@ export class Viewer3D {
         ctx.fillText(this.stressBarLabel, 0, 0);
         ctx.restore();
 
+        // Draw yield strength threshold line on the stress bar
+        if (yieldNorm > 0 && yieldNorm < 1) {
+            const yieldY = barY + barHeight - yieldNorm * barHeight;
+            ctx.strokeStyle = '#ffcc00';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([4, 3]);
+            ctx.beginPath();
+            ctx.moveTo(barX - 6, yieldY);
+            ctx.lineTo(barX + barWidth + 6, yieldY);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            // Label
+            ctx.fillStyle = '#ffcc00';
+            ctx.font = 'bold 9px Arial';
+            ctx.textAlign = 'left';
+            ctx.fillText('⚠ Yield', barX + barWidth + 8, yieldY + 3);
+            ctx.font = '8px Arial';
+            ctx.fillText(`${this.yieldStrength.toFixed(0)} MPa`, barX + barWidth + 8, yieldY + 13);
+        }
+
         // Draw hover indicator on the scale bar
         if (this._hoverStressValue !== null) {
             const hoverY = barY + barHeight - this._hoverStressValue * barHeight;
@@ -2809,7 +2897,11 @@ export class Viewer3D {
         const maxStress = this.maxStress || 1;
         const stressVal = this._hoverStressValue * maxStress;
 
-        const text = `${stressVal.toFixed(2)} ${this.stressBarUnit}`;
+        // Show yield status in tooltip when yield strength is set
+        const yieldNorm = this._yieldNormalized;
+        const aboveYield = yieldNorm > 0 && yieldNorm < 1 && this._hoverStressValue > yieldNorm;
+        const yieldTag = aboveYield ? ' ⚠ PLASTIC' : (yieldNorm > 0 ? ' (elastic)' : '');
+        const text = `${stressVal.toFixed(2)} ${this.stressBarUnit}${yieldTag}`;
         ctx.font = 'bold 12px Arial';
         const metrics = ctx.measureText(text);
         const padding = 6;
@@ -2950,6 +3042,7 @@ export class Viewer3D {
         this.meshData = meshData;
         this.amrCells = (meshData && meshData.amrCells && meshData.amrCells.length > 0) ? meshData.amrCells : null;
         if (maxStress !== undefined) this.maxStress = maxStress;
+        this._updateYieldNormalized();
         this._needsRebuild = true;
         this.draw();
     }
@@ -2990,6 +3083,7 @@ export class Viewer3D {
 
         this._volumetricStressMap = normalized;
         this.maxStress = maxStress;
+        this._updateYieldNormalized();
         this._needsRebuild = true;
         this.draw();
     }
@@ -3058,6 +3152,27 @@ export class Viewer3D {
     setStressBarLabel(label, unit) {
         this.stressBarLabel = label || 'Stress (N/mm² = MPa)';
         this.stressBarUnit = unit || 'MPa';
+    }
+
+    /**
+     * Set the material yield strength (MPa). When set, voxels exceeding yield
+     * are highlighted and the stress bar shows a yield threshold line.
+     * @param {number} yieldMPa - Yield strength in MPa (0 to disable)
+     */
+    setYieldStrength(yieldMPa) {
+        this.yieldStrength = Math.max(0, yieldMPa || 0);
+        this._updateYieldNormalized();
+        this._needsRebuild = true;
+        this.draw();
+    }
+
+    /** Recompute normalized yield threshold from current maxStress. */
+    _updateYieldNormalized() {
+        if (this.yieldStrength > 0 && this.maxStress > 0) {
+            this._yieldNormalized = Math.min(1, this.yieldStrength / this.maxStress);
+        } else {
+            this._yieldNormalized = 0;
+        }
     }
 
     toggleWireframe() {
@@ -3159,6 +3274,8 @@ export class Viewer3D {
         this.showDisplacement = false;
         this.stressBarLabel = 'Stress (N/mm² = MPa)';
         this.stressBarUnit = 'MPa';
+        this.yieldStrength = 0;
+        this._yieldNormalized = 0;
         this._needsRebuild = true;
         this.draw();
     }
