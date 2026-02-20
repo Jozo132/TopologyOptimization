@@ -6,9 +6,9 @@ import { ModelExporter } from './exporter.js';
 import { WorkflowManager } from './workflow.js';
 
 const MATERIAL_PRESETS = {
-    plastic: { youngsModulus: 2.3, poissonsRatio: 0.35 },
-    aluminum: { youngsModulus: 69, poissonsRatio: 0.33 },
-    steel: { youngsModulus: 200, poissonsRatio: 0.30 }
+    plastic: { youngsModulus: 2.3, poissonsRatio: 0.35, yieldStrength: 40 },
+    aluminum: { youngsModulus: 69, poissonsRatio: 0.33, yieldStrength: 270 },
+    steel: { youngsModulus: 200, poissonsRatio: 0.30, yieldStrength: 250 }
 };
 
 const DOF_DESCRIPTIONS = {
@@ -71,6 +71,7 @@ class TopologyApp {
             maxGranuleSize: 2,
             youngsModulus: 2.3,
             poissonsRatio: 0.35,
+            yieldStrength: 40,
             material: 'plastic',
             // Accuracy scheduling: adaptive CG tolerance (auto-enabled)
             // Penalization continuation: ramp penal from penalStart → penaltyFactor
@@ -323,8 +324,10 @@ class TopologyApp {
                 const preset = MATERIAL_PRESETS[material];
                 this.config.youngsModulus = preset.youngsModulus;
                 this.config.poissonsRatio = preset.poissonsRatio;
+                this.config.yieldStrength = preset.yieldStrength;
                 document.getElementById('youngsModulus').value = preset.youngsModulus;
                 document.getElementById('poissonsRatio').value = preset.poissonsRatio;
+                document.getElementById('yieldStrength').value = preset.yieldStrength;
             }
         });
 
@@ -338,6 +341,13 @@ class TopologyApp {
             this.config.poissonsRatio = parseFloat(e.target.value);
             document.getElementById('materialSelect').value = 'custom';
             this.config.material = 'custom';
+        });
+
+        document.getElementById('yieldStrength').addEventListener('input', (e) => {
+            this.config.yieldStrength = parseFloat(e.target.value) || 0;
+            document.getElementById('materialSelect').value = 'custom';
+            this.config.material = 'custom';
+            this.viewer.setYieldStrength(this.config.yieldStrength);
         });
 
         // Step 6: Forces and constraints
@@ -910,6 +920,7 @@ class TopologyApp {
         setValue('materialSelect', cfg.material || 'custom');
         setValue('youngsModulus', cfg.youngsModulus);
         setValue('poissonsRatio', cfg.poissonsRatio);
+        setValue('yieldStrength', cfg.yieldStrength);
         setValue('volumeFraction', cfg.volumeFraction);
         setValue('forceDirection', cfg.forceDirection || 'down');
         setValue('forceType', cfg.forceType || 'total');
@@ -1698,6 +1709,9 @@ class TopologyApp {
             } else {
                 this.viewer.setStressBarLabel('Stress (N/mm² = MPa)', 'MPa');
             }
+
+            // Set yield strength for elastic/plastic deformation visualization
+            this.viewer.setYieldStrength(this.config.yieldStrength || 0);
 
             // Store displacement data from FEA/fatigue solve and show controls
             if (result.displacementU && result.nx && result.ny && result.nz) {
