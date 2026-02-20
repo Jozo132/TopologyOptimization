@@ -11,6 +11,11 @@
         <header>
             <h1>Topology <span>Optimization</span></h1>
             <p class="subtitle">Start → Import → Preview → Material → Manufacturing → Solve</p>
+            <button id="mobileTogglePanel" class="btn-icon mobile-toggle-btn" title="Minimize Settings">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline id="mobileToggleIcon" points="18 15 12 9 6 15"></polyline>
+                </svg>
+            </button>
         </header>
 
         <div class="workflow">
@@ -618,48 +623,147 @@
                     </svg>
                 </button>
             </div>
-            <div id="densityThresholdContainer" class="section-slider-container">
-                <label class="section-slider-title">Density Threshold</label>
-                <div class="section-slider-group">
-                    <label>Min</label>
-                    <input type="range" id="densityThresholdSlider" min="0" max="1" step="0.01" value="0.3">
-                    <span id="densityThresholdValue">0.30</span>
+            <div class="viewer-params-row">
+                <div id="densityThresholdContainer" class="section-slider-container">
+                    <label class="section-slider-title">Density Threshold</label>
+                    <div class="section-slider-group">
+                        <label>Min</label>
+                        <input type="range" id="densityThresholdSlider" min="0" max="1" step="0.01" value="0.3">
+                        <span id="densityThresholdValue">0.30</span>
+                    </div>
+                </div>
+                <div id="displacementContainer" class="section-slider-container hidden">
+                    <label class="section-slider-title">↔ Deformed Shape</label>
+                    <div class="section-slider-group">
+                        <label>
+                            <input type="checkbox" id="toggleDisplacement">
+                            Show
+                        </label>
+                    </div>
+                    <div class="section-slider-group">
+                        <label>Scale</label>
+                        <input type="range" id="displacementScaleSlider" min="1" max="200" step="1" value="1">
+                        <span id="displacementScaleValue">1×</span>
+                    </div>
+                </div>
+                <div id="sectionSliderContainer" class="section-slider-container hidden">
+                    <label class="section-slider-title">✂ Section Plane</label>
+                    <div class="section-slider-group">
+                        <label>Azimuth</label>
+                        <input type="range" id="sectionAzimuth" min="0" max="360" step="1" value="90">
+                        <span id="sectionAzimuthValue">90°</span>
+                    </div>
+                    <div class="section-slider-group">
+                        <label>Elevation</label>
+                        <input type="range" id="sectionElevation" min="-90" max="90" step="1" value="0">
+                        <span id="sectionElevationValue">0°</span>
+                    </div>
+                    <div class="section-slider-group">
+                        <label>Offset</label>
+                        <input type="range" id="sectionOffsetSlider" min="0" max="100" step="0.1" value="50">
+                        <span id="sectionOffsetValue">50%</span>
+                    </div>
                 </div>
             </div>
-            <div id="displacementContainer" class="section-slider-container hidden">
-                <label class="section-slider-title">↔ Deformed Shape</label>
-                <div class="section-slider-group">
-                    <label>
-                        <input type="checkbox" id="toggleDisplacement">
-                        Show
-                    </label>
-                </div>
-                <div class="section-slider-group">
-                    <label>Scale</label>
-                    <input type="range" id="displacementScaleSlider" min="1" max="200" step="1" value="1">
-                    <span id="displacementScaleValue">1×</span>
-                </div>
-            </div>
-            <div id="sectionSliderContainer" class="section-slider-container hidden">
-                <label class="section-slider-title">✂ Section Plane</label>
-                <div class="section-slider-group">
-                    <label>Azimuth</label>
-                    <input type="range" id="sectionAzimuth" min="0" max="360" step="1" value="90">
-                    <span id="sectionAzimuthValue">90°</span>
-                </div>
-                <div class="section-slider-group">
-                    <label>Elevation</label>
-                    <input type="range" id="sectionElevation" min="-90" max="90" step="1" value="0">
-                    <span id="sectionElevationValue">0°</span>
-                </div>
-                <div class="section-slider-group">
-                    <label>Offset</label>
-                    <input type="range" id="sectionOffsetSlider" min="0" max="100" step="0.1" value="50">
-                    <span id="sectionOffsetValue">50%</span>
-                </div>
+            <div class="viewer-params-nav">
+                <button class="viewer-params-nav-btn active" data-target="densityThresholdContainer">Density</button>
+                <button class="viewer-params-nav-btn hidden-tab" data-target="displacementContainer">Displacement</button>
+                <button class="viewer-params-nav-btn hidden-tab" data-target="sectionSliderContainer">Section</button>
             </div>
         </div>
     </div>
+
+    <!-- Mobile panel toggle logic -->
+    <script>
+        (function() {
+            const btn = document.getElementById('mobileTogglePanel');
+            const icon = document.getElementById('mobileToggleIcon');
+            const workflow = document.querySelector('.workflow');
+            const container = document.querySelector('.container');
+            if (!btn || !icon || !workflow || !container) return;
+            let minimized = false;
+
+            function isMobile() {
+                return window.matchMedia('(max-width: 1024px)').matches;
+            }
+
+            btn.addEventListener('click', function() {
+                if (!isMobile()) return;
+                minimized = !minimized;
+                container.classList.toggle('workflow-minimized', minimized);
+                workflow.classList.toggle('minimized', minimized);
+                icon.setAttribute('points', minimized ? '6 9 12 15 18 9' : '18 15 12 9 6 15');
+                btn.title = minimized ? 'Expand Settings' : 'Minimize Settings';
+                window.dispatchEvent(new Event('resize'));
+            });
+
+            // Params tab navigation for mobile carousel
+            const navBtns = document.querySelectorAll('.viewer-params-nav-btn');
+            const paramsRow = document.querySelector('.viewer-params-row');
+            const paramContainers = paramsRow ? paramsRow.querySelectorAll('.section-slider-container') : [];
+
+            function updateNavTabs() {
+                navBtns.forEach(function(btn) {
+                    var target = document.getElementById(btn.dataset.target);
+                    if (!target) return;
+                    var isHidden = target.classList.contains('hidden');
+                    btn.classList.toggle('hidden-tab', isHidden);
+                });
+                // If active tab is now hidden, switch to first visible
+                var activeBtn = document.querySelector('.viewer-params-nav-btn.active');
+                if (activeBtn && activeBtn.classList.contains('hidden-tab')) {
+                    var firstVisible = document.querySelector('.viewer-params-nav-btn:not(.hidden-tab)');
+                    if (firstVisible) firstVisible.click();
+                }
+            }
+
+            function showTab(targetId) {
+                if (!isMobile()) return;
+                paramContainers.forEach(function(c) {
+                    if (c.classList.contains('hidden')) return;
+                    c.style.display = (c.id === targetId) ? '' : 'none';
+                });
+                navBtns.forEach(function(b) {
+                    b.classList.toggle('active', b.dataset.target === targetId);
+                });
+            }
+
+            navBtns.forEach(function(b) {
+                b.addEventListener('click', function() {
+                    showTab(b.dataset.target);
+                });
+            });
+
+            // Observe container class changes to sync tab visibility
+            var observer = new MutationObserver(function() {
+                updateNavTabs();
+                // On desktop, reset inline display styles
+                if (!isMobile()) {
+                    paramContainers.forEach(function(c) { c.style.display = ''; });
+                }
+            });
+            paramContainers.forEach(function(c) {
+                observer.observe(c, { attributes: true, attributeFilter: ['class'] });
+            });
+
+            // Handle resize between mobile/desktop
+            window.addEventListener('resize', function() {
+                if (!isMobile()) {
+                    paramContainers.forEach(function(c) { c.style.display = ''; });
+                } else {
+                    var activeBtn = document.querySelector('.viewer-params-nav-btn.active:not(.hidden-tab)');
+                    if (activeBtn) showTab(activeBtn.dataset.target);
+                }
+            });
+
+            // Initial sync
+            updateNavTabs();
+            if (isMobile()) {
+                var activeBtn = document.querySelector('.viewer-params-nav-btn.active:not(.hidden-tab)');
+                if (activeBtn) showTab(activeBtn.dataset.target);
+            }
+        })();
+    </script>
 
     <!-- Import application modules -->
     <script type="module" src="js/main.js"></script>
