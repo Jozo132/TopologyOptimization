@@ -533,6 +533,89 @@ export class Viewer3D {
         });
 
         canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+        // ── Touch support for mobile ────────────────────────────────────────
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            if (e.touches.length === 1) {
+                const t = e.touches[0];
+                if (this.paintMode && this.model) {
+                    this.isPainting = true;
+                    this._paintErasing = false;
+                    this.handlePaintClick(t);
+                } else {
+                    this.isDragging = true;
+                }
+                this.lastMousePos = { x: t.clientX, y: t.clientY };
+                this._lastTouchDist = null;
+                this._lastTouchMid = null;
+            } else if (e.touches.length === 2) {
+                this.isDragging = false;
+                this.isPainting = false;
+                const [a, b] = [e.touches[0], e.touches[1]];
+                this._lastTouchDist = Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY);
+                this._lastTouchMid = { x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 };
+            }
+        }, { passive: false });
+
+        canvas.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            if (e.touches.length === 1) {
+                const t = e.touches[0];
+                if (this.isPainting && this.paintMode && this.model) {
+                    this.handlePaintClick(t);
+                    this.lastMousePos = { x: t.clientX, y: t.clientY };
+                    return;
+                }
+                const dx = t.clientX - this.lastMousePos.x;
+                const dy = t.clientY - this.lastMousePos.y;
+                if (this.isDragging) {
+                    this.rotation.y += dx * 0.01;
+                    this.rotation.x += dy * 0.01;
+                    this.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, this.rotation.x));
+                    this.draw();
+                }
+                this.lastMousePos = { x: t.clientX, y: t.clientY };
+            } else if (e.touches.length === 2) {
+                const [a, b] = [e.touches[0], e.touches[1]];
+                const dist = Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY);
+                const mid = { x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 };
+                if (this._lastTouchDist !== null) {
+                    // Pinch → zoom
+                    const scale = dist / this._lastTouchDist;
+                    this.zoom *= scale;
+                    this.zoom = Math.max(0.1, Math.min(10, this.zoom));
+                    // Two-finger drag → pan
+                    if (this._lastTouchMid !== null) {
+                        const dx = mid.x - this._lastTouchMid.x;
+                        const dy = mid.y - this._lastTouchMid.y;
+                        const panScale = 0.003 / this.zoom;
+                        this.pan.x += dx * panScale;
+                        this.pan.y -= dy * panScale;
+                    }
+                    this.draw();
+                }
+                this._lastTouchDist = dist;
+                this._lastTouchMid = mid;
+            }
+        }, { passive: false });
+
+        canvas.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            if (e.touches.length === 0) {
+                this.isDragging = false;
+                this.isPanning = false;
+                this.isPainting = false;
+                this._lastTouchDist = null;
+                this._lastTouchMid = null;
+            } else if (e.touches.length === 1) {
+                this._lastTouchDist = null;
+                this._lastTouchMid = null;
+                const t = e.touches[0];
+                this.lastMousePos = { x: t.clientX, y: t.clientY };
+                if (!this.paintMode) this.isDragging = true;
+            }
+        }, { passive: false });
     }
 
     setPaintMode(mode) {
