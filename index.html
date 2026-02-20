@@ -16,6 +16,11 @@
                     <polyline id="mobileToggleIcon" points="18 15 12 9 6 15"></polyline>
                 </svg>
             </button>
+            <button id="mobileToggleViewer" class="btn-icon mobile-viewer-toggle-btn" title="Show 3D Viewer">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+                </svg>
+            </button>
         </header>
 
         <div class="workflow">
@@ -696,6 +701,35 @@
                 btn.title = minimized ? 'Expand Settings' : 'Minimize Settings';
                 window.dispatchEvent(new Event('resize'));
             });
+
+            // Mobile 3D viewer toggle logic
+            var viewerBtn = document.getElementById('mobileToggleViewer');
+            var viewerContainer = document.querySelector('.viewer-container');
+            var viewerMinimized = true;
+
+            if (viewerBtn && viewerContainer) {
+                // Initially minimized on mobile
+                if (isMobile()) {
+                    viewerContainer.classList.add('viewer-minimized');
+                }
+
+                viewerBtn.addEventListener('click', function() {
+                    if (!isMobile()) return;
+                    viewerMinimized = !viewerMinimized;
+                    viewerContainer.classList.toggle('viewer-minimized', viewerMinimized);
+                    viewerBtn.title = viewerMinimized ? 'Show 3D Viewer' : 'Hide 3D Viewer';
+                    window.dispatchEvent(new Event('resize'));
+                });
+
+                // Reset viewer state on desktop resize
+                window.addEventListener('resize', function() {
+                    if (!isMobile()) {
+                        viewerContainer.classList.remove('viewer-minimized');
+                    } else if (viewerMinimized) {
+                        viewerContainer.classList.add('viewer-minimized');
+                    }
+                });
+            }
 
             // Params tab navigation for mobile carousel
             const navBtns = document.querySelectorAll('.viewer-params-nav-btn');

@@ -89,6 +89,24 @@ header h1 span {
     background: rgba(248, 250, 252, 0.1);
 }
 
+.mobile-viewer-toggle-btn {
+    display: none;
+    background: transparent;
+    border: 1px solid rgba(248, 250, 252, 0.3);
+    color: var(--header-text);
+    border-radius: 0.375rem;
+    padding: 0.25rem;
+    cursor: pointer;
+    align-items: center;
+    justify-content: center;
+    min-width: 2rem;
+    min-height: 2rem;
+}
+
+.mobile-viewer-toggle-btn:hover {
+    background: rgba(248, 250, 252, 0.1);
+}
+
 .viewer-params-nav {
     display: none;
 }
@@ -588,6 +606,16 @@ button {
 
     .mobile-toggle-btn {
         display: flex;
+    }
+
+    .mobile-viewer-toggle-btn.visible {
+        display: flex;
+    }
+
+    .viewer-container.viewer-minimized {
+        min-height: 0;
+        max-height: 0;
+        overflow: hidden;
     }
 
     .subtitle {

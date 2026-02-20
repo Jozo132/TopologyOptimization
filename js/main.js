@@ -125,6 +125,11 @@ class TopologyApp {
         console.log('App initialized successfully');
     }
 
+    _showMobileViewerToggle() {
+        const el = document.getElementById('mobileToggleViewer');
+        if (el) el.classList.add('visible');
+    }
+
     setupEventListeners() {
         // Step 1: Get Started
         document.getElementById('startNewProject').addEventListener('click', () => {
@@ -206,6 +211,7 @@ class TopologyApp {
             
             this.currentModel = newModel;
             this.viewer.setModel(newModel);
+            this._showMobileViewerToggle();
             
             // Update info display
             const info = document.getElementById('modelInfo');
@@ -299,6 +305,7 @@ class TopologyApp {
                     
                     // Update viewer with new voxel grid
                     this.viewer.setModel(newModel);
+                    this._showMobileViewerToggle();
                 }
             }
         };
@@ -1077,6 +1084,7 @@ class TopologyApp {
             };
 
             this.viewer.setModel(importedModel);
+            this._showMobileViewerToggle();
             if (setup.referenceModel && Array.isArray(setup.referenceModel.vertices)) {
                 this.viewer.setReferenceModel(setup.referenceModel.vertices, setup.referenceModel.bounds || null);
             }
@@ -1511,6 +1519,9 @@ class TopologyApp {
             this.currentModel = revoxelized;
             this.viewer.setModel(revoxelized);
 
+            // Show the mobile viewer toggle button now that a model is loaded
+            this._showMobileViewerToggle();
+
         } catch (error) {
             console.error('Import error:', error);
             alert('Failed to import file: ' + error.message);
@@ -1557,6 +1568,7 @@ class TopologyApp {
 
         // Visualize
         this.viewer.setModel(finalModel);
+        this._showMobileViewerToggle();
 
         // Hide mesh method selector
         document.getElementById('meshMethodSelector').classList.add('hidden');
@@ -1599,6 +1611,7 @@ class TopologyApp {
         
         // Visualize and reset camera for fresh template view
         this.viewer.setModel(model);
+        this._showMobileViewerToggle();
         this.viewer.resetCamera();
         document.getElementById('toggleSection').classList.remove('active-tool');
         this._updateSectionSliders();
