@@ -1687,11 +1687,38 @@ class TopologyOptimizerWorker3D {
                 if (elementStress[e] > maxStress) maxStress = elementStress[e];
             }
 
+            // Fatigue risk computation (S-N curve approach)
+            // When fatigueMode is enabled, replace stress values with fatigue risk (0=safe, 1=failure)
+            // Uses S-N curve (Wöhler curve) approach: risk ∝ σ^k where k is the S-N slope exponent.
+            // k=3 is a conservative default valid for many metals and engineering polymers
+            // (typical range: k=3-5 for metals, k=9-12 for composites).
+            let displayStress = elementStress;
+            let displayMaxStress = maxStress;
+            if (config.fatigueMode && maxStress > 0) {
+                const k = config.snExponent || 3; // S-N slope exponent (configurable, default 3)
+                const fatigueRisk = new Float32Array(nel);
+                let maxRisk = 0;
+                for (let e = 0; e < nel; e++) {
+                    const s = elementStress[e] / maxStress; // normalized 0-1
+                    fatigueRisk[e] = Math.pow(s, k);
+                    if (fatigueRisk[e] > maxRisk) maxRisk = fatigueRisk[e];
+                }
+                // Re-normalize fatigueRisk to 0-1 range
+                if (maxRisk > 0) {
+                    for (let e = 0; e < nel; e++) fatigueRisk[e] /= maxRisk;
+                }
+                displayStress = fatigueRisk;
+                displayMaxStress = 1.0;
+            }
+
+            // Downsample displacement vector from Float64 to Float32 for efficient transfer
+            const displacementU = Float32Array.from(U);
+
             const meshData = this.buildAdaptiveMesh(nelx, nely, nelz, x, elementEnergies, elementForces, null);
             const totalTime = performance.now() - startTime;
 
-            this._lastVolumetricStress = elementStress;
-            this._lastVolumetricMaxStress = maxStress;
+            this._lastVolumetricStress = displayStress;
+            this._lastVolumetricMaxStress = displayMaxStress;
             this._lastVolumetricIteration = 1;
 
             postMessage({
@@ -1705,9 +1732,11 @@ class TopologyOptimizerWorker3D {
                     ny: nely,
                     nz: nelz,
                     meshData: meshData,
-                    maxStress: maxStress,
-                    elementStress: elementStress,
+                    maxStress: displayMaxStress,
+                    elementStress: displayStress,
                     feaOnly: true,
+                    fatigueMode: !!config.fatigueMode,
+                    displacementU: displacementU,
                     timing: {
                         totalTime: totalTime,
                         avgIterationTime: totalTime,
