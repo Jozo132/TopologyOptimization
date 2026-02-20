@@ -347,6 +347,7 @@ class TopologyApp {
             this.config.yieldStrength = parseFloat(e.target.value) || 0;
             document.getElementById('materialSelect').value = 'custom';
             this.config.material = 'custom';
+            this.viewer.setYieldStrength(this.config.yieldStrength);
         });
 
         // Step 6: Forces and constraints
