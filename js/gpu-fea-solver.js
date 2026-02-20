@@ -637,67 +637,61 @@ export class GPUFEASolver {
             device.queue.writeBuffer(b.x, 0, new Float32Array(ndof));
         }
 
-        // Step 1: Ap = A * x (for initial residual)
+        // Batch init: Ap = A*x → r = F-Ap → z = M⁻¹r → p = z
+        // All four steps are encoded into a single command buffer.
+        // The GPU queue serializes them; the subsequent _gpuDot mapAsync
+        // provides the implicit sync before reading results.
         let enc = device.createCommandEncoder();
         this._encodeApplyA(enc, true);
-        device.queue.submit([enc.finish()]);
-        await device.queue.onSubmittedWorkDone();
 
-        // Step 2: r = F - Ap, zero fixed
-        enc = device.createCommandEncoder();
         let pass = enc.beginComputePass();
         pass.setPipeline(pip.initResidual.pipe);
         pass.setBindGroup(0, pip.initResidual.bg);
         pass.dispatchWorkgroups(Math.ceil(ndof / wg));
         pass.end();
-        device.queue.submit([enc.finish()]);
-        await device.queue.onSubmittedWorkDone();
 
-        // Step 3: z = M^{-1} r (Jacobi)
-        enc = device.createCommandEncoder();
         pass = enc.beginComputePass();
         pass.setPipeline(pip.jacobi.pipe);
         pass.setBindGroup(0, pip.jacobi.bg);
         pass.dispatchWorkgroups(Math.ceil(ndof / wg));
         pass.end();
-        device.queue.submit([enc.finish()]);
-        await device.queue.onSubmittedWorkDone();
 
-        // Step 4: p = z
-        enc = device.createCommandEncoder();
         pass = enc.beginComputePass();
         pass.setPipeline(pip.copyVec.pipe);
         pass.setBindGroup(0, pip.copyVec.bgZtoP);
         pass.dispatchWorkgroups(Math.ceil(ndof / wg));
         pass.end();
-        device.queue.submit([enc.finish()]);
-        await device.queue.onSubmittedWorkDone();
 
-        // Step 5: initial rz and r0norm2
+        device.queue.submit([enc.finish()]);
+
+        // Compute initial rz and r0norm2 (mapAsync provides sync)
         let rz = await this._gpuDot(this._dotBindGroups.rz);
         const r0norm2 = await this._gpuDot(this._dotBindGroups.rr);
         const tolSq = tolerance * tolerance * Math.max(r0norm2, 1e-30);
 
         // ── CG iteration loop ──
+        // Only dot-product readbacks require CPU-GPU sync (via mapAsync).
+        // All other GPU dispatches are submitted without explicit waits;
+        // the GPU queue serializes them and mapAsync provides the barrier.
         let iterations = 0;
         let converged = false;
 
         for (let iter = 0; iter < maxIterations; iter++) {
+            // Convergence check: ||r||²
             const rnorm2 = await this._gpuDot(this._dotBindGroups.rr);
             if (rnorm2 < tolSq) { converged = true; break; }
             iterations = iter + 1;
 
-            // Ap = A * p
+            // Ap = A * p (4-pass applyA)
             enc = device.createCommandEncoder();
             this._encodeApplyA(enc, false);
             device.queue.submit([enc.finish()]);
-            await device.queue.onSubmittedWorkDone();
 
-            // alpha = rz / (p . Ap)
+            // alpha = rz / (p . Ap) — mapAsync syncs on prior applyA
             const pAp = await this._gpuDot(this._dotBindGroups.pAp);
             const alpha = rz / (pAp + EPSILON);
 
-            // x += alpha*p; r -= alpha*Ap
+            // Batch: x += alpha*p; r -= alpha*Ap; then z = M⁻¹r
             device.queue.writeBuffer(b.scalarUniform, 0, new Float32Array([alpha]));
             enc = device.createCommandEncoder();
             pass = enc.beginComputePass();
@@ -705,24 +699,18 @@ export class GPUFEASolver {
             pass.setBindGroup(0, pip.updateXR.bg);
             pass.dispatchWorkgroups(Math.ceil(ndof / wg));
             pass.end();
-            device.queue.submit([enc.finish()]);
-            await device.queue.onSubmittedWorkDone();
-
-            // z = M^{-1} r
-            enc = device.createCommandEncoder();
             pass = enc.beginComputePass();
             pass.setPipeline(pip.jacobi.pipe);
             pass.setBindGroup(0, pip.jacobi.bg);
             pass.dispatchWorkgroups(Math.ceil(ndof / wg));
             pass.end();
             device.queue.submit([enc.finish()]);
-            await device.queue.onSubmittedWorkDone();
 
-            // rz_new = r . z
+            // rz_new = r . z — mapAsync syncs on prior updateXR + jacobi
             const rz_new = await this._gpuDot(this._dotBindGroups.rz);
             const beta = rz_new / (rz + EPSILON);
 
-            // p = z + beta*p
+            // p = z + beta*p (next iter's _gpuDot will sync on this)
             device.queue.writeBuffer(b.scalarUniform, 0, new Float32Array([beta]));
             enc = device.createCommandEncoder();
             pass = enc.beginComputePass();
@@ -731,7 +719,6 @@ export class GPUFEASolver {
             pass.dispatchWorkgroups(Math.ceil(ndof / wg));
             pass.end();
             device.queue.submit([enc.finish()]);
-            await device.queue.onSubmittedWorkDone();
 
             rz = rz_new;
         }
