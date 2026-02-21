@@ -1386,7 +1386,7 @@ class TopologyApp {
         }
         // Manufacturing step only relevant for topology optimization
         if (manufacturingStep) {
-            manufacturingStep.style.display = solutionType === 'topology' ? '' : 'none';
+            manufacturingStep.dataset.skip = solutionType === 'topology' ? '' : 'true';
         }
 
         // Update run button label

@@ -8,11 +8,11 @@ export class WorkflowManager {
         this.onStepChange = null; // callback(stepNumber)
     }
 
-    /** Check if a step element is hidden via inline style (e.g. display:none from solution type logic) */
+    /** Check if a step element is marked as skipped (e.g. manufacturing for non-topology) */
     _isStepHidden(stepNum) {
         const el = document.querySelector(`[data-step="${stepNum}"]`);
         if (!el) return true;
-        return el.style.display === 'none' && !el.classList.contains('active');
+        return el.dataset.skip === 'true';
     }
 
     /** Find the next visible step after the given step */
