@@ -10,7 +10,7 @@
     <div class="container">
         <header>
             <h1>Topology <span>Optimization</span></h1>
-            <p class="subtitle">Start → Import → Preview → Material → Manufacturing → Solve</p>
+            <p class="subtitle">Start → Import → Solution Type → Material → Manufacturing → Solve</p>
             <button id="mobileTogglePanel" class="btn-icon mobile-toggle-btn" title="Minimize Settings">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <polyline id="mobileToggleIcon" points="18 15 12 9 6 15"></polyline>
@@ -104,12 +104,39 @@
             <div class="step" id="step3" data-step="3" disabled>
                 <div class="step-header">
                     <span class="step-number">3</span>
-                    <h2>Preview & Mode</h2>
+                    <h2>Preview & Solution Type</h2>
                 </div>
                 <div class="step-content">
                     <div id="modelInfo" class="model-info"></div>
-                    <div class="control-group" style="margin-top: 1rem;">
-                        <label>Solver Mode</label>
+                    <!-- Solution type cards -->
+                    <div style="margin-top: 1rem;">
+                        <label style="font-weight: 600; font-size: 0.875rem; display: block; margin-bottom: 0.5rem;">What do you want to solve?</label>
+                        <div class="solution-type-options">
+                            <div class="solution-type-card selected" data-solution="topology">
+                                <span class="solution-type-icon">🏗</span>
+                                <strong>Topology Optimization</strong>
+                                <small>Find the optimal material distribution under loads (SIMP / Genetic)</small>
+                            </div>
+                            <div class="solution-type-card" data-solution="fea">
+                                <span class="solution-type-icon">📐</span>
+                                <strong>Linear FEA</strong>
+                                <small>Single-pass stress & displacement analysis (small deformations)</small>
+                            </div>
+                            <div class="solution-type-card" data-solution="nonlinear">
+                                <span class="solution-type-icon">🔩</span>
+                                <strong>Nonlinear FEA</strong>
+                                <small>Large deformation analysis with Newton-Raphson and incremental loading</small>
+                            </div>
+                            <div class="solution-type-card" data-solution="fatigue">
+                                <span class="solution-type-icon">⚡</span>
+                                <strong>Fatigue Analysis</strong>
+                                <small>Predict fatigue life using S-N curve (Wöhler) approach</small>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Algorithm selector: shown only for topology optimization -->
+                    <div id="topoAlgorithmGroup" class="control-group" style="margin-top: 1rem;">
+                        <label>Optimization Algorithm</label>
                         <select id="solverSelect">
                             <option value="auto" selected>Auto (detect from model)</option>
                             <option value="2d">2D SIMP</option>
@@ -119,11 +146,26 @@
                             <option value="petsc-bddc">3D PETSc KSP (BDDC)</option>
                             <option value="petsc-mg">3D PETSc KSP (MG preconditioner)</option>
                             <option value="petsc-jacobi">3D PETSc KSP (Jacobi preconditioner)</option>
-                            <option value="fea">FEA Only (stress analysis)</option>
-                            <option value="fatigue">Fatigue Analysis (S-N curve)</option>
                             <option value="genetic">Genetic Algorithm</option>
                         </select>
                         <small style="display: block; color: #666; margin-top: 0.25rem;">Select 2D or 3D solving, or let the app auto-detect from your model.</small>
+                    </div>
+                    <!-- Nonlinear FEA parameters: shown only for nonlinear -->
+                    <div id="nonlinearParamsGroup" class="control-group" style="margin-top: 1rem; display: none;">
+                        <label style="font-weight: 600; font-size: 0.875rem; display: block; margin-bottom: 0.5rem;">Nonlinear FEA Parameters</label>
+                        <div class="control-group">
+                            <label>Load Steps</label>
+                            <input type="number" id="nonlinearLoadSteps" value="10" min="1" max="100" step="1">
+                            <small style="display: block; color: #666; margin-top: 0.25rem;">Number of incremental load steps (more = more stable, slower)</small>
+                        </div>
+                        <div class="control-group">
+                            <label>Max Newton Iterations (per step)</label>
+                            <input type="number" id="nonlinearMaxNewtonIter" value="20" min="1" max="100" step="1">
+                        </div>
+                        <div class="control-group">
+                            <label>Convergence Tolerance</label>
+                            <input type="number" id="nonlinearTolerance" value="1e-6" min="1e-12" max="1e-2" step="1e-6">
+                        </div>
                     </div>
                     <div class="transform-controls hidden" id="transformControls">
                         <div class="control-group">
@@ -562,6 +604,7 @@
                     </div>
 
                     <button id="runOptimization" class="btn-primary">Run Optimization</button>
+                    <!-- label is updated dynamically based on solution type -->
                     <button id="pauseOptimization" class="btn-secondary hidden">Pause</button>
                     <button id="cancelOptimization" class="btn-cancel hidden">Cancel</button>
 

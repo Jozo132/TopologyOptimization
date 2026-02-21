@@ -4,6 +4,8 @@
 
 import { GPUCompute } from './gpu-compute.js';
 import { GPUFEASolver } from './gpu-fea-solver.js';
+import { NonlinearSolver } from './nonlinear-solver.js';
+import { createMaterial } from './material-models.js';
 
 // Node.js / browser environment compatibility shim
 if (typeof self === 'undefined') {
@@ -1667,6 +1669,126 @@ class TopologyOptimizerWorker3D {
                 F = this.getLoadVectorFromPaint(nelx, nely, nelz, config.paintedForces, config.forceDirection, config.forceMagnitude, config.forceVector);
             }
 
+            // ── Nonlinear FEA sub-mode ────────────────────────────────────
+            if (config.nonlinearMode) {
+                const startTime = performance.now();
+                const nnx = nelx + 1, nny = nely + 1, nnz = nelz + 1;
+                const nodeCount = nnx * nny * nnz;
+                const elemCount = nel;
+
+                // Build mesh descriptor for NonlinearSolver
+                const mesh = {
+                    nelx, nely, nelz,
+                    nodeCount,
+                    elemCount,
+                    getElementNodes: (e) => {
+                        // 8 corner nodes for hex element e
+                        const ez = Math.floor(e / (nelx * nely));
+                        const ey = Math.floor((e % (nelx * nely)) / nelx);
+                        const ex = e % nelx;
+                        const n = (iz, iy, ix) => iz * nny * nnx + iy * nnx + ix;
+                        return [
+                            n(ez,   ey,   ex),   n(ez,   ey,   ex+1),
+                            n(ez,   ey+1, ex+1), n(ez,   ey+1, ex),
+                            n(ez+1, ey,   ex),   n(ez+1, ey,   ex+1),
+                            n(ez+1, ey+1, ex+1), n(ez+1, ey+1, ex)
+                        ];
+                    },
+                    getNodeCoords: (n) => {
+                        const nz = Math.floor(n / (nny * nnx));
+                        const ny = Math.floor((n % (nny * nnx)) / nnx);
+                        const nx = n % nnx;
+                        return [nx, ny, nz];
+                    }
+                };
+
+                // Create material model
+                const E = config.youngsModulus || this.E0;
+                const nu = config.poissonsRatio !== undefined ? config.poissonsRatio : this.nu;
+                const sigma_y = config.yieldStrength || 0;
+                const matType = sigma_y > 0 ? 'j2-plasticity' : 'neo-hookean';
+                const material = createMaterial(matType, { E, nu, sigY: sigma_y, H: 0 });
+
+                // Build full-DOF load vector (Float64)
+                const loads = new Float64Array(nodeCount * 3);
+                for (let i = 0; i < Math.min(F.length, loads.length); i++) loads[i] = F[i];
+
+                // Fixed DOFs as Int32Array
+                const constraints = new Int32Array(fixeddofs.length);
+                for (let i = 0; i < fixeddofs.length; i++) constraints[i] = fixeddofs[i];
+
+                // Run nonlinear solver
+                const nlSolver = new NonlinearSolver({
+                    numLoadSteps: config.nonlinearLoadSteps || 10,
+                    maxNewtonIter: config.nonlinearMaxNewtonIter || 20,
+                    residualTol: config.nonlinearTolerance || 1e-6,
+                    incrementTol: config.nonlinearTolerance || 1e-6
+                });
+
+                let nlStep = 0;
+                const nlResult = nlSolver.solve(mesh, material, constraints, loads, (info) => {
+                    if (info.step !== nlStep) {
+                        nlStep = info.step;
+                        const progress = (info.step / (config.nonlinearLoadSteps || 10)) * 100;
+                        postMessage({
+                            type: 'progress',
+                            iteration: info.step,
+                            compliance: info.residualNorm || 0,
+                            meshData: null,
+                            timing: null,
+                            maxStress: 0
+                        });
+                    }
+                });
+
+                // Extract von Mises stress per element
+                const elementStress = nlResult.vonMisesStress;
+                let maxStress = 0;
+                for (let e = 0; e < elemCount; e++) {
+                    if (elementStress[e] > maxStress) maxStress = elementStress[e];
+                }
+
+                const edofArray = this._precomputeEdofs3D(nelx, nely, nelz);
+                const elementEnergies = nlResult.strainEnergy || new Float32Array(elemCount);
+                const elementForces = this.computeElementForces(nelx, nely, nelz, F);
+                const meshData = this.buildAdaptiveMesh(nelx, nely, nelz, x, elementEnergies, elementForces, null);
+
+                const displacementU = Float32Array.from(nlResult.displacement);
+                const totalTime = performance.now() - startTime;
+
+                this._lastVolumetricStress = Float32Array.from(elementStress);
+                this._lastVolumetricMaxStress = maxStress;
+                this._lastVolumetricIteration = 1;
+
+                this._cleanupGPU();
+                postMessage({
+                    type: 'complete',
+                    result: {
+                        densities: x,
+                        finalCompliance: 0,
+                        iterations: nlResult.totalIterations || 0,
+                        volumeFraction: 1.0,
+                        nx: nelx,
+                        ny: nely,
+                        nz: nelz,
+                        meshData,
+                        maxStress,
+                        elementStress: Float32Array.from(elementStress),
+                        feaOnly: true,
+                        nonlinearMode: true,
+                        converged: nlResult.converged,
+                        displacementU,
+                        timing: {
+                            totalTime,
+                            avgIterationTime: totalTime,
+                            iterationTimes: [totalTime],
+                            usingWasm: false
+                        }
+                    }
+                });
+                return;
+            }
+            // ─────────────────────────────────────────────────────────────
             const ndof = 3 * (nelx + 1) * (nely + 1) * (nelz + 1);
             const fixedMask = new Uint8Array(ndof);
             for (let i = 0; i < fixeddofs.length; i++) {
