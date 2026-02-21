@@ -665,8 +665,8 @@ export class CohesiveZoneModel {
         this.GIIc = c.GIIc || this.GIc;
         this.beta = c.beta != null ? c.beta : 1.0;
 
-        // Initial stiffness penalty
-        this.delta0 = 2.0 * this.GIc / (this.sigmaMax * this.deltaC) * this.deltaC;
+        // Initial stiffness penalty: δ_0 = 2·GIc / σ_max
+        this.delta0 = 2.0 * this.GIc / this.sigmaMax;
         // Ensure delta0 is on the ascending branch
         if (this.delta0 >= this.deltaC) {
             this.delta0 = this.deltaC * 0.01;
@@ -730,8 +730,13 @@ export class CohesiveZoneModel {
             const softScale = this.sigmaMax * (this.deltaC - maxDelta) /
                               ((this.deltaC - this.delta0) * maxDelta);
             T_eff = softScale * deltaEff;
-            dTdDelta = deltaEff < maxDelta ? softScale : -this.sigmaMax /
-                       ((this.deltaC - this.delta0) * maxDelta);
+            if (deltaEff < maxDelta) {
+                // Unloading/reloading: secant stiffness to origin
+                dTdDelta = softScale;
+            } else {
+                // Continued softening: tangent of the softening curve
+                dTdDelta = -this.sigmaMax / (this.deltaC - this.delta0);
+            }
         } else {
             // Fully separated
             return {
@@ -749,12 +754,13 @@ export class CohesiveZoneModel {
         let traction_n, traction_t, tangent_nn, tangent_tt, tangent_nt;
         if (deltaEff > EPSILON) {
             const ratio_n = Math.max(0.0, delta_n) / deltaEff;
-            const ratio_t = this.beta * this.beta * delta_t / deltaEff;
+            const ratio_t = this.beta * delta_t / deltaEff;
             traction_n = T_eff * ratio_n;
-            traction_t = T_eff * ratio_t;
-            tangent_nn = dTdDelta * ratio_n * ratio_n + T_eff / deltaEff * (1.0 - ratio_n * ratio_n);
-            tangent_tt = dTdDelta * ratio_t * ratio_t + T_eff / deltaEff * (this.beta * this.beta - ratio_t * ratio_t);
-            tangent_nt = (dTdDelta - T_eff / deltaEff) * ratio_n * ratio_t;
+            traction_t = T_eff * this.beta * ratio_t;
+            const Tsec = T_eff / deltaEff;
+            tangent_nn = dTdDelta * ratio_n * ratio_n + Tsec * (1.0 - ratio_n * ratio_n);
+            tangent_tt = (dTdDelta * ratio_t * ratio_t + Tsec * (1.0 - ratio_t * ratio_t)) * this.beta * this.beta;
+            tangent_nt = (dTdDelta - Tsec) * ratio_n * ratio_t * this.beta;
         } else {
             traction_n = 0.0;
             traction_t = 0.0;
