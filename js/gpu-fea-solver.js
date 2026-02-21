@@ -2,11 +2,65 @@
 // Implements a complete Jacobi-preconditioned Conjugate Gradient (CG) solver
 // that keeps all data on GPU during CG iterations - no readbacks until convergence.
 //
+// Cross-compatible: works in browser (navigator.gpu) and Node.js (via 'webgpu' / dawn.node)
+//
 // Key GPU operations:
 //   applyA (EbE mat-vec): each element gathers 24 DOFs, does 24x24 mat-vec, scatter-adds to global vector
 //   dotProduct: workgroup-level tree reduction, then CPU sums partials
 //   axpy/update: combined vector updates
 //   Jacobi preconditioner: diagonal scaling
+
+/**
+ * Obtain a GPU instance that works in both browser and Node.js.
+ * Browser  → navigator.gpu  (native)
+ * Node.js  → 'webgpu' npm package (Dawn bindings)
+ *
+ * The result is cached so that only ONE Dawn instance exists per process
+ * (multiple Dawn instances on the same D3D12 device can crash).
+ * @returns {Promise<GPU|null>}
+ */
+let _cachedGPU = null;
+let _gpuProbed = false;
+export async function _getGPU() {
+    if (_cachedGPU) return _cachedGPU;
+    if (_gpuProbed) return null;
+    _gpuProbed = true;
+
+    // 1. Browser path
+    if (typeof navigator !== 'undefined' && navigator.gpu) {
+        _cachedGPU = navigator.gpu;
+        return _cachedGPU;
+    }
+
+    // 2. Node.js path – try to load the 'webgpu' package (dawn.node)
+    //    Dawn's create() can crash the process on systems without a GPU,
+    //    so we probe in a subprocess first.
+    try {
+        const mod = await import('webgpu');
+        if (typeof mod.create !== 'function') return null;
+
+        // Probe Dawn in a subprocess to avoid crashing the main process
+        const { execSync } = await import('child_process');
+        try {
+            execSync(
+                'node --input-type=module -e "import{create,globals}from\'webgpu\';Object.assign(globalThis,globals);const g=create([]);const a=await g.requestAdapter();process.exit(a?0:1)"',
+                { timeout: 8000, stdio: 'ignore' }
+            );
+        } catch (_probeErr) {
+            // Subprocess crashed or returned non-zero → Dawn not usable
+            return null;
+        }
+
+        // Probe succeeded – safe to create in main process
+        const { create, globals } = mod;
+        if (typeof GPUBufferUsage === 'undefined') Object.assign(globalThis, globals);
+        _cachedGPU = create([]);
+        return _cachedGPU;
+    } catch (_) {
+        // Package not installed or Dawn init failed – GPU won't be available
+    }
+    return null;
+}
 
 export class GPUFEASolver {
     constructor() {
@@ -20,7 +74,7 @@ export class GPUFEASolver {
         this._ndof = 0;
         this._fixedMaskF32 = null;
         this._WG_SIZE = 64;
-        this._DOT_WG_SIZE = 256;
+        this._DOT_WG_SIZE = 64;
     }
 
     /**
@@ -35,16 +89,25 @@ export class GPUFEASolver {
 
     async _doInit() {
         try {
-            if (typeof navigator === 'undefined' || !navigator.gpu) {
+            const gpu = await _getGPU();
+            if (!gpu) {
                 console.log('WebGPU not supported in this environment');
                 return false;
             }
-            const adapter = await navigator.gpu.requestAdapter();
+            const adapter = await gpu.requestAdapter();
             if (!adapter) {
                 console.log('No WebGPU adapter available');
                 return false;
             }
-            this.device = await adapter.requestDevice();
+            // Request higher buffer limits if the adapter supports them
+            const adapterLimits = adapter.limits || {};
+            const maxBuf = adapterLimits.maxStorageBufferBindingSize || 134217728;
+            this.device = await adapter.requestDevice({
+                requiredLimits: {
+                    maxStorageBufferBindingSize: maxBuf,
+                    maxBufferSize: adapterLimits.maxBufferSize || 268435456,
+                },
+            });
             this.available = true;
             console.log('GPUFEASolver: WebGPU initialized successfully');
             return true;
@@ -159,12 +222,13 @@ export class GPUFEASolver {
             Ap_atomic: device.createBuffer({ size: ndof * 4, usage: SRW }),
 
             // Dot-product partial sums
+            // Dawn / some drivers require storage-buffer sizes >= 4-byte aligned and > 0
             partials: device.createBuffer({
-                size: dotNumGroups * 4,
+                size: Math.max(dotNumGroups * 4, 16),
                 usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
             }),
             partialsRead: device.createBuffer({
-                size: dotNumGroups * 4,
+                size: Math.max(dotNumGroups * 4, 16),
                 usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
             }),
 
@@ -336,25 +400,28 @@ export class GPUFEASolver {
         });
 
         // ──── dotProduct: workgroup tree reduction ────
+        // Using wg_size 64 (not 256) keeps workgroup-memory pressure
+        // low and avoids native crashes observed on some Dawn/D3D12 drivers when
+        // workgroup shared memory is large.
         const dotShader = device.createShaderModule({ code: /* wgsl */`
             @group(0) @binding(0) var<storage, read> vecA: array<f32>;
             @group(0) @binding(1) var<storage, read> vecB: array<f32>;
             @group(0) @binding(2) var<storage, read_write> partials: array<f32>;
             @group(0) @binding(3) var<uniform> params: vec4<u32>;
-            var<workgroup> shared: array<f32, 256>;
-            @compute @workgroup_size(256)
+            var<workgroup> wg_scratch: array<f32, 64>;
+            @compute @workgroup_size(64)
             fn main(@builtin(global_invocation_id) gid: vec3<u32>,
                     @builtin(local_invocation_id)  lid: vec3<u32>,
                     @builtin(workgroup_id)         wid: vec3<u32>) {
                 var v: f32 = 0.0;
                 if (gid.x < params.y) { v = vecA[gid.x] * vecB[gid.x]; }
-                shared[lid.x] = v;
+                wg_scratch[lid.x] = v;
                 workgroupBarrier();
-                for (var s: u32 = 128u; s > 0u; s >>= 1u) {
-                    if (lid.x < s) { shared[lid.x] += shared[lid.x + s]; }
+                for (var s: u32 = 32u; s > 0u; s >>= 1u) {
+                    if (lid.x < s) { wg_scratch[lid.x] += wg_scratch[lid.x + s]; }
                     workgroupBarrier();
                 }
-                if (lid.x == 0u) { partials[wid.x] = shared[0]; }
+                if (lid.x == 0u) { partials[wid.x] = wg_scratch[0]; }
             }
         ` });
         const dotPipe = device.createComputePipeline({
@@ -546,6 +613,8 @@ export class GPUFEASolver {
         const ndof = this._ndof;
         const groups = Math.ceil(ndof / this._DOT_WG_SIZE);
         const b = this._buffers;
+        // Dawn / some drivers require copy size >= 4-byte aligned and > 0
+        const copyBytes = Math.max(groups * 4, 16);
 
         const enc = device.createCommandEncoder();
         const pass = enc.beginComputePass();
@@ -553,15 +622,16 @@ export class GPUFEASolver {
         pass.setBindGroup(0, bg);
         pass.dispatchWorkgroups(groups);
         pass.end();
-        enc.copyBufferToBuffer(b.partials, 0, b.partialsRead, 0, groups * 4);
+        enc.copyBufferToBuffer(b.partials, 0, b.partialsRead, 0, copyBytes);
         device.queue.submit([enc.finish()]);
 
+        // Read back (must copy via .slice(0) before unmap detaches the buffer)
         await b.partialsRead.mapAsync(GPUMapMode.READ);
         const data = new Float32Array(b.partialsRead.getMappedRange().slice(0));
         b.partialsRead.unmap();
 
         let sum = 0;
-        for (let i = 0; i < data.length; i++) sum += data[i];
+        for (let i = 0; i < groups; i++) sum += data[i];
         return sum;
     }
 

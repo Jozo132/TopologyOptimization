@@ -37,6 +37,7 @@ async function runTests() {
     console.log('Test 1: Module exports GPUFEASolver');
     const mod = await import(toURL(join(__dirname, '..', 'js', 'gpu-fea-solver.js')));
     assert(typeof mod.GPUFEASolver === 'function', 'GPUFEASolver should be an exported class');
+    assert(typeof mod._getGPU === 'function', '_getGPU should be an exported function');
 
     // ─── Test 2: Constructor ───
     console.log('Test 2: Constructor creates instance');
