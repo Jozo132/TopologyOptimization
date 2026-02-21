@@ -9,7 +9,7 @@
  *      speedup estimates derived from GPU compute characteristics
  *   3. Provides estimated comparisons with MGPCG and WASM solvers
  *
- * Starts at 50×50×50, scales voxel count by +20% each step until the JS
+ * Starts at 20³, scales voxel count by +20% each step until the JS
  * Jacobi-PCG solver exceeds 30 s per solve.
  *
  * Usage:
@@ -505,7 +505,7 @@ if (results.length >= 2) {
     console.log('  │ Cube       │ Elements      │ JS Jacobi~    │ WASM~         │ MGPCG~        │ GPU~ │');
     console.log('  ├────────────┼───────────────┼───────────────┼───────────────┼───────────────┼──────┤');
 
-    const extraSizes = [40, 50, 60, 70, 80, 100];
+    const extraSizes = [40, 50, 60, 70, 80, 100].filter(s => s > last.n);
     for (const en of extraSizes) {
         const eNel = en * en * en;
         const eNdof = 3 * (en + 1) * (en + 1) * (en + 1);
