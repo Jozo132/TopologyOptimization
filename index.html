@@ -41,7 +41,7 @@
                                 <line x1="9" y1="15" x2="15" y2="15"></line>
                             </svg>
                             <strong>New Project</strong>
-                            <small>Import a 3D model (STL/STEP) or use a template to start a new optimization</small>
+                            <small>Import a 3D model (STL/STEP) or 2D profile (DXF/SVG) or use a template to start a new optimization</small>
                         </div>
                         <div class="start-option-card" id="startImportProject">
                             <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -70,8 +70,8 @@
                             <polyline points="17 8 12 3 7 8"></polyline>
                             <line x1="12" y1="3" x2="12" y2="15"></line>
                         </svg>
-                        <p>Drop STL or STEP file here or click to browse</p>
-                        <input type="file" id="fileInput" accept=".stl,.stp,.step" hidden>
+                        <p>Drop STL, STEP, DXF or SVG file here or click to browse</p>
+                        <input type="file" id="fileInput" accept=".stl,.stp,.step,.dxf,.svg" hidden>
                     </div>
                     <div class="quick-start">
                         <p>Or start with a template:</p>
@@ -273,6 +273,13 @@
                 </div>
                 <div class="step-content">
                     <!-- Loads & Constraints -->
+                    <div class="control-group hidden" id="templateDefaultsGroup">
+                        <label>
+                            <input type="checkbox" id="useTemplateDefaults">
+                            Use template defaults
+                        </label>
+                        <small style="display: block; color: #666; margin-top: 0.25rem;">When checked, uses the predefined force and constraint settings from the template. Uncheck to customize.</small>
+                    </div>
                     <div class="sub-panel" id="forcesPanel">
                         <div class="sub-panel-header" data-toggle="forcesPanel">
                             <span>⬇ Forces</span>

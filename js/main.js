@@ -419,6 +419,14 @@ class TopologyApp {
             this.config.constraintPosition = e.target.value;
         });
 
+        // Template defaults checkbox
+        const defaultsCheckbox = document.getElementById('useTemplateDefaults');
+        if (defaultsCheckbox) {
+            defaultsCheckbox.addEventListener('change', (e) => {
+                this._applyTemplateDefaultsToggle(e.target.checked);
+            });
+        }
+
         // Paint toolbar
         document.getElementById('paintConstraint').addEventListener('click', () => {
             this.viewer.setPaintMode('constraint');
@@ -862,6 +870,51 @@ class TopologyApp {
         const previewEl = document.getElementById('dofPreviewText');
         if (!previewEl) return;
         previewEl.textContent = DOF_DESCRIPTIONS[dofValue] || DOF_DESCRIPTIONS['all'];
+    }
+
+    /**
+     * Toggle between template default and custom constraints/forces.
+     * @param {boolean} useDefaults - Whether to use template defaults
+     */
+    _applyTemplateDefaultsToggle(useDefaults) {
+        const forceSelect = document.getElementById('forceDirection');
+        const constraintSelect = document.getElementById('constraintPosition');
+
+        if (useDefaults && this.currentModel) {
+            const model = this.currentModel;
+            // Apply template defaults
+            if (model.forceDirection) {
+                this.config.forceDirection = model.forceDirection;
+                this.viewer.forceDirection = model.forceDirection;
+                forceSelect.value = model.forceDirection;
+                const v = FORCE_DIRECTION_VECTORS[model.forceDirection] || [0, -1, 0];
+                document.getElementById('forceVectorX').value = v[0];
+                document.getElementById('forceVectorY').value = v[1];
+                document.getElementById('forceVectorZ').value = v[2];
+                this.config.forceVector = null;
+                this.viewer.forceVector = null;
+            }
+            if (model.constraintPositions) {
+                this.config.constraintPosition = model.constraintPositions;
+                const optionExists = Array.from(constraintSelect.options).some(o => o.value === model.constraintPositions);
+                if (optionExists) constraintSelect.value = model.constraintPositions;
+            }
+
+            // Disable manual controls when using defaults
+            forceSelect.disabled = true;
+            constraintSelect.disabled = true;
+            document.getElementById('forceVectorX').disabled = true;
+            document.getElementById('forceVectorY').disabled = true;
+            document.getElementById('forceVectorZ').disabled = true;
+        } else {
+            // Re-enable manual controls
+            forceSelect.disabled = false;
+            constraintSelect.disabled = false;
+            document.getElementById('forceVectorX').disabled = false;
+            document.getElementById('forceVectorY').disabled = false;
+            document.getElementById('forceVectorZ').disabled = false;
+        }
+        if (this.viewer) this.viewer.draw();
     }
 
     _updateVolumetricControlState() {
@@ -1488,18 +1541,38 @@ class TopologyApp {
     async handleFileImport(file) {
         try {
             console.log('Importing file:', file.name);
-            // Parse file (STL or STEP), then voxelize with mm-based voxel size
+            // Parse file (STL, STEP, DXF, or SVG), then voxelize with mm-based voxel size
             const model = await this.importer.importFile(file, null);
+
+            // Hide template defaults checkbox for imported files
+            const defaultsGroup = document.getElementById('templateDefaultsGroup');
+            if (defaultsGroup) defaultsGroup.classList.add('hidden');
+            const defaultsCheckbox = document.getElementById('useTemplateDefaults');
+            if (defaultsCheckbox) {
+                defaultsCheckbox.checked = false;
+                this._applyTemplateDefaultsToggle(false);
+            }
+
+            // Check if this is a 2D file (DXF/SVG) - skip mesh method selection
+            const is2D = /\.(dxf|svg)$/i.test(file.name);
 
             // Store parsed data for re-meshing after mesh method selection
             this._pendingImport = { file, model };
 
-            // Show transform controls for imported models
-            document.getElementById('transformControls').classList.remove('hidden');
+            // Show transform controls for imported models (3D only)
+            if (is2D) {
+                document.getElementById('transformControls').classList.add('hidden');
+            } else {
+                document.getElementById('transformControls').classList.remove('hidden');
+            }
 
-            // Show mesh method selector
+            // Show mesh method selector (3D files only)
             const selector = document.getElementById('meshMethodSelector');
-            selector.classList.remove('hidden');
+            if (is2D) {
+                selector.classList.add('hidden');
+            } else {
+                selector.classList.remove('hidden');
+            }
 
             // Enable/disable blended curvature option based on file type
             const isSTEP = /\.(stp|step)$/i.test(file.name);
@@ -1514,32 +1587,50 @@ class TopologyApp {
                 document.querySelector('input[name="meshMethod"][value="box"]').checked = true;
             }
 
-            // Display preliminary model info
-            const voxelSizeMM = this.config.voxelSizeMM;
-            const revoxelized = this.importer.voxelizeVertices(model.originalVertices, null, voxelSizeMM);
-            revoxelized.originalVertices = model.originalVertices;
+            // For 2D files, the model is already voxelized - use directly
+            let displayModel;
+            if (is2D) {
+                displayModel = model;
+            } else {
+                // Display preliminary model info for 3D files
+                const voxelSizeMM = this.config.voxelSizeMM;
+                displayModel = this.importer.voxelizeVertices(model.originalVertices, null, voxelSizeMM);
+                displayModel.originalVertices = model.originalVertices;
+            }
 
             const info = document.getElementById('modelInfo');
             info.classList.remove('hidden');
-            const physX = revoxelized.bounds ? (revoxelized.bounds.maxX - revoxelized.bounds.minX).toFixed(1) : '?';
-            const physY = revoxelized.bounds ? (revoxelized.bounds.maxY - revoxelized.bounds.minY).toFixed(1) : '?';
-            const physZ = revoxelized.bounds ? (revoxelized.bounds.maxZ - revoxelized.bounds.minZ).toFixed(1) : '?';
-            const voxelSizeStr = revoxelized.voxelSize ? revoxelized.voxelSize.toFixed(2) : '?';
-            info.innerHTML = `
+            const physX = displayModel.bounds ? (displayModel.bounds.maxX - displayModel.bounds.minX).toFixed(1) : '?';
+            const physY = displayModel.bounds ? (displayModel.bounds.maxY - displayModel.bounds.minY).toFixed(1) : '?';
+            const physZ = displayModel.bounds ? (displayModel.bounds.maxZ - displayModel.bounds.minZ).toFixed(1) : '?';
+            const voxelSizeStr = displayModel.voxelSize ? displayModel.voxelSize.toFixed(2) : '?';
+            let infoHTML = `
                 <strong>Model loaded:</strong> ${file.name}<br>
                 <strong>Size:</strong> ${physX} × ${physY} × ${physZ} mm<br>
                 <strong>Voxel size:</strong> ${voxelSizeStr} mm<br>
-                <strong>Elements:</strong> ${revoxelized.nx * revoxelized.ny * revoxelized.nz}<br>
-                <strong>Grid:</strong> ${revoxelized.nx} × ${revoxelized.ny} × ${revoxelized.nz}<br>
-                <em>Select meshing method above and click Continue.</em>
+                <strong>Elements:</strong> ${displayModel.nx * displayModel.ny * displayModel.nz}<br>
+                <strong>Grid:</strong> ${displayModel.nx} × ${displayModel.ny} × ${displayModel.nz}
             `;
+            if (!is2D) {
+                infoHTML += `<br><em>Select meshing method above and click Continue.</em>`;
+            } else {
+                infoHTML += `<br><strong>Mode:</strong> 2D profile`;
+            }
+            info.innerHTML = infoHTML;
 
             // Preview the model
-            this.currentModel = revoxelized;
-            this.viewer.setModel(revoxelized);
+            this.currentModel = displayModel;
+            this.viewer.setModel(displayModel);
 
             // Show the mobile viewer toggle button now that a model is loaded
             this._showMobileViewerToggle();
+
+            // For 2D files, skip mesh method selection and go directly to preview
+            if (is2D) {
+                this._pendingImport = null;
+                this.workflow.enableStep(3);
+                this.workflow.goToStep(3);
+            }
 
         } catch (error) {
             console.error('Import error:', error);
@@ -1611,22 +1702,51 @@ class TopologyApp {
         // Hide transform controls for templates (no vertices to transform)
         document.getElementById('transformControls').classList.add('hidden');
         
-        // For cube template, set specific boundary conditions
-        if (type === 'cube' && model.forcePosition && model.constraintPositions) {
-            this.config.forceDirection = 'down';  // Force pointing down at top center
-            this.config.constraintPosition = 'bottom-corners';  // Special setting for cube
-            document.getElementById('forceDirection').value = 'down';
-            // Note: constraint dropdown doesn't have 'bottom-corners', it will use the config value
+        // Apply template default boundary conditions
+        if (model.forceDirection) {
+            this.config.forceDirection = model.forceDirection;
+            this.viewer.forceDirection = model.forceDirection;
+            document.getElementById('forceDirection').value = model.forceDirection;
+            const v = FORCE_DIRECTION_VECTORS[model.forceDirection] || [0, -1, 0];
+            document.getElementById('forceVectorX').value = v[0];
+            document.getElementById('forceVectorY').value = v[1];
+            document.getElementById('forceVectorZ').value = v[2];
+            this.config.forceVector = null;
+            this.viewer.forceVector = null;
+        }
+        if (model.constraintPositions) {
+            this.config.constraintPosition = model.constraintPositions;
+            // Update dropdown if the value exists in the options
+            const constraintSelect = document.getElementById('constraintPosition');
+            const optionExists = Array.from(constraintSelect.options).some(o => o.value === model.constraintPositions);
+            if (optionExists) {
+                constraintSelect.value = model.constraintPositions;
+            }
+        }
+
+        // Enable template defaults checkbox and check it
+        const defaultsCheckbox = document.getElementById('useTemplateDefaults');
+        if (defaultsCheckbox) {
+            defaultsCheckbox.checked = true;
+            const defaultsGroup = document.getElementById('templateDefaultsGroup');
+            if (defaultsGroup) defaultsGroup.classList.remove('hidden');
+            this._applyTemplateDefaultsToggle(true);
         }
         
-        // Display model info
+        // Display model info including default constraints/forces
         const info = document.getElementById('modelInfo');
         info.classList.remove('hidden');
-        info.innerHTML = `
+        let infoHTML = `
             <strong>Template loaded:</strong> ${type}<br>
             <strong>Elements:</strong> ${model.nx * model.ny * model.nz}<br>
             <strong>Dimensions:</strong> ${model.nx} x ${model.ny} x ${model.nz}
         `;
+        if (model.forcePosition || model.constraintPositions) {
+            infoHTML += `<br><strong>Defaults:</strong>`;
+            if (model.forcePosition) infoHTML += ` Force: ${model.forcePosition} (${model.forceDirection || 'down'})`;
+            if (model.constraintPositions) infoHTML += ` | Constraint: ${model.constraintPositions}`;
+        }
+        info.innerHTML = infoHTML;
         
         // Visualize and reset camera for fresh template view
         this.viewer.setModel(model);

@@ -1952,6 +1952,359 @@ console.log('Test 63: Marching Cubes – gradient field produces smooth isosurfa
 }
 
 // ──────────────────────────────────────────────────
+// Test 64: DXF parsing – simple rectangle
+// ──────────────────────────────────────────────────
+console.log('Test 64: DXF parsing – rectangle LWPOLYLINE');
+{
+    const dxfText = `0
+SECTION
+2
+ENTITIES
+0
+LWPOLYLINE
+70
+1
+10
+0
+20
+0
+10
+10
+20
+0
+10
+10
+20
+10
+10
+0
+20
+10
+0
+ENDSEC
+0
+EOF
+`;
+    const model = importer.parseDXF(dxfText);
+    assert(model.nz === 1, `DXF rectangle should have nz=1, got ${model.nz}`);
+    assert(model.nx > 0, `DXF rectangle should have positive nx, got ${model.nx}`);
+    assert(model.ny > 0, `DXF rectangle should have positive ny, got ${model.ny}`);
+    assert(model.sourceFormat === 'DXF', `sourceFormat should be DXF, got ${model.sourceFormat}`);
+
+    // All voxels should be filled for a solid rectangle
+    let solidCount = 0;
+    for (let i = 0; i < model.elements.length; i++) {
+        if (model.elements[i] > 0) solidCount++;
+    }
+    assert(solidCount === model.nx * model.ny, `DXF rectangle should fill all ${model.nx * model.ny} voxels, got ${solidCount}`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 65: DXF parsing – circle
+// ──────────────────────────────────────────────────
+console.log('Test 65: DXF parsing – circle');
+{
+    const dxfText = `0
+SECTION
+2
+ENTITIES
+0
+CIRCLE
+10
+5
+20
+5
+40
+5
+0
+ENDSEC
+0
+EOF
+`;
+    const model = importer.parseDXF(dxfText);
+    assert(model.nz === 1, `DXF circle should have nz=1, got ${model.nz}`);
+    assert(model.nx > 0, `DXF circle should have positive nx`);
+    assert(model.ny > 0, `DXF circle should have positive ny`);
+
+    let solidCount = 0;
+    for (let i = 0; i < model.elements.length; i++) {
+        if (model.elements[i] > 0) solidCount++;
+    }
+    const totalVoxels = model.nx * model.ny;
+    const fillRatio = solidCount / totalVoxels;
+    // Circle should fill roughly π/4 ≈ 0.785 of bounding box
+    assert(fillRatio > 0.6 && fillRatio < 0.95, `DXF circle fill ratio should be ~0.785, got ${fillRatio.toFixed(3)}`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 66: DXF parsing – LINE entities
+// ──────────────────────────────────────────────────
+console.log('Test 66: DXF parsing – LINE entities');
+{
+    // Lines don't form closed polygon, so fallback to fill
+    const dxfText = `0
+SECTION
+2
+ENTITIES
+0
+LINE
+10
+0
+20
+0
+11
+10
+21
+0
+0
+LINE
+10
+10
+20
+0
+11
+10
+21
+10
+0
+ENDSEC
+0
+EOF
+`;
+    const model = importer.parseDXF(dxfText);
+    assert(model.nz === 1, `DXF lines should have nz=1`);
+    assert(model.sourceFormat === 'DXF', `sourceFormat should be DXF`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 67: SVG parsing – rectangle
+// ──────────────────────────────────────────────────
+console.log('Test 67: SVG parsing – rectangle');
+{
+    const svgText = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+        <rect x="0" y="0" width="10" height="10" />
+    </svg>`;
+    const model = importer.parseSVG(svgText);
+    assert(model.nz === 1, `SVG rect should have nz=1, got ${model.nz}`);
+    assert(model.nx > 0, `SVG rect should have positive nx`);
+    assert(model.ny > 0, `SVG rect should have positive ny`);
+    assert(model.sourceFormat === 'SVG', `sourceFormat should be SVG, got ${model.sourceFormat}`);
+
+    let solidCount = 0;
+    for (let i = 0; i < model.elements.length; i++) {
+        if (model.elements[i] > 0) solidCount++;
+    }
+    assert(solidCount === model.nx * model.ny, `SVG rectangle should fill all voxels, got ${solidCount}/${model.nx * model.ny}`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 68: SVG parsing – circle
+// ──────────────────────────────────────────────────
+console.log('Test 68: SVG parsing – circle');
+{
+    const svgText = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+        <circle cx="50" cy="50" r="50" />
+    </svg>`;
+    const model = importer.parseSVG(svgText);
+    assert(model.nz === 1, `SVG circle should have nz=1`);
+    assert(model.sourceFormat === 'SVG', `SVG circle sourceFormat should be SVG`);
+
+    let solidCount = 0;
+    for (let i = 0; i < model.elements.length; i++) {
+        if (model.elements[i] > 0) solidCount++;
+    }
+    const totalVoxels = model.nx * model.ny;
+    const fillRatio = solidCount / totalVoxels;
+    assert(fillRatio > 0.6 && fillRatio < 0.95, `SVG circle fill ratio should be ~0.785, got ${fillRatio.toFixed(3)}`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 69: SVG parsing – polygon
+// ──────────────────────────────────────────────────
+console.log('Test 69: SVG parsing – polygon');
+{
+    const svgText = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+        <polygon points="0,0 20,0 20,20 0,20" />
+    </svg>`;
+    const model = importer.parseSVG(svgText);
+    assert(model.nz === 1, `SVG polygon should have nz=1`);
+
+    let solidCount = 0;
+    for (let i = 0; i < model.elements.length; i++) {
+        if (model.elements[i] > 0) solidCount++;
+    }
+    assert(solidCount === model.nx * model.ny, `SVG polygon should fill all voxels, got ${solidCount}/${model.nx * model.ny}`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 70: SVG parsing – path with M L Z commands
+// ──────────────────────────────────────────────────
+console.log('Test 70: SVG parsing – path (M L Z)');
+{
+    const svgText = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+        <path d="M 0 0 L 10 0 L 10 10 L 0 10 Z" />
+    </svg>`;
+    const model = importer.parseSVG(svgText);
+    assert(model.nz === 1, `SVG path should have nz=1`);
+    assert(model.sourceFormat === 'SVG', `SVG path sourceFormat should be SVG`);
+
+    let solidCount = 0;
+    for (let i = 0; i < model.elements.length; i++) {
+        if (model.elements[i] > 0) solidCount++;
+    }
+    assert(solidCount === model.nx * model.ny, `SVG path rect should fill all voxels`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 71: 2D voxelization – point-in-polygon
+// ──────────────────────────────────────────────────
+console.log('Test 71: 2D voxelization – point-in-polygon');
+{
+    // Test the internal _pointInPolygon method
+    const square = [
+        { x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 }
+    ];
+    assert(importer._pointInPolygon(5, 5, square), 'Point (5,5) should be inside square');
+    assert(!importer._pointInPolygon(15, 5, square), 'Point (15,5) should be outside square');
+    assert(!importer._pointInPolygon(-1, -1, square), 'Point (-1,-1) should be outside square');
+    assert(importer._pointInPolygon(1, 1, square), 'Point (1,1) should be inside square');
+}
+
+// ──────────────────────────────────────────────────
+// Test 72: 2D voxelization – voxelize2DPolygons directly
+// ──────────────────────────────────────────────────
+console.log('Test 72: 2D voxelization – voxelize2DPolygons');
+{
+    const polygons = [
+        [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 }]
+    ];
+    const model = importer.voxelize2DPolygons(polygons, 1);
+    assert(model.nz === 1, `voxelize2DPolygons should produce nz=1, got ${model.nz}`);
+    assert(model.nx === 10, `Expected nx=10, got ${model.nx}`);
+    assert(model.ny === 10, `Expected ny=10, got ${model.ny}`);
+    assert(model.is2D === true, `Model should have is2D=true`);
+
+    let solidCount = 0;
+    for (let i = 0; i < model.elements.length; i++) {
+        if (model.elements[i] > 0) solidCount++;
+    }
+    assert(solidCount === 100, `All 100 voxels should be solid, got ${solidCount}`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 73: Template defaults – beam has forcePosition and constraintPositions
+// ──────────────────────────────────────────────────
+console.log('Test 73: Template defaults – beam has boundary conditions');
+{
+    const beam = importer.createTemplate('beam', 30);
+    assert(beam.forcePosition === 'right', `Beam forcePosition should be 'right', got '${beam.forcePosition}'`);
+    assert(beam.forceDirection === 'down', `Beam forceDirection should be 'down', got '${beam.forceDirection}'`);
+    assert(beam.constraintPositions === 'left', `Beam constraintPositions should be 'left', got '${beam.constraintPositions}'`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 74: Template defaults – bridge has forcePosition and constraintPositions
+// ──────────────────────────────────────────────────
+console.log('Test 74: Template defaults – bridge has boundary conditions');
+{
+    const bridge = importer.createTemplate('bridge', 40);
+    assert(bridge.forcePosition === 'top-center', `Bridge forcePosition should be 'top-center', got '${bridge.forcePosition}'`);
+    assert(bridge.forceDirection === 'down', `Bridge forceDirection should be 'down', got '${bridge.forceDirection}'`);
+    assert(bridge.constraintPositions === 'both-ends', `Bridge constraintPositions should be 'both-ends', got '${bridge.constraintPositions}'`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 75: Template defaults – cube has forcePosition and constraintPositions
+// ──────────────────────────────────────────────────
+console.log('Test 75: Template defaults – cube has boundary conditions');
+{
+    const cube = importer.createTemplate('cube', 50);
+    assert(cube.forcePosition === 'top-center', `Cube forcePosition should be 'top-center', got '${cube.forcePosition}'`);
+    assert(cube.forceDirection === 'down', `Cube forceDirection should be 'down', got '${cube.forceDirection}'`);
+    assert(cube.constraintPositions === 'bottom-corners', `Cube constraintPositions should be 'bottom-corners', got '${cube.constraintPositions}'`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 76: SVG parsing – ellipse
+// ──────────────────────────────────────────────────
+console.log('Test 76: SVG parsing – ellipse');
+{
+    const svgText = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+        <ellipse cx="25" cy="15" rx="25" ry="15" />
+    </svg>`;
+    const model = importer.parseSVG(svgText);
+    assert(model.nz === 1, `SVG ellipse should have nz=1`);
+    assert(model.sourceFormat === 'SVG', `SVG ellipse sourceFormat should be SVG`);
+
+    let solidCount = 0;
+    for (let i = 0; i < model.elements.length; i++) {
+        if (model.elements[i] > 0) solidCount++;
+    }
+    const totalVoxels = model.nx * model.ny;
+    const fillRatio = solidCount / totalVoxels;
+    assert(fillRatio > 0.5 && fillRatio < 0.95, `SVG ellipse fill ratio should be ~0.785, got ${fillRatio.toFixed(3)}`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 77: SVG path – relative commands (m l h v z)
+// ──────────────────────────────────────────────────
+console.log('Test 77: SVG path – relative commands');
+{
+    const svgText = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+        <path d="m 0 0 l 10 0 l 0 10 l -10 0 z" />
+    </svg>`;
+    const model = importer.parseSVG(svgText);
+    assert(model.nz === 1, `SVG relative path should have nz=1`);
+
+    let solidCount = 0;
+    for (let i = 0; i < model.elements.length; i++) {
+        if (model.elements[i] > 0) solidCount++;
+    }
+    assert(solidCount === model.nx * model.ny, `SVG relative path should fill all voxels`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 78: DXF parsing – no geometry throws error
+// ──────────────────────────────────────────────────
+console.log('Test 78: DXF parsing – no geometry throws error');
+{
+    const dxfText = `0
+SECTION
+2
+ENTITIES
+0
+ENDSEC
+0
+EOF
+`;
+    let threw = false;
+    try {
+        importer.parseDXF(dxfText);
+    } catch (e) {
+        threw = true;
+        assert(e.message.includes('No supported 2D geometry'), `Error message should mention geometry, got: ${e.message}`);
+    }
+    assert(threw, 'parseDXF should throw for empty entities');
+}
+
+// ──────────────────────────────────────────────────
+// Test 79: SVG parsing – no geometry throws error
+// ──────────────────────────────────────────────────
+console.log('Test 79: SVG parsing – no geometry throws error');
+{
+    const svgText = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+    </svg>`;
+    let threw = false;
+    try {
+        importer.parseSVG(svgText);
+    } catch (e) {
+        threw = true;
+        assert(e.message.includes('No supported 2D geometry'), `Error message should mention geometry, got: ${e.message}`);
+    }
+    assert(threw, 'parseSVG should throw for empty SVG');
+}
+
+// ──────────────────────────────────────────────────
 // Summary
 // ──────────────────────────────────────────────────
 console.log(`\nResults: ${passed} passed, ${failed} failed`);
