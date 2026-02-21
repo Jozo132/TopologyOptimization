@@ -193,6 +193,9 @@ class TopologyApp {
         document.getElementById('useCubeTemplate').addEventListener('click', () => {
             this.loadTemplate('cube');
         });
+        document.getElementById('useGasketTemplate').addEventListener('click', () => {
+            this.loadTemplate('gasket');
+        });
 
         // Mesh method confirmation button
         document.getElementById('confirmMeshMethod').addEventListener('click', () => {

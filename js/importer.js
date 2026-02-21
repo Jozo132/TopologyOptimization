@@ -1214,6 +1214,8 @@ export class ModelImporter {
                 return this.createBridgeTemplate(granuleDensity);
             case 'cube':
                 return this.createCubeTemplate(granuleDensity);
+            case 'gasket':
+                return this.createGasketTemplate(granuleDensity);
             default:
                 throw new Error('Unknown template type');
         }
@@ -1224,7 +1226,7 @@ export class ModelImporter {
      * Used externally to convert voxel size in mm to a resolution value.
      */
     static getTemplateMaxDim(type) {
-        const dims = { beam: 30, bridge: 40, cube: 50 };
+        const dims = { beam: 30, bridge: 40, cube: 50, gasket: 30 };
         return dims[type] || 20;
     }
 
@@ -1329,6 +1331,71 @@ export class ModelImporter {
             forcePosition: 'top-center',  // Force at top center
             forceDirection: 'down',       // Force pointing down
             constraintPositions: 'bottom-corners'  // Constraints at bottom 4 corners
+        };
+    }
+
+    createGasketTemplate(resolution = 30) {
+        // 2D soft gasket: squished circle (ellipse) with S-shaped internal diagonal
+        // Dimensions: 30×20 mm (squished), nz=1 for 2D profile
+        const baseNx = 30, baseNy = 20, baseNz = 1;
+        const scale = resolution / baseNx;
+        const nx = Math.max(10, Math.round(baseNx * scale));
+        const ny = Math.max(8, Math.round(baseNy * scale));
+        const nz = 1;
+        const elements = new Float32Array(nx * ny * nz).fill(0);
+        const voxelSize = baseNx / nx;
+
+        // Ellipse parameters in voxel-space
+        const cx = (nx - 1) / 2;
+        const cy = (ny - 1) / 2;
+        const rx = (nx - 1) / 2;       // semi-axis X (full width)
+        const ry = (ny - 1) / 2;       // semi-axis Y (squished height)
+        const wallVx = Math.max(1, Math.round(1.5 / voxelSize)); // ~1.5 mm wall thickness
+
+        for (let iy = 0; iy < ny; iy++) {
+            for (let ix = 0; ix < nx; ix++) {
+                const dx = (ix - cx) / rx;
+                const dy = (iy - cy) / ry;
+                const ellipseDist = dx * dx + dy * dy;
+
+                // Outer ellipse boundary ring
+                const innerRx = rx - wallVx;
+                const innerRy = ry - wallVx;
+                const innerDx = (ix - cx) / Math.max(1, innerRx);
+                const innerDy = (iy - cy) / Math.max(1, innerRy);
+                const innerDist = innerDx * innerDx + innerDy * innerDy;
+                const onRing = ellipseDist <= 1.0 && innerDist >= 1.0;
+
+                // S-shaped internal diagonal: x = cx + amplitude * sin(pi * t)
+                // where t goes from 0 to 1 over the height of the ellipse
+                const t = (iy - (cy - ry)) / (2 * ry); // 0..1 over ellipse height
+                const amplitude = rx * 0.45;
+                const sCenterX = cx + amplitude * Math.sin(Math.PI * t);
+                const distToS = Math.abs(ix - sCenterX);
+                const onS = distToS <= wallVx && ellipseDist <= 1.0;
+
+                if (onRing || onS) {
+                    elements[iy * nx + ix] = 1;
+                }
+            }
+        }
+
+        return {
+            nx,
+            ny,
+            nz,
+            elements,
+            type: 'gasket',
+            templateScale: { baseNx, baseNy, baseNz },
+            voxelSize,
+            bounds: { minX: 0, maxX: baseNx, minY: 0, maxY: baseNy, minZ: 0, maxZ: baseNz },
+            originalVertices: this._generateBoxTriangles(baseNx, baseNy, baseNz),
+            // Compression from top with bottom fixed – suited for nonlinear buckling
+            forcePosition: 'top-center',
+            forceDirection: 'down',
+            constraintPositions: 'bottom',
+            // Hint that nonlinear analysis is recommended
+            recommendedSolver: 'nonlinear'
         };
     }
 }
