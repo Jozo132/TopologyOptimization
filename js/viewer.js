@@ -3193,6 +3193,136 @@ export class Viewer3D {
         this.draw();
     }
 
+    // ── Advanced analysis visualization ──────────────────────────────────────
+
+    /**
+     * Set the damage/phase-field data for fracture visualization.
+     * Values in [0,1]: 0 = intact, 1 = fully damaged/cracked.
+     * @param {Float32Array|number[]|null} damageField - Per-element damage values
+     */
+    setDamageField(damageField) {
+        this._damageField = damageField || null;
+        this._needsRebuild = true;
+        this.draw();
+    }
+
+    /**
+     * Set the eroded/deleted element set for element erosion visualization.
+     * Eroded elements are hidden (not rendered).
+     * @param {Set<number>|null} erodedElements - Set of eroded element indices
+     */
+    setErodedElements(erodedElements) {
+        this._erodedElements = erodedElements || null;
+        this._needsRebuild = true;
+        this.draw();
+    }
+
+    /**
+     * Set the color mode for rendering.
+     * @param {'stress'|'damage'|'displacement'|'density'|'triaxiality'|'plasticStrain'} mode
+     */
+    setColorMode(mode) {
+        const validModes = ['stress', 'damage', 'displacement', 'density', 'triaxiality', 'plasticStrain'];
+        if (!validModes.includes(mode)) return;
+        this._colorMode = mode;
+        this._needsRebuild = true;
+        this.draw();
+    }
+
+    /**
+     * Get the current color mode.
+     * @returns {string}
+     */
+    getColorMode() {
+        return this._colorMode || 'stress';
+    }
+
+    /**
+     * Set per-element scalar field for custom coloring (triaxiality, plastic strain, etc.).
+     * @param {string} fieldName - Name of the field ('triaxiality', 'plasticStrain', etc.)
+     * @param {Float32Array|number[]|null} values - Per-element values
+     * @param {number} [minVal=0] - Min value for color mapping
+     * @param {number} [maxVal=1] - Max value for color mapping
+     */
+    setScalarField(fieldName, values, minVal = 0, maxVal = 1) {
+        if (!this._scalarFields) this._scalarFields = {};
+        this._scalarFields[fieldName] = values ? { values, min: minVal, max: maxVal } : null;
+        this._needsRebuild = true;
+        this.draw();
+    }
+
+    /**
+     * Get the color for a given element based on the current color mode.
+     * Used internally by _buildBuffersFromIndexedMesh for per-face coloring.
+     * @param {number} cellIdx - Element index
+     * @param {number} stress - Normalized stress value [0,1]
+     * @returns {{ r: number, g: number, b: number }}
+     */
+    _getElementColor(cellIdx, stress) {
+        const mode = this._colorMode || 'stress';
+
+        if (mode === 'damage' && this._damageField) {
+            const d = Math.max(0, Math.min(1, this._damageField[cellIdx] || 0));
+            // Intact (0): blue, Damaged (1): bright red
+            return { r: d, g: 0.1 * (1 - d), b: 0.8 * (1 - d) };
+        }
+
+        if (mode === 'displacement' && this.displacementData) {
+            const U = this.displacementData.U;
+            if (U) {
+                const ux = U[cellIdx * 3] || 0;
+                const uy = U[cellIdx * 3 + 1] || 0;
+                const uz = U[cellIdx * 3 + 2] || 0;
+                const mag = Math.sqrt(ux * ux + uy * uy + uz * uz);
+                const maxMag = this._maxDisplacementMag || 1;
+                const t = Math.min(1, mag / maxMag);
+                // Blue → cyan → green → yellow → red
+                return this._heatmapColor(t);
+            }
+        }
+
+        if (mode === 'triaxiality' || mode === 'plasticStrain') {
+            const field = this._scalarFields && this._scalarFields[mode];
+            if (field && field.values) {
+                const raw = field.values[cellIdx] || 0;
+                const range = field.max - field.min || 1;
+                const t = Math.max(0, Math.min(1, (raw - field.min) / range));
+                return this._heatmapColor(t);
+            }
+        }
+
+        // Default: stress coloring (existing behavior)
+        const yieldNorm = this._yieldNormalized;
+        if (yieldNorm > 0 && yieldNorm < 1 && stress > yieldNorm) {
+            return { r: 0.75, g: 0, b: 1.0 };
+        }
+        const t = yieldNorm > 0 && yieldNorm < 1 ? stress / yieldNorm : stress;
+        return { r: t, g: DENSITY_COLOR_GREEN, b: 0.5 * (1 - t) };
+    }
+
+    /**
+     * Standard heatmap: blue → cyan → green → yellow → red.
+     * @param {number} t - Value in [0, 1]
+     * @returns {{ r: number, g: number, b: number }}
+     */
+    _heatmapColor(t) {
+        let r, g, b;
+        if (t < 0.25) {
+            const s = t / 0.25;
+            r = 0; g = s; b = 1;
+        } else if (t < 0.5) {
+            const s = (t - 0.25) / 0.25;
+            r = 0; g = 1; b = 1 - s;
+        } else if (t < 0.75) {
+            const s = (t - 0.5) / 0.25;
+            r = s; g = 1; b = 0;
+        } else {
+            const s = (t - 0.75) / 0.25;
+            r = 1; g = 1 - s; b = 0;
+        }
+        return { r, g, b };
+    }
+
     /**
      * Set the reference model from original STL/STEP vertices.
      * The reference mesh is rendered as a semi-transparent overlay.
@@ -3276,6 +3406,11 @@ export class Viewer3D {
         this.stressBarUnit = 'MPa';
         this.yieldStrength = 0;
         this._yieldNormalized = 0;
+        this._damageField = null;
+        this._erodedElements = null;
+        this._colorMode = 'stress';
+        this._scalarFields = null;
+        this._maxDisplacementMag = 0;
         this._needsRebuild = true;
         this.draw();
     }
