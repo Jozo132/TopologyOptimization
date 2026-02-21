@@ -2,12 +2,17 @@
 /**
  * Benchmark: GPUFEASolver Scaling Analysis
  *
- * Since WebGPU is not available in Node.js, this benchmark:
- *   1. Runs the JS Jacobi-PCG solver (same algorithm as GPUFEASolver) to
- *      measure actual per-solve timings across scaling cube sizes
- *   2. Uses measured data to project GPU solver performance via conservative
- *      speedup estimates derived from GPU compute characteristics
+ * This benchmark runs a JS Jacobi-PCG solver to measure actual per-solve
+ * timings and uses those to project GPU solver performance:
+ *   1. Measures JS Jacobi-PCG (same algorithm as GPUFEASolver) across
+ *      scaling cube sizes for baseline timing data
+ *   2. Projects GPU solver performance via conservative speedup estimates
+ *      derived from GPU compute characteristics
  *   3. Provides estimated comparisons with MGPCG and WASM solvers
+ *
+ * Note: While GPUFEASolver supports Node.js via the optional 'webgpu'
+ * (Dawn) package, this benchmark uses a pure-JS solver for consistent
+ * measurements regardless of GPU availability.
  *
  * Starts at 20³, scales voxel count by +20% each step until the JS
  * Jacobi-PCG solver exceeds 30 s per solve.

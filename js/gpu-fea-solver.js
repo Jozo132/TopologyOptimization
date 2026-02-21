@@ -40,10 +40,17 @@ export async function _getGPU() {
         if (typeof mod.create !== 'function') return null;
 
         // Probe Dawn in a subprocess to avoid crashing the main process
+        // (Dawn's create() can abort with a native assertion failure when no GPU is present)
         const { execSync } = await import('child_process');
+        const probeScript = [
+            'import { create, globals } from "webgpu";',
+            'Object.assign(globalThis, globals);',
+            'const g = create([]);',
+            'const a = await g.requestAdapter();',
+            'process.exit(a ? 0 : 1);',
+        ].join(' ');
         try {
-            execSync(
-                'node --input-type=module -e "import{create,globals}from\'webgpu\';Object.assign(globalThis,globals);const g=create([]);const a=await g.requestAdapter();process.exit(a?0:1)"',
+            execSync(`node --input-type=module -e '${probeScript}'`,
                 { timeout: 8000, stdio: 'ignore' }
             );
         } catch (_probeErr) {
