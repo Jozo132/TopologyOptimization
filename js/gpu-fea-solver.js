@@ -196,6 +196,12 @@ export class GPUFEASolver {
         const device = this.device;
         const dotNumGroups = Math.ceil(ndof / this._DOT_WG_SIZE);
 
+        // Max workgroups per dimension (WebGPU spec limit)
+        const MAX_WG_DIM = 65535;
+        // For 2D dispatch of applyALocal (1 workgroup = 1 element)
+        this._dispatchX_nel = Math.min(nel, MAX_WG_DIM);
+        this._dispatchY_nel = Math.ceil(nel / this._dispatchX_nel);
+
         const upload = (data, usage) => {
             const buf = device.createBuffer({ size: data.byteLength, usage });
             device.queue.writeBuffer(buf, 0, data);
@@ -240,7 +246,7 @@ export class GPUFEASolver {
                 usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
             }),
 
-            // Uniforms: [nel, ndof, 0, 0]
+            // Uniforms: [nel, ndof, dispatchX_nel, 0]
             uniforms: device.createBuffer({
                 size: 16,
                 usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -261,7 +267,7 @@ export class GPUFEASolver {
 
         device.queue.writeBuffer(
             this._buffers.uniforms, 0,
-            new Uint32Array([nel, ndof, 0, 0])
+            new Uint32Array([nel, ndof, this._dispatchX_nel, 0])
         );
     }
 
@@ -284,7 +290,7 @@ export class GPUFEASolver {
             @compute @workgroup_size(24)
             fn main(@builtin(workgroup_id) wid: vec3<u32>,
                     @builtin(local_invocation_id) lid: vec3<u32>) {
-                let e = wid.x;
+                let e = wid.x + wid.y * params.z;
                 if (e >= params.x) { return; }
                 let i = lid.x;
                 let off = e * 24u;
@@ -662,11 +668,11 @@ export class GPUFEASolver {
         pass.dispatchWorkgroups(Math.ceil(ndof / wg));
         pass.end();
 
-        // Local element mat-vec -> elemContribs
+        // Local element mat-vec -> elemContribs (2D dispatch for nel > 65535)
         pass = enc.beginComputePass();
         pass.setPipeline(pip.applyALocal.pipe);
         pass.setBindGroup(0, useX ? pip.applyALocal.bgX : pip.applyALocal.bg);
-        pass.dispatchWorkgroups(nel);
+        pass.dispatchWorkgroups(this._dispatchX_nel, this._dispatchY_nel, 1);
         pass.end();
 
         // Scatter-add element contributions using atomic CAS
