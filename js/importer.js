@@ -1,4 +1,4 @@
-// Model importer for STL and STEP (AP203/AP214) files and template generation
+// Model importer for STL, STEP (AP203/AP214), DXF and SVG files and template generation
 import { STEPParser } from './step-parser.js';
 
 export class ModelImporter {
@@ -18,6 +18,12 @@ export class ModelImporter {
         const name = (file.name || '').toLowerCase();
         if (name.endsWith('.stp') || name.endsWith('.step')) {
             return this.importSTEP(file, resolution);
+        }
+        if (name.endsWith('.dxf')) {
+            return this.importDXF(file, resolution);
+        }
+        if (name.endsWith('.svg')) {
+            return this.importSVG(file, resolution);
         }
         return this.importSTL(file, resolution);
     }
@@ -248,6 +254,515 @@ export class ModelImporter {
         }
         
         return this.voxelizeVertices(vertices);
+    }
+
+    /**
+     * Import a DXF file (2D profile).
+     * @param {File} file
+     * @param {number|null} resolution
+     * @returns {Promise<object>}
+     */
+    async importDXF(file, resolution) {
+        this.resolution = resolution || 20;
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const text = e.target.result;
+                    const model = this.parseDXF(text);
+                    resolve(model);
+                } catch (error) {
+                    reject(error);
+                }
+            };
+            reader.onerror = () => {
+                reject(new Error('Failed to read DXF file'));
+            };
+            reader.readAsText(file);
+        });
+    }
+
+    /**
+     * Import an SVG file (2D profile).
+     * @param {File} file
+     * @param {number|null} resolution
+     * @returns {Promise<object>}
+     */
+    async importSVG(file, resolution) {
+        this.resolution = resolution || 20;
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const text = e.target.result;
+                    const model = this.parseSVG(text);
+                    resolve(model);
+                } catch (error) {
+                    reject(error);
+                }
+            };
+            reader.onerror = () => {
+                reject(new Error('Failed to read SVG file'));
+            };
+            reader.readAsText(file);
+        });
+    }
+
+    /**
+     * Parse DXF file text and return a 2D voxelized model.
+     * Supports LINE, LWPOLYLINE, POLYLINE, and CIRCLE entities.
+     * @param {string} text - DXF file content
+     * @returns {object} Voxelized model (nz=1)
+     */
+    parseDXF(text) {
+        const lines = text.split(/\r?\n/);
+        const polygons = [];
+        let currentPolygon = null;
+        let i = 0;
+
+        // Helper to read group code / value pairs
+        const readPair = () => {
+            if (i + 1 >= lines.length) return null;
+            const code = parseInt(lines[i].trim(), 10);
+            const value = lines[i + 1].trim();
+            i += 2;
+            return { code, value };
+        };
+
+        // Scan for ENTITIES section
+        while (i < lines.length) {
+            const line = lines[i].trim();
+            if (line === 'ENTITIES') { i++; break; }
+            i++;
+        }
+
+        // Parse entities
+        while (i < lines.length) {
+            const pair = readPair();
+            if (!pair) break;
+
+            // End of ENTITIES section
+            if (pair.code === 0 && pair.value === 'ENDSEC') break;
+
+            if (pair.code === 0 && pair.value === 'LINE') {
+                // Read a LINE entity (two endpoints)
+                let x1 = 0, y1 = 0, x2 = 0, y2 = 0;
+                while (i < lines.length) {
+                    const p = readPair();
+                    if (!p) break;
+                    if (p.code === 0) { i -= 2; break; } // next entity
+                    if (p.code === 10) x1 = parseFloat(p.value);
+                    if (p.code === 20) y1 = parseFloat(p.value);
+                    if (p.code === 11) x2 = parseFloat(p.value);
+                    if (p.code === 21) y2 = parseFloat(p.value);
+                }
+                polygons.push([{ x: x1, y: y1 }, { x: x2, y: y2 }]);
+            } else if (pair.code === 0 && pair.value === 'LWPOLYLINE') {
+                // Lightweight polyline
+                const points = [];
+                let closed = false;
+                let cx = 0, cy = 0;
+                let hasX = false;
+                while (i < lines.length) {
+                    const p = readPair();
+                    if (!p) break;
+                    if (p.code === 0) { i -= 2; break; }
+                    if (p.code === 70) closed = (parseInt(p.value, 10) & 1) !== 0;
+                    if (p.code === 10) {
+                        if (hasX) points.push({ x: cx, y: cy });
+                        cx = parseFloat(p.value);
+                        hasX = true;
+                    }
+                    if (p.code === 20) {
+                        cy = parseFloat(p.value);
+                    }
+                }
+                if (hasX) points.push({ x: cx, y: cy });
+                if (closed && points.length > 2) {
+                    polygons.push(points);
+                } else if (points.length >= 2) {
+                    polygons.push(points);
+                }
+            } else if (pair.code === 0 && pair.value === 'CIRCLE') {
+                // Approximate circle as polygon
+                let cx = 0, cy = 0, r = 1;
+                while (i < lines.length) {
+                    const p = readPair();
+                    if (!p) break;
+                    if (p.code === 0) { i -= 2; break; }
+                    if (p.code === 10) cx = parseFloat(p.value);
+                    if (p.code === 20) cy = parseFloat(p.value);
+                    if (p.code === 40) r = parseFloat(p.value);
+                }
+                const segs = 32;
+                const circle = [];
+                for (let s = 0; s < segs; s++) {
+                    const angle = (2 * Math.PI * s) / segs;
+                    circle.push({ x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) });
+                }
+                polygons.push(circle);
+            } else if (pair.code === 0 && (pair.value === 'POLYLINE' || pair.value === 'SPLINE')) {
+                // Skip entities we don't fully support - consume until next entity
+                while (i < lines.length) {
+                    const p = readPair();
+                    if (!p) break;
+                    if (p.code === 0) { i -= 2; break; }
+                }
+            }
+        }
+
+        if (polygons.length === 0) {
+            throw new Error('No supported 2D geometry found in DXF file');
+        }
+
+        const model = this.voxelize2DPolygons(polygons);
+        model.sourceFormat = 'DXF';
+        return model;
+    }
+
+    /**
+     * Parse SVG file text and return a 2D voxelized model.
+     * Supports rect, circle, ellipse, polygon, polyline, line, and path elements.
+     * @param {string} text - SVG file content
+     * @returns {object} Voxelized model (nz=1)
+     */
+    parseSVG(text) {
+        const polygons = [];
+
+        // Helper: extract all attribute values from an element match
+        const getAttr = (tag, name) => {
+            const match = tag.match(new RegExp(`${name}\\s*=\\s*["']([^"']*)["']`));
+            return match ? match[1] : null;
+        };
+
+        // Parse <rect>
+        const rects = text.matchAll(/<rect\s[^>]*\/?>/gi);
+        for (const m of rects) {
+            const tag = m[0];
+            const x = parseFloat(getAttr(tag, 'x') || '0');
+            const y = parseFloat(getAttr(tag, 'y') || '0');
+            const w = parseFloat(getAttr(tag, 'width') || '0');
+            const h = parseFloat(getAttr(tag, 'height') || '0');
+            if (w > 0 && h > 0) {
+                polygons.push([
+                    { x, y }, { x: x + w, y }, { x: x + w, y: y + h }, { x, y: y + h }
+                ]);
+            }
+        }
+
+        // Parse <circle>
+        const circles = text.matchAll(/<circle\s[^>]*\/?>/gi);
+        for (const m of circles) {
+            const tag = m[0];
+            const cx = parseFloat(getAttr(tag, 'cx') || '0');
+            const cy = parseFloat(getAttr(tag, 'cy') || '0');
+            const r = parseFloat(getAttr(tag, 'r') || '0');
+            if (r > 0) {
+                const segs = 32;
+                const circle = [];
+                for (let s = 0; s < segs; s++) {
+                    const angle = (2 * Math.PI * s) / segs;
+                    circle.push({ x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) });
+                }
+                polygons.push(circle);
+            }
+        }
+
+        // Parse <ellipse>
+        const ellipses = text.matchAll(/<ellipse\s[^>]*\/?>/gi);
+        for (const m of ellipses) {
+            const tag = m[0];
+            const cx = parseFloat(getAttr(tag, 'cx') || '0');
+            const cy = parseFloat(getAttr(tag, 'cy') || '0');
+            const rx = parseFloat(getAttr(tag, 'rx') || '0');
+            const ry = parseFloat(getAttr(tag, 'ry') || '0');
+            if (rx > 0 && ry > 0) {
+                const segs = 32;
+                const ellipse = [];
+                for (let s = 0; s < segs; s++) {
+                    const angle = (2 * Math.PI * s) / segs;
+                    ellipse.push({ x: cx + rx * Math.cos(angle), y: cy + ry * Math.sin(angle) });
+                }
+                polygons.push(ellipse);
+            }
+        }
+
+        // Parse <polygon> and <polyline>
+        const polys = text.matchAll(/<(polygon|polyline)\s[^>]*\/?>/gi);
+        for (const m of polys) {
+            const tag = m[0];
+            const pointsStr = getAttr(tag, 'points');
+            if (pointsStr) {
+                const nums = pointsStr.trim().split(/[\s,]+/).map(Number);
+                const pts = [];
+                for (let j = 0; j + 1 < nums.length; j += 2) {
+                    pts.push({ x: nums[j], y: nums[j + 1] });
+                }
+                if (pts.length >= 2) polygons.push(pts);
+            }
+        }
+
+        // Parse <line>
+        const svgLines = text.matchAll(/<line\s[^>]*\/?>/gi);
+        for (const m of svgLines) {
+            const tag = m[0];
+            const x1 = parseFloat(getAttr(tag, 'x1') || '0');
+            const y1 = parseFloat(getAttr(tag, 'y1') || '0');
+            const x2 = parseFloat(getAttr(tag, 'x2') || '0');
+            const y2 = parseFloat(getAttr(tag, 'y2') || '0');
+            polygons.push([{ x: x1, y: y1 }, { x: x2, y: y2 }]);
+        }
+
+        // Parse <path> – support M, L, H, V, Z commands (lines only, no curves)
+        const paths = text.matchAll(/<path\s[^>]*\/?>/gi);
+        for (const m of paths) {
+            const tag = m[0];
+            const d = getAttr(tag, 'd');
+            if (d) {
+                const pts = this._parseSVGPathData(d);
+                if (pts.length >= 2) polygons.push(pts);
+            }
+        }
+
+        if (polygons.length === 0) {
+            throw new Error('No supported 2D geometry found in SVG file');
+        }
+
+        const model = this.voxelize2DPolygons(polygons);
+        model.sourceFormat = 'SVG';
+        return model;
+    }
+
+    /**
+     * Parse SVG path data string (d attribute) into polygon points.
+     * Supports M, L, H, V, Z commands (absolute and relative).
+     * Curves (C, S, Q, T, A) are approximated by their endpoints.
+     * @param {string} d - SVG path data
+     * @returns {Array<{x: number, y: number}>}
+     */
+    _parseSVGPathData(d) {
+        const points = [];
+        // Tokenize: split into commands and numbers
+        const tokens = d.match(/[a-zA-Z]|[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/g);
+        if (!tokens) return points;
+
+        let cx = 0, cy = 0;
+        let startX = 0, startY = 0;
+        let cmd = '';
+        let ti = 0;
+
+        const nextNum = () => {
+            while (ti < tokens.length && /^[a-zA-Z]$/.test(tokens[ti])) ti++;
+            if (ti < tokens.length) return parseFloat(tokens[ti++]);
+            return 0;
+        };
+
+        while (ti < tokens.length) {
+            const token = tokens[ti];
+            if (/^[a-zA-Z]$/.test(token)) {
+                cmd = token;
+                ti++;
+            }
+
+            switch (cmd) {
+                case 'M': cx = nextNum(); cy = nextNum(); startX = cx; startY = cy; points.push({ x: cx, y: cy }); cmd = 'L'; break;
+                case 'm': cx += nextNum(); cy += nextNum(); startX = cx; startY = cy; points.push({ x: cx, y: cy }); cmd = 'l'; break;
+                case 'L': cx = nextNum(); cy = nextNum(); points.push({ x: cx, y: cy }); break;
+                case 'l': cx += nextNum(); cy += nextNum(); points.push({ x: cx, y: cy }); break;
+                case 'H': cx = nextNum(); points.push({ x: cx, y: cy }); break;
+                case 'h': cx += nextNum(); points.push({ x: cx, y: cy }); break;
+                case 'V': cy = nextNum(); points.push({ x: cx, y: cy }); break;
+                case 'v': cy += nextNum(); points.push({ x: cx, y: cy }); break;
+                case 'Z': case 'z': cx = startX; cy = startY; ti++; break;
+                case 'C': { // Cubic bezier – take endpoint
+                    nextNum(); nextNum(); nextNum(); nextNum();
+                    cx = nextNum(); cy = nextNum();
+                    points.push({ x: cx, y: cy }); break;
+                }
+                case 'c': {
+                    nextNum(); nextNum(); nextNum(); nextNum();
+                    cx += nextNum(); cy += nextNum();
+                    points.push({ x: cx, y: cy }); break;
+                }
+                case 'S': case 's': {
+                    const rel = cmd === 's';
+                    nextNum(); nextNum();
+                    if (rel) { cx += nextNum(); cy += nextNum(); }
+                    else { cx = nextNum(); cy = nextNum(); }
+                    points.push({ x: cx, y: cy }); break;
+                }
+                case 'Q': case 'q': {
+                    const rel = cmd === 'q';
+                    nextNum(); nextNum();
+                    if (rel) { cx += nextNum(); cy += nextNum(); }
+                    else { cx = nextNum(); cy = nextNum(); }
+                    points.push({ x: cx, y: cy }); break;
+                }
+                case 'T': cx = nextNum(); cy = nextNum(); points.push({ x: cx, y: cy }); break;
+                case 't': cx += nextNum(); cy += nextNum(); points.push({ x: cx, y: cy }); break;
+                case 'A': case 'a': {
+                    const rel = cmd === 'a';
+                    nextNum(); nextNum(); nextNum(); nextNum(); nextNum();
+                    if (rel) { cx += nextNum(); cy += nextNum(); }
+                    else { cx = nextNum(); cy = nextNum(); }
+                    points.push({ x: cx, y: cy }); break;
+                }
+                default: ti++; break; // Unknown command, skip
+            }
+        }
+        return points;
+    }
+
+    /**
+     * Voxelize 2D polygon outlines into a flat grid (nz=1).
+     * Uses point-in-polygon (ray casting) to determine filled voxels.
+     * @param {Array<Array<{x: number, y: number}>>} polygons - Array of polygon point arrays
+     * @param {number|null} voxelSizeMM - Voxel size in mm
+     * @returns {object} Voxelized model with nz=1
+     */
+    voxelize2DPolygons(polygons, voxelSizeMM = null) {
+        // Compute bounding box across all polygons
+        let minX = Infinity, minY = Infinity;
+        let maxX = -Infinity, maxY = -Infinity;
+
+        for (const poly of polygons) {
+            for (const p of poly) {
+                if (p.x < minX) minX = p.x;
+                if (p.y < minY) minY = p.y;
+                if (p.x > maxX) maxX = p.x;
+                if (p.y > maxY) maxY = p.y;
+            }
+        }
+
+        const sizeX = maxX - minX || 1;
+        const sizeY = maxY - minY || 1;
+        const maxDim = Math.max(sizeX, sizeY);
+
+        let voxelSize;
+        if (voxelSizeMM !== null && voxelSizeMM > 0) {
+            voxelSize = voxelSizeMM;
+        } else {
+            const res = this.resolution || 20;
+            voxelSize = maxDim / res;
+        }
+
+        const nx = Math.max(1, Math.ceil(sizeX / voxelSize));
+        const ny = Math.max(1, Math.ceil(sizeY / voxelSize));
+        const nz = 1;
+
+        const elements = new Float32Array(nx * ny);
+
+        // Find closed polygons (3+ points) for fill testing
+        const closedPolygons = polygons.filter(p => p.length >= 3);
+
+        if (closedPolygons.length > 0) {
+            // Fill voxels using point-in-polygon test (ray casting)
+            for (let iy = 0; iy < ny; iy++) {
+                const cy = minY + (iy + 0.5) * voxelSize;
+                for (let ix = 0; ix < nx; ix++) {
+                    const cx = minX + (ix + 0.5) * voxelSize;
+
+                    // Test point against each polygon
+                    for (const poly of closedPolygons) {
+                        if (this._pointInPolygon(cx, cy, poly)) {
+                            elements[ix + iy * nx] = 1;
+                            break;
+                        }
+                    }
+                }
+            }
+        } else {
+            // No closed polygons – fill entire bounding box
+            elements.fill(1);
+        }
+
+        // Build triangle vertices for the 2D shape (extruded to a thin slab for rendering)
+        const vertices = this._polygonsToTriangles(polygons, 0, voxelSize);
+
+        return {
+            nx,
+            ny,
+            nz,
+            elements,
+            voxelSize,
+            meshType: 'box',
+            bounds: { minX, minY, minZ: 0, maxX, maxY, maxZ: voxelSize },
+            originalVertices: vertices,
+            is2D: true
+        };
+    }
+
+    /**
+     * Point-in-polygon test using ray casting (Jordan curve theorem).
+     * @param {number} px - Test point X
+     * @param {number} py - Test point Y
+     * @param {Array<{x: number, y: number}>} polygon - Polygon vertices
+     * @returns {boolean}
+     */
+    _pointInPolygon(px, py, polygon) {
+        let inside = false;
+        const n = polygon.length;
+        for (let i = 0, j = n - 1; i < n; j = i++) {
+            const xi = polygon[i].x, yi = polygon[i].y;
+            const xj = polygon[j].x, yj = polygon[j].y;
+            if (((yi > py) !== (yj > py)) &&
+                (px < (xj - xi) * (py - yi) / (yj - yi) + xi)) {
+                inside = !inside;
+            }
+        }
+        return inside;
+    }
+
+    /**
+     * Convert 2D polygons to triangle vertices for 3D rendering.
+     * Creates a thin slab from z=0 to z=thickness.
+     * @param {Array<Array<{x: number, y: number}>>} polygons
+     * @param {number} zBase - Base Z coordinate
+     * @param {number} thickness - Slab thickness
+     * @returns {Array<{x: number, y: number, z: number}>}
+     */
+    _polygonsToTriangles(polygons, zBase, thickness) {
+        const verts = [];
+        const z0 = zBase;
+        const z1 = zBase + thickness;
+
+        for (const poly of polygons) {
+            if (poly.length < 2) continue;
+
+            // Create side walls between consecutive points
+            for (let i = 0; i < poly.length; i++) {
+                const p0 = poly[i];
+                const p1 = poly[(i + 1) % poly.length];
+                // Two triangles for each edge forming a quad wall
+                verts.push(
+                    { x: p0.x, y: p0.y, z: z0 },
+                    { x: p1.x, y: p1.y, z: z0 },
+                    { x: p1.x, y: p1.y, z: z1 },
+                    { x: p0.x, y: p0.y, z: z0 },
+                    { x: p1.x, y: p1.y, z: z1 },
+                    { x: p0.x, y: p0.y, z: z1 }
+                );
+            }
+
+            // Simple fan triangulation for top and bottom faces (closed polygons only)
+            if (poly.length >= 3) {
+                for (let i = 1; i + 1 < poly.length; i++) {
+                    // Bottom face
+                    verts.push(
+                        { x: poly[0].x, y: poly[0].y, z: z0 },
+                        { x: poly[i].x, y: poly[i].y, z: z0 },
+                        { x: poly[i + 1].x, y: poly[i + 1].y, z: z0 }
+                    );
+                    // Top face
+                    verts.push(
+                        { x: poly[0].x, y: poly[0].y, z: z1 },
+                        { x: poly[i + 1].x, y: poly[i + 1].y, z: z1 },
+                        { x: poly[i].x, y: poly[i].y, z: z1 }
+                    );
+                }
+            }
+        }
+        return verts;
     }
 
     voxelizeVertices(vertices, resolution = null, voxelSizeMM = null) {
@@ -754,7 +1269,11 @@ export class ModelImporter {
             templateScale: { baseNx, baseNy, baseNz },
             voxelSize,
             bounds: { minX: 0, maxX: baseNx, minY: 0, maxY: baseNy, minZ: 0, maxZ: baseNz },
-            originalVertices: this._generateBoxTriangles(baseNx, baseNy, baseNz)
+            originalVertices: this._generateBoxTriangles(baseNx, baseNy, baseNz),
+            // Predefined boundary conditions for cantilever beam
+            forcePosition: 'right',           // Force at right end
+            forceDirection: 'down',            // Force pointing down
+            constraintPositions: 'left'        // Fixed left end
         };
     }
 
@@ -777,7 +1296,11 @@ export class ModelImporter {
             templateScale: { baseNx, baseNy, baseNz },
             voxelSize,
             bounds: { minX: 0, maxX: baseNx, minY: 0, maxY: baseNy, minZ: 0, maxZ: baseNz },
-            originalVertices: this._generateBoxTriangles(baseNx, baseNy, baseNz)
+            originalVertices: this._generateBoxTriangles(baseNx, baseNy, baseNz),
+            // Predefined boundary conditions for bridge
+            forcePosition: 'top-center',       // Force at top center
+            forceDirection: 'down',             // Force pointing down
+            constraintPositions: 'both-ends'    // Both ends fixed
         };
     }
 
@@ -804,6 +1327,7 @@ export class ModelImporter {
             originalVertices: this._generateBoxTriangles(baseSize, baseSize, baseSize),
             // Predefined boundary conditions for cube test
             forcePosition: 'top-center',  // Force at top center
+            forceDirection: 'down',       // Force pointing down
             constraintPositions: 'bottom-corners'  // Constraints at bottom 4 corners
         };
     }
