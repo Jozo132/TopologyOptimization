@@ -409,17 +409,20 @@ async function runTests() {
         }
         assert(maxLinearError < 1e-5, `Patch test: ux is linear in x, max error = ${maxLinearError.toExponential(3)}`);
 
-        // Check uy is uniform at each x-station (constant Poisson contraction)
-        let maxUyVariation = 0;
-        for (let elx = 0; elx <= nelx; elx++) {
-            const uyRef = result.U[2 * ((nely + 1) * elx) + 1];
-            for (let ely = 1; ely <= nely; ely++) {
+        // Check uy varies linearly with y at each x-station (Poisson contraction)
+        let maxUyLinearError = 0;
+        for (let elx = 1; elx < nelx; elx++) {  // skip boundary columns
+            const uyTop = result.U[2 * ((nely + 1) * elx) + 1];
+            const uyBot = result.U[2 * ((nely + 1) * elx + nely) + 1];
+            const uySlope = (uyBot - uyTop) / nely;
+            for (let ely = 0; ely <= nely; ely++) {
                 const node = (nely + 1) * elx + ely;
                 const uy = result.U[2 * node + 1];
-                // uy should vary linearly with y, not be constant—but all should be consistent
-                // For uniform tension, uy variation within a column is due to Poisson effect
+                const expected = uyTop + uySlope * ely;
+                maxUyLinearError = Math.max(maxUyLinearError, Math.abs(uy - expected));
             }
         }
+        assert(maxUyLinearError < 1e-5, `Patch test: uy is linear in y, max error = ${maxUyLinearError.toExponential(3)}`);
         assert(result.compliance > 0, `Patch test: compliance is positive = ${result.compliance.toExponential(3)}`);
     }
 
@@ -538,18 +541,12 @@ async function runTests() {
             }
         }
 
-        // Sum of forces in y-direction: reactions + applied should = 0
+        // Global equilibrium: sum of all nodal forces R = K*U must be zero
+        // in each direction, since external forces and reactions must balance.
         let totalFy = 0;
         for (let i = 0; i < ndof; i++) {
-            if (i % 2 === 1) {  // y-DOFs
-                totalFy += R[i];
-            }
+            if (i % 2 === 1) totalFy += R[i];
         }
-        // The internal force R already includes the applied load on free DOFs,
-        // so total R_y should be close to zero (equilibrium)
-        // Actually, R = K*U should equal F on free DOFs, so we check:
-        // sum(F_y) should equal sum(R_y_fixed_DOFs) but with opposite sign
-        // Alternatively: sum of all R_y = 0 (global equilibrium)
         assert(Math.abs(totalFy) < 1e-6, `Sum of all internal y-forces ≈ 0 (got ${totalFy.toExponential(3)})`);
 
         let totalFx = 0;
