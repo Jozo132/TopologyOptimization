@@ -81,7 +81,13 @@ class TopologyApp {
             // Heaviside projection with beta-continuation
             useProjection: true,
             betaMax: 64,
-            betaInterval: 5
+            betaInterval: 5,
+            // Solution type: 'topology' | 'fea' | 'nonlinear' | 'fatigue'
+            solutionType: 'topology',
+            // Nonlinear FEA parameters
+            nonlinearLoadSteps: 10,
+            nonlinearMaxNewtonIter: 20,
+            nonlinearTolerance: 1e-6
         };
         
         // Benchmark tracking
@@ -122,6 +128,9 @@ class TopologyApp {
         // Setup event listeners
         this.setupEventListeners();
         await this._initGPUControls();
+
+        // Initialize solution type UI to match default config
+        this._applySolutionType(this.config.solutionType || 'topology');
         
         console.log('App initialized successfully');
     }
@@ -497,7 +506,16 @@ class TopologyApp {
             this._renderGroupsList();
         });
         
-        // Step 3: Solver mode selection
+        // Step 3: Solution type card selection
+        document.querySelectorAll('.solution-type-card').forEach(card => {
+            card.addEventListener('click', () => {
+                document.querySelectorAll('.solution-type-card').forEach(c => c.classList.remove('selected'));
+                card.classList.add('selected');
+                this._applySolutionType(card.dataset.solution);
+            });
+        });
+
+        // Step 3: Optimization algorithm selector (shown only for topology)
         document.getElementById('solverSelect').addEventListener('change', (e) => {
             const solverValue = e.target.value;
             if (solverValue === 'petsc-bddc') {
@@ -682,6 +700,25 @@ class TopologyApp {
         document.getElementById('betaInterval').addEventListener('input', (e) => {
             this.config.betaInterval = parseInt(e.target.value);
         });
+
+        const nonlinearLoadStepsEl = document.getElementById('nonlinearLoadSteps');
+        if (nonlinearLoadStepsEl) {
+            nonlinearLoadStepsEl.addEventListener('input', (e) => {
+                this.config.nonlinearLoadSteps = parseInt(e.target.value) || 10;
+            });
+        }
+        const nonlinearMaxNewtonIterEl = document.getElementById('nonlinearMaxNewtonIter');
+        if (nonlinearMaxNewtonIterEl) {
+            nonlinearMaxNewtonIterEl.addEventListener('input', (e) => {
+                this.config.nonlinearMaxNewtonIter = parseInt(e.target.value) || 20;
+            });
+        }
+        const nonlinearToleranceEl = document.getElementById('nonlinearTolerance');
+        if (nonlinearToleranceEl) {
+            nonlinearToleranceEl.addEventListener('input', (e) => {
+                this.config.nonlinearTolerance = parseFloat(e.target.value) || 1e-6;
+            });
+        }
         
         document.getElementById('runOptimization').addEventListener('click', () => {
             this.runOptimization();
@@ -1055,6 +1092,16 @@ class TopologyApp {
         this.viewer.forceMagnitude = cfg.forceMagnitude || 1000;
         this.viewer.forceVector = Array.isArray(cfg.forceVector) ? cfg.forceVector : null;
         this.viewer.draw();
+
+        // Restore solution type cards
+        const solutionType = cfg.solutionType || 'topology';
+        document.querySelectorAll('.solution-type-card').forEach(c => {
+            c.classList.toggle('selected', c.dataset.solution === solutionType);
+        });
+        this._applySolutionType(solutionType);
+        setValue('nonlinearLoadSteps', cfg.nonlinearLoadSteps || 10);
+        setValue('nonlinearMaxNewtonIter', cfg.nonlinearMaxNewtonIter || 20);
+        setValue('nonlinearTolerance', cfg.nonlinearTolerance || 1e-6);
     }
 
     _applySelectionState(selectionState) {
@@ -1209,6 +1256,57 @@ class TopologyApp {
         const pad = (n) => String(n).padStart(2, '0');
         const filename = `setup-${ts.getFullYear()}${pad(ts.getMonth() + 1)}${pad(ts.getDate())}-${pad(ts.getHours())}${pad(ts.getMinutes())}${pad(ts.getSeconds())}.json`;
         this.exporter.downloadBlob(blob, filename);
+    }
+
+    _applySolutionType(solutionType) {
+        this.config.solutionType = solutionType;
+
+        const topoAlgorithmGroup = document.getElementById('topoAlgorithmGroup');
+        const nonlinearParamsGroup = document.getElementById('nonlinearParamsGroup');
+        const geneticPanel = document.getElementById('geneticPanel');
+        const solverParamsPanel = document.getElementById('solverParamsPanel');
+        const runButton = document.getElementById('runOptimization');
+
+        // Show/hide algorithm selector
+        if (topoAlgorithmGroup) {
+            topoAlgorithmGroup.style.display = solutionType === 'topology' ? '' : 'none';
+        }
+        // Show/hide nonlinear params
+        if (nonlinearParamsGroup) {
+            nonlinearParamsGroup.style.display = solutionType === 'nonlinear' ? '' : 'none';
+        }
+        // Hide genetic panel when not topology+genetic
+        if (geneticPanel) {
+            const isGenetic = solutionType === 'topology' &&
+                document.getElementById('solverSelect')?.value === 'genetic';
+            geneticPanel.style.display = isGenetic ? '' : 'none';
+        }
+        // Solver params (volume fraction etc.) only relevant for topology optimization
+        if (solverParamsPanel) {
+            solverParamsPanel.style.display = solutionType === 'topology' ? '' : 'none';
+        }
+
+        // Update run button label
+        const labels = {
+            topology: 'Run Optimization',
+            fea: 'Run Linear FEA',
+            nonlinear: 'Run Nonlinear FEA',
+            fatigue: 'Run Fatigue Analysis'
+        };
+        if (runButton) runButton.textContent = labels[solutionType] || 'Run';
+
+        // Map solution type to internal solver key
+        if (solutionType === 'topology') {
+            // Defer to solverSelect value
+            const sel = document.getElementById('solverSelect');
+            if (sel) sel.dispatchEvent(new Event('change'));
+        } else if (solutionType === 'fea') {
+            this.config.solver = 'fea';
+        } else if (solutionType === 'nonlinear') {
+            this.config.solver = 'nonlinear';
+        } else if (solutionType === 'fatigue') {
+            this.config.solver = 'fatigue';
+        }
     }
 
     _applyManufacturingPreset(method) {
@@ -1918,8 +2016,16 @@ class TopologyApp {
             }
             
             // Show results
+            let resultsTitle;
+            if (result.feaOnly) {
+                if (result.fatigueMode) resultsTitle = 'Fatigue Analysis Complete!';
+                else if (result.nonlinearMode) resultsTitle = `Nonlinear FEA Complete!${!result.converged ? ' (not converged)' : ''}`;
+                else resultsTitle = 'FEA Analysis Complete!';
+            } else {
+                resultsTitle = 'Optimization Complete!';
+            }
             let resultsHTML = `
-                <strong>${result.feaOnly ? (result.fatigueMode ? 'Fatigue Analysis Complete!' : 'FEA Analysis Complete!') : 'Optimization Complete!'}</strong><br>
+                <strong>${resultsTitle}</strong><br>
                 Final Compliance: ${result.finalCompliance.toFixed(2)}<br>
                 Iterations: ${result.iterations}<br>
                 Volume Fraction: ${(result.volumeFraction * 100).toFixed(1)}%

@@ -14,6 +14,8 @@ const toURL = (p) => pathToFileURL(p).href;
 const { ModelImporter } = await import(toURL(join(__dirname, '..', 'js', 'importer.js')));
 const { STEPParser } = await import(toURL(join(__dirname, '..', 'js', 'step-parser.js')));
 const { TopologySolver } = await import(toURL(join(__dirname, '..', 'lib', 'topology-solver.js')));
+const { NonlinearSolver } = await import(toURL(join(__dirname, '..', 'js', 'nonlinear-solver.js')));
+const { createMaterial } = await import(toURL(join(__dirname, '..', 'js', 'material-models.js')));
 
 const importer = new ModelImporter();
 
@@ -2302,6 +2304,74 @@ console.log('Test 79: SVG parsing – no geometry throws error');
         assert(e.message.includes('No supported 2D geometry'), `Error message should mention geometry, got: ${e.message}`);
     }
     assert(threw, 'parseSVG should throw for empty SVG');
+}
+
+// ──────────────────────────────────────────────────
+// Test 80: NonlinearSolver – small 2×1×1 mesh converges
+// ──────────────────────────────────────────────────
+console.log('Test 80: NonlinearSolver – small 2×1×1 mesh converges');
+{
+    const nelx = 2, nely = 1, nelz = 1;
+    const nnx = nelx + 1, nny = nely + 1, nnz = nelz + 1;
+    const nodeCount = nnx * nny * nnz;
+    const elemCount = nelx * nely * nelz;
+
+    const mesh = {
+        nelx, nely, nelz,
+        nodeCount,
+        elemCount,
+        getElementNodes: (e) => {
+            const ez = Math.floor(e / (nelx * nely));
+            const ey = Math.floor((e % (nelx * nely)) / nelx);
+            const ex = e % nelx;
+            const n = (iz, iy, ix) => iz * nny * nnx + iy * nnx + ix;
+            return [
+                n(ez,   ey,   ex),   n(ez,   ey,   ex+1),
+                n(ez,   ey+1, ex+1), n(ez,   ey+1, ex),
+                n(ez+1, ey,   ex),   n(ez+1, ey,   ex+1),
+                n(ez+1, ey+1, ex+1), n(ez+1, ey+1, ex)
+            ];
+        },
+        getNodeCoords: (n) => {
+            const nz = Math.floor(n / (nny * nnx));
+            const ny = Math.floor((n % (nny * nnx)) / nnx);
+            const nx = n % nnx;
+            return [nx, ny, nz];
+        }
+    };
+
+    const material = createMaterial('neo-hookean', { E: 1.0, nu: 0.3 });
+
+    // Fix left face (x=0): DOFs 0,1,2 per node
+    const fixedNodes = [];
+    for (let iz = 0; iz < nnz; iz++) {
+        for (let iy = 0; iy < nny; iy++) {
+            const ni = iz * nny * nnx + iy * nnx + 0;
+            fixedNodes.push(ni * 3, ni * 3 + 1, ni * 3 + 2);
+        }
+    }
+    const constraints = new Int32Array(fixedNodes);
+
+    // Apply small downward force on right face (x=nelx)
+    const loads = new Float64Array(nodeCount * 3);
+    for (let iz = 0; iz < nnz; iz++) {
+        for (let iy = 0; iy < nny; iy++) {
+            const ni = iz * nny * nnx + iy * nnx + nelx;
+            loads[ni * 3 + 1] = -0.001; // tiny downward force per node
+        }
+    }
+
+    const solver = new NonlinearSolver({ numLoadSteps: 2, maxNewtonIter: 10, residualTol: 1e-4 });
+    const result = solver.solve(mesh, material, constraints, loads);
+
+    assert(result.displacement instanceof Float64Array, 'NonlinearSolver: displacement should be Float64Array');
+    assert(result.displacement.length === nodeCount * 3, `NonlinearSolver: displacement length should be ${nodeCount * 3}, got ${result.displacement.length}`);
+    assert(result.vonMisesStress instanceof Float64Array || result.vonMisesStress instanceof Float32Array || Array.isArray(result.vonMisesStress), 'NonlinearSolver: vonMisesStress should be array-like');
+    assert(result.vonMisesStress.length === elemCount, `NonlinearSolver: vonMisesStress length should be ${elemCount}`);
+    assert(typeof result.converged === 'boolean', 'NonlinearSolver: converged should be boolean');
+    assert(typeof result.totalIterations === 'number', 'NonlinearSolver: totalIterations should be a number');
+    assert(result.cauchyStress instanceof Float64Array || Array.isArray(result.cauchyStress), 'NonlinearSolver: cauchyStress should be array-like');
+    assert(result.strainEnergy instanceof Float64Array || Array.isArray(result.strainEnergy), 'NonlinearSolver: strainEnergy should be array-like');
 }
 
 // ──────────────────────────────────────────────────
