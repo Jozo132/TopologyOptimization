@@ -573,7 +573,7 @@ export class ModelImporter {
                 case 'h': cx += nextNum(); points.push({ x: cx, y: cy }); break;
                 case 'V': cy = nextNum(); points.push({ x: cx, y: cy }); break;
                 case 'v': cy += nextNum(); points.push({ x: cx, y: cy }); break;
-                case 'Z': case 'z': cx = startX; cy = startY; ti++; break;
+                case 'Z': case 'z': cx = startX; cy = startY; break;
                 case 'C': { // Cubic bezier – take endpoint
                     nextNum(); nextNum(); nextNum(); nextNum();
                     cx = nextNum(); cy = nextNum();

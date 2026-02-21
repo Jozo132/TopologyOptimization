@@ -879,8 +879,6 @@ class TopologyApp {
     _applyTemplateDefaultsToggle(useDefaults) {
         const forceSelect = document.getElementById('forceDirection');
         const constraintSelect = document.getElementById('constraintPosition');
-        const forceMagnitude = document.getElementById('forceMagnitude');
-        const constraintDOFs = document.getElementById('constraintDOFs');
 
         if (useDefaults && this.currentModel) {
             const model = this.currentModel;
@@ -1730,7 +1728,8 @@ class TopologyApp {
         const defaultsCheckbox = document.getElementById('useTemplateDefaults');
         if (defaultsCheckbox) {
             defaultsCheckbox.checked = true;
-            defaultsCheckbox.closest('.control-group').classList.remove('hidden');
+            const defaultsGroup = document.getElementById('templateDefaultsGroup');
+            if (defaultsGroup) defaultsGroup.classList.remove('hidden');
             this._applyTemplateDefaultsToggle(true);
         }
         
