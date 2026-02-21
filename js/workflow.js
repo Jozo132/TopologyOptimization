@@ -112,7 +112,7 @@ export class WorkflowManager {
             for (let s = this.maxReachedStep + 1; s < stepNumber; s++) {
                 if (!this._isStepHidden(s)) { allHidden = false; break; }
             }
-            if (allHidden && stepNumber === this.maxReachedStep + 2) {
+            if (allHidden) {
                 this.maxReachedStep = stepNumber;
             }
         }

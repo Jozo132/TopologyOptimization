@@ -1011,7 +1011,7 @@ class TopologyApp {
         const loadStepFraction = document.getElementById('loadStepFraction');
         const loadStepStatus = document.getElementById('loadStepStatus');
         if (loadStepValue) loadStepValue.textContent = `${snap.step}/${totalSteps}`;
-        if (loadStepFraction) loadStepFraction.textContent = `${(snap.loadFraction * 100).toFixed(0)}%`;
+        if (loadStepFraction) loadStepFraction.textContent = `${(snap.loadFraction * 100).toFixed(1)}%`;
 
         // Show convergence/failure status
         if (loadStepStatus) {
