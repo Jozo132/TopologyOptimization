@@ -1338,6 +1338,8 @@ export class ModelImporter {
         // 2D soft gasket: squished circle (ellipse) with S-shaped internal diagonal
         // Dimensions: 30×20 mm (squished), nz=1 for 2D profile
         const baseNx = 30, baseNy = 20, baseNz = 1;
+        const wallThicknessMM = 1.5;
+        const sCurveAmplitude = 0.45; // fraction of rx; produces visible S-curve buckling shape
         const scale = resolution / baseNx;
         const nx = Math.max(10, Math.round(baseNx * scale));
         const ny = Math.max(8, Math.round(baseNy * scale));
@@ -1350,7 +1352,7 @@ export class ModelImporter {
         const cy = (ny - 1) / 2;
         const rx = (nx - 1) / 2;       // semi-axis X (full width)
         const ry = (ny - 1) / 2;       // semi-axis Y (squished height)
-        const wallVx = Math.max(1, Math.round(1.5 / voxelSize)); // ~1.5 mm wall thickness
+        const wallVx = Math.max(1, Math.round(wallThicknessMM / voxelSize));
 
         for (let iy = 0; iy < ny; iy++) {
             for (let ix = 0; ix < nx; ix++) {
@@ -1368,8 +1370,8 @@ export class ModelImporter {
 
                 // S-shaped internal diagonal: x = cx + amplitude * sin(pi * t)
                 // where t goes from 0 to 1 over the height of the ellipse
-                const t = (iy - (cy - ry)) / (2 * ry); // 0..1 over ellipse height
-                const amplitude = rx * 0.45;
+                const t = ry > 0 ? (iy - (cy - ry)) / (2 * ry) : 0;
+                const amplitude = rx * sCurveAmplitude;
                 const sCenterX = cx + amplitude * Math.sin(Math.PI * t);
                 const distToS = Math.abs(ix - sCenterX);
                 const onS = distToS <= wallVx && ellipseDist <= 1.0;
