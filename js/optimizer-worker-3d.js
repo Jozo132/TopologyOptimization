@@ -3,6 +3,7 @@
 // Supports both Web Worker (browser) and worker_threads (Node.js) environments.
 
 import { GPUCompute } from './gpu-compute.js';
+import { GPUFEASolver } from './gpu-fea-solver.js';
 
 // Node.js / browser environment compatibility shim
 if (typeof self === 'undefined') {
@@ -25,6 +26,13 @@ const _yieldToLoop = () => new Promise(r => setTimeout(r, 0));
 // Available linear solvers: 'mgpcg', 'cg', 'petsc'
 // 'petsc' uses KSP-style Krylov solvers with BDDC domain decomposition or multigrid preconditioning.
 const DEFAULT_LINEAR_SOLVER = 'mgpcg';
+
+// FEA solver backend: controls which compute backend runs the linear solve.
+// 'auto' = best available (webgpu > wasm > js)
+// 'webgpu' = GPU-resident Jacobi-PCG via GPUFEASolver
+// 'wasm' = WASM-compiled solvers (ebePCG / ebeMGPCG / ebeKSP_BDDC)
+// 'js' = pure JavaScript fallback
+const DEFAULT_FEA_BACKEND = 'auto';
 
 // CG tolerance is scheduled during the optimization (looser early, tighter late)
 const CG_TOL_START = 1e-3;
@@ -1412,6 +1420,13 @@ class TopologyOptimizerWorker3D {
         this.gpuCompute = null;
         this._KEflat32 = null;
 
+        // FEA solver backend selection (auto/webgpu/wasm/js)
+        this.feaSolverBackend = DEFAULT_FEA_BACKEND;
+        this._resolvedBackend = null; // actual backend after auto-detection
+        this.gpuFEASolver = null;     // GPUFEASolver instance (lazy init)
+        this._gpuFEAInitAttempted = false;
+        this._gpuFEAAvailable = false;
+
         // Volumetric stress snapshot state
         this._volumetricOutputMode = 'on-stop';
         this._lastVolumetricStress = null;
@@ -1618,6 +1633,8 @@ class TopologyOptimizerWorker3D {
         this._lastVolumetricDims = { nx: nelx, ny: nely, nz: nelz };
         // Allow selecting the linear solver via config (e.g. 'mgpcg' or 'cg')
         if (config.linearSolver) this.linearSolver = config.linearSolver;
+        // FEA solver backend selection (auto/webgpu/wasm/js)
+        if (config.feaSolverBackend) this.feaSolverBackend = config.feaSolverBackend;
 
         // Apply material properties from config if provided
         if (config.youngsModulus) {
@@ -1669,7 +1686,7 @@ class TopologyOptimizerWorker3D {
 
             const penal = config.penaltyFactor || 3;
             const startTime = performance.now();
-            const { U, c: compliance } = this.FE(nelx, nely, nelz, x, penal, KEflat, edofArray, F, freedofs, fixedMask, config, 1, 1, fixeddofs);
+            const { U, c: compliance } = await this.FE(nelx, nely, nelz, x, penal, KEflat, edofArray, F, freedofs, fixedMask, config, 1, 1, fixeddofs);
 
             const elementEnergies = new Float32Array(nel);
             const elementStress = new Float32Array(nel);
@@ -1721,6 +1738,7 @@ class TopologyOptimizerWorker3D {
             this._lastVolumetricMaxStress = displayMaxStress;
             this._lastVolumetricIteration = 1;
 
+            this._cleanupGPU();
             postMessage({
                 type: 'complete',
                 result: {
@@ -1869,6 +1887,10 @@ class TopologyOptimizerWorker3D {
             }
         }
 
+        // ── Initialize GPU FEA solver if backend is 'auto' or 'webgpu' ──
+        await this._initGPUFEASolver();
+        this._resolvedBackend = this._resolveBackend();
+
         // Compute per-element force magnitudes for adaptive mesh info
         const elementForces = this.computeElementForces(nelx, nely, nelz, F);
 
@@ -1913,6 +1935,11 @@ class TopologyOptimizerWorker3D {
                 if (patch.volumeFraction !== undefined) volfrac = patch.volumeFraction;
                 if (patch.maxIterations !== undefined) maxIterations = patch.maxIterations;
                 if (patch.linearSolver !== undefined) this.linearSolver = patch.linearSolver;
+                if (patch.feaSolverBackend !== undefined) {
+                    this.feaSolverBackend = patch.feaSolverBackend;
+                    await this._initGPUFEASolver();
+                    this._resolvedBackend = this._resolveBackend();
+                }
                 if (patch.volumetricOutputMode !== undefined) {
                     this._volumetricOutputMode = this._normalizeVolumetricOutputMode(patch.volumetricOutputMode);
                 }
@@ -1952,7 +1979,7 @@ class TopologyOptimizerWorker3D {
             const beta = useProjection ? Math.min(betaMax, Math.pow(2, Math.floor((loop - 1) / betaInterval))) : 1;
             const xPhys = useProjection ? this._heavisideProject(x, beta) : x;
 
-            const { U, c: compliance, solverStats } = this.FE(nelx, nely, nelz, xPhys, currentPenal, KEflat, edofArray, F, freedofs, fixedMask, config, loop, maxIterations, fixeddofs);
+            const { U, c: compliance, solverStats } = await this.FE(nelx, nely, nelz, xPhys, currentPenal, KEflat, edofArray, F, freedofs, fixedMask, config, loop, maxIterations, fixeddofs);
             c = compliance;
 
             const dc = new Float32Array(nel);
@@ -2162,6 +2189,7 @@ class TopologyOptimizerWorker3D {
             }
         };
 
+        this._cleanupGPU();
         if (finalVolumetric) {
             postMessage(completePayload, finalVolumetric.transfer);
         } else {
@@ -2302,14 +2330,14 @@ class TopologyOptimizerWorker3D {
             return x;
         };
 
-        const evaluate = (x) => {
+        const evaluate = async (x) => {
             // Use Emin floor for void elements to avoid singular stiffness matrix
             const xFEA = new Float32Array(nel);
             for (let i = 0; i < nel; i++) {
                 xFEA[i] = x[i] > 0.5 ? x[i] : 0.001;
             }
 
-            const { U, c: compliance } = this.FE(nelx, nely, nelz, xFEA, this.penal, KEflat, edofArray, F, freedofs, fixedMask, config, 1, 1, fixeddofs);
+            const { U, c: compliance } = await this.FE(nelx, nely, nelz, xFEA, this.penal, KEflat, edofArray, F, freedofs, fixedMask, config, 1, 1, fixeddofs);
 
             // Guard against invalid FEA results (diverged solver)
             if (!isFinite(compliance) || compliance <= 0) {
@@ -2377,7 +2405,7 @@ class TopologyOptimizerWorker3D {
 
             const iterStartTime = performance.now();
 
-            const results = population.map(ind => evaluate(ind));
+            const results = await Promise.all(population.map(ind => evaluate(ind)));
             const fitnesses = results.map(r => r.compliance);
 
             for (let i = 0; i < populationSize; i++) {
@@ -2413,7 +2441,7 @@ class TopologyOptimizerWorker3D {
             population = newPop;
 
             // Build mesh for visualization
-            const bestEval = evaluate(bestIndividual);
+            const bestEval = await evaluate(bestIndividual);
             const elementEnergies = new Float32Array(nel);
             const Ue = new Float64Array(24);
             for (let e = 0; e < nel; e++) {
@@ -2456,7 +2484,7 @@ class TopologyOptimizerWorker3D {
         }
 
         // Final evaluation
-        const finalEval = evaluate(bestIndividual);
+        const finalEval = await evaluate(bestIndividual);
         const finalEnergies = new Float32Array(nel);
         const Ue = new Float64Array(24);
         for (let e = 0; e < nel; e++) {
@@ -2474,6 +2502,7 @@ class TopologyOptimizerWorker3D {
             ? iterationTimes.reduce((a, b) => a + b, 0) / iterationTimes.length
             : 0;
 
+        this._cleanupGPU();
         postMessage({
             type: 'complete',
             result: {
@@ -3814,26 +3843,189 @@ class TopologyOptimizerWorker3D {
         return { U, c, solverStats: { cgIterations: cgIters, tolerance } };
     }
 
-    FE(nelx, nely, nelz, x, penal, KEflat, edofArray, F, freedofs, fixedMask, config, iteration, maxIterations, fixeddofs) {
+    // ═══════════════════════════════════════════════════════════════════
+    // FEA solver backend selection & GPU FEA integration
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Initialize GPUFEASolver lazily (only once per process).
+     * Called when feaSolverBackend is 'auto' or 'webgpu'.
+     */
+    async _initGPUFEASolver() {
+        if (this._gpuFEAInitAttempted) return;
+        if (this.feaSolverBackend !== 'auto' && this.feaSolverBackend !== 'webgpu') return;
+        this._gpuFEAInitAttempted = true;
+        try {
+            this.gpuFEASolver = new GPUFEASolver();
+            const ok = await this.gpuFEASolver.init();
+            this._gpuFEAAvailable = ok;
+            if (ok) {
+                console.log('GPU FEA solver initialized (GPUFEASolver ready)');
+            } else {
+                console.log('GPU FEA solver probe failed — will use WASM/JS');
+                this.gpuFEASolver = null;
+            }
+        } catch (err) {
+            console.warn('GPU FEA solver init error:', err.message);
+            this._gpuFEAAvailable = false;
+            this.gpuFEASolver = null;
+        }
+    }
+
+    /**
+     * Release GPU resources (Dawn device) before the worker exits.
+     * Must be called before posting the 'complete' message so the next worker
+     * can safely create a new Dawn instance on the same GPU (only one Dawn
+     * instance per D3D12 device is allowed at a time).
+     */
+    _cleanupGPU() {
+        if (this.gpuFEASolver) {
+            this.gpuFEASolver.destroy();
+            this.gpuFEASolver = null;
+        }
+        if (this.gpuCompute) {
+            if (typeof this.gpuCompute.destroy === 'function') this.gpuCompute.destroy();
+            this.gpuCompute = null;
+        }
+        this._gpuFEAAvailable = false;
+        this._gpuFEAInitAttempted = false;
+    }
+
+    /**
+     * Resolve the actual backend to use based on feaSolverBackend setting
+     * and what's actually available.
+     * Order for 'auto': webgpu > wasm > js
+     * @returns {'webgpu'|'wasm'|'js'}
+     */
+    _resolveBackend() {
+        const pref = this.feaSolverBackend || 'auto';
+        if (pref === 'webgpu') {
+            this._resolvedBackend = this._gpuFEAAvailable ? 'webgpu' : (wasmLoaded ? 'wasm' : 'js');
+        } else if (pref === 'wasm') {
+            this._resolvedBackend = wasmLoaded ? 'wasm' : 'js';
+        } else if (pref === 'js') {
+            this._resolvedBackend = 'js';
+        } else {
+            // 'auto': best available
+            if (this._gpuFEAAvailable) {
+                this._resolvedBackend = 'webgpu';
+            } else if (wasmLoaded) {
+                this._resolvedBackend = 'wasm';
+            } else {
+                this._resolvedBackend = 'js';
+            }
+        }
+        return this._resolvedBackend;
+    }
+
+    /**
+     * Solve using GPUFEASolver (GPU-resident Jacobi-PCG).
+     * Note: GPU solver always uses Jacobi preconditioner regardless of linearSolver setting
+     * (MGPCG/KSP preconditioners are CPU-only algorithms).
+     * Returns null if the solve fails, allowing fallback to WASM/JS.
+     */
+    async _solveWithGPUFEA(nelx, nely, nelz, x, penal, KEflat, edofArray, F, freedofs, fixedMask, config, iteration, maxIterations, fixeddofs) {
         const ndof = 3 * (nelx + 1) * (nely + 1) * (nelz + 1);
         const nel = nelx * nely * nelz;
 
+        try {
+            // Schedule CG tolerance
+            const progress = maxIterations > 1 ? (iteration - 1) / (maxIterations - 1) : 1;
+            const tolerance = Math.exp(Math.log(CG_TOL_START) + progress * (Math.log(CG_TOL_END) - Math.log(CG_TOL_START)));
+
+            // Convert inputs to f32 for GPU
+            const KEflat32 = this._KEflat32 || new Float32Array(KEflat);
+            const densities32 = (x instanceof Float32Array) ? x : new Float32Array(x);
+            const fixedMaskU8 = (fixedMask instanceof Uint8Array) ? fixedMask : new Uint8Array(ndof);
+            if (!(fixedMask instanceof Uint8Array)) {
+                for (let i = 0; i < ndof; i++) fixedMaskU8[i] = fixedMask[i] ? 1 : 0;
+            }
+            const F32 = new Float32Array(ndof);
+            for (let i = 0; i < ndof; i++) F32[i] = F[i];
+
+            // Setup GPU buffers (re-uploads every iteration since densities change)
+            this.gpuFEASolver.setup({
+                KEflat: KEflat32,
+                edofArray: new Int32Array(edofArray),
+                densities: densities32,
+                F: F32,
+                fixedMask: fixedMaskU8,
+                nel, ndof,
+                E0: this.E0,
+                Emin: this.Emin,
+                penal
+            });
+
+            // Warm-start from previous solution
+            let warmStart = null;
+            if (iteration > 1 && this._U_prev && this._U_prev.length === ndof) {
+                warmStart = new Float32Array(ndof);
+                for (let i = 0; i < ndof; i++) warmStart[i] = this._U_prev[i];
+            }
+
+            const result = await this.gpuFEASolver.solve({
+                maxIterations: Math.min(freedofs.length, MAX_CG_ITERATIONS),
+                tolerance,
+                warmStart
+            });
+
+            // Convert solution back to f64 for compatibility
+            const U = new Float64Array(ndof);
+            for (let i = 0; i < ndof; i++) U[i] = result.U[i];
+
+            // Zero fixed DOFs
+            if (fixeddofs) {
+                for (const dof of fixeddofs) {
+                    if (dof >= 0 && dof < ndof) U[dof] = 0;
+                }
+            }
+
+            // Save for warm-start
+            if (!this._U_prev || this._U_prev.length !== ndof) {
+                this._U_prev = new Float64Array(ndof);
+            }
+            this._U_prev.set(U);
+
+            // Compute compliance
+            let c = 0;
+            for (let i = 0; i < ndof; i++) c += F[i] * U[i];
+
+            return { U, c, solverStats: { cgIterations: result.iterations, tolerance, backend: 'webgpu', converged: result.converged } };
+        } catch (err) {
+            console.warn('GPU FEA solve failed, falling back:', err.message);
+            return null;
+        }
+    }
+
+    async FE(nelx, nely, nelz, x, penal, KEflat, edofArray, F, freedofs, fixedMask, config, iteration, maxIterations, fixeddofs) {
+        const ndof = 3 * (nelx + 1) * (nely + 1) * (nelz + 1);
+        const nel = nelx * nely * nelz;
+
+        const backend = this._resolvedBackend || this._resolveBackend();
+
+        // ── GPU FEA solve (GPU-resident Jacobi-PCG via GPUFEASolver) ──
+        if (backend === 'webgpu' && this._gpuFEAAvailable && this.gpuFEASolver) {
+            const result = await this._solveWithGPUFEA(nelx, nely, nelz, x, penal, KEflat, edofArray, F, freedofs, fixedMask, config, iteration, maxIterations, fixeddofs);
+            if (result) return result;
+            // Fall through to WASM/JS if GPU solve failed
+        }
+
         // ── Full WASM MGPCG solve (entire V-cycle + CG in WASM, zero per-iteration crossings) ──
-        if (this.linearSolver === 'mgpcg' && wasmLoaded && wasmModule?.exports?.ebeMGPCG) {
+        if (backend !== 'js' && this.linearSolver === 'mgpcg' && wasmLoaded && wasmModule?.exports?.ebeMGPCG) {
             const result = this._solveWithWasmMGPCG(nelx, nely, nelz, x, penal, KEflat, edofArray, F, freedofs, fixedMask, iteration, maxIterations);
             if (result) return result;
             // Fall through to JS MGPCG if WASM allocation failed
         }
 
         // ── Full WASM KSP BDDC solve (BDDC domain decomposition in WASM, zero per-iteration crossings) ──
-        if (this.linearSolver === 'petsc' && (!config?.petscPC || config.petscPC === 'bddc') && wasmLoaded && wasmModule?.exports?.ebeKSP_BDDC) {
+        if (backend !== 'js' && this.linearSolver === 'petsc' && (!config?.petscPC || config.petscPC === 'bddc') && wasmLoaded && wasmModule?.exports?.ebeKSP_BDDC) {
             const result = this._solveWithWasmKSP_BDDC(nelx, nely, nelz, x, penal, KEflat, edofArray, F, freedofs, fixedMask, iteration, maxIterations);
             if (result) return result;
             // Fall through to JS KSP solver if WASM allocation failed
         }
 
         // ── Full WASM FEA solve (Jacobi-PCG, zero per-iteration JS↔WASM crossings) ──
-        if (this.linearSolver !== 'mgpcg' && this.linearSolver !== 'petsc' && wasmLoaded && wasmModule?.exports?.ebePCG) {
+        if (backend !== 'js' && this.linearSolver !== 'mgpcg' && this.linearSolver !== 'petsc' && wasmLoaded && wasmModule?.exports?.ebePCG) {
             const result = this._solveWithWasmPCG(nelx, nely, nelz, x, penal, KEflat, edofArray, F, freedofs, iteration, maxIterations);
             if (result) return result;
             // Fall through to JS solver if WASM allocation failed

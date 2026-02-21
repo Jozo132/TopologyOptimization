@@ -1,27 +1,23 @@
 #!/usr/bin/env node
 /**
- * Benchmark: GPUFEASolver Scaling Analysis
+ * Benchmark: GPUFEASolver vs JS Jacobi-PCG — Performance & Conformity
  *
- * This benchmark runs a JS Jacobi-PCG solver to measure actual per-solve
- * timings and uses those to project GPU solver performance:
- *   1. Measures JS Jacobi-PCG (same algorithm as GPUFEASolver) across
- *      scaling cube sizes for baseline timing data
- *   2. Projects GPU solver performance via conservative speedup estimates
- *      derived from GPU compute characteristics
- *   3. Provides estimated comparisons with MGPCG and WASM solvers
+ * Actually runs BOTH solvers side-by-side and compares:
+ *   1. JS Jacobi-PCG (f64) — baseline reference
+ *   2. GPU Jacobi-PCG (f32, GPUFEASolver) — WebGPU via Dawn in Node.js
  *
- * Note: While GPUFEASolver supports Node.js via the optional 'webgpu'
- * (Dawn) package, this benchmark uses a pure-JS solver for consistent
- * measurements regardless of GPU availability.
- *
- * Starts at 20³, scales voxel count by +20% each step until the JS
- * Jacobi-PCG solver exceeds 30 s per solve.
+ * Measures from 20³ cubes, scaling voxel count by +20% each step until
+ * the JS solver exceeds 30s. Includes WASM and MGPCG estimates from
+ * measured JS data. Extrapolates to 50³, 70³, and 100³ using measured
+ * scaling exponents.
  *
  * Usage:
  *   node benchmark-gpu-fea.js
+ *   node benchmark-gpu-fea.js --max-cube=40
  */
 
 import { performance } from 'perf_hooks';
+import { GPUFEASolver } from './js/gpu-fea-solver.js';
 
 const EPSILON = 1e-12;
 const CG_TOLERANCE = 1e-8;
@@ -31,6 +27,11 @@ const Emin = 1e-9;
 const NU = 0.3;
 const PENAL = 3;
 const TIMEOUT_SEC = 30;
+
+// Parse CLI args
+const args = process.argv.slice(2);
+const maxCubeArg = args.find(a => a.startsWith('--max-cube='));
+const MAX_CUBE = maxCubeArg ? parseInt(maxCubeArg.split('=')[1]) : Infinity;
 
 // ═══════════════════════════════════════════════════════════════════════
 // 3D element stiffness (8-node hex, 2×2×2 Gauss)
@@ -62,17 +63,17 @@ function lk3D(nu) {
                     [(1 + eta) * (1 + zeta),   (1 + xi) * (1 + zeta),  (1 + xi) * (1 + eta)],
                     [-(1 + eta) * (1 + zeta),  (1 - xi) * (1 + zeta),  (1 - xi) * (1 + eta)]
                 ];
-                for (let n = 0; n < 8; n++) { dN[n][0] *= 0.125; dN[n][1] *= 0.125; dN[n][2] *= 0.125; }
+                for (let nd = 0; nd < 8; nd++) { dN[nd][0] *= 0.125; dN[nd][1] *= 0.125; dN[nd][2] *= 0.125; }
 
                 const B = Array.from({ length: 6 }, () => new Float64Array(24));
-                for (let n = 0; n < 8; n++) {
-                    const col = n * 3;
-                    B[0][col] = dN[n][0];
-                    B[1][col + 1] = dN[n][1];
-                    B[2][col + 2] = dN[n][2];
-                    B[3][col] = dN[n][1]; B[3][col + 1] = dN[n][0];
-                    B[4][col + 1] = dN[n][2]; B[4][col + 2] = dN[n][1];
-                    B[5][col] = dN[n][2]; B[5][col + 2] = dN[n][0];
+                for (let nd = 0; nd < 8; nd++) {
+                    const col = nd * 3;
+                    B[0][col] = dN[nd][0];
+                    B[1][col + 1] = dN[nd][1];
+                    B[2][col + 2] = dN[nd][2];
+                    B[3][col] = dN[nd][1]; B[3][col + 1] = dN[nd][0];
+                    B[4][col + 1] = dN[nd][2]; B[4][col + 2] = dN[nd][1];
+                    B[5][col] = dN[nd][2]; B[5][col + 2] = dN[nd][0];
                 }
 
                 for (let i = 0; i < 24; i++) {
@@ -89,7 +90,6 @@ function lk3D(nu) {
             }
         }
     }
-
     return KE;
 }
 
@@ -139,18 +139,17 @@ function setupProblem3D(nelx, nely, nelz) {
     const ndof = 3 * (nelx + 1) * (nely + 1) * (nelz + 1);
     const nny = nely + 1, nnz = nelz + 1;
 
-    // Fix bottom corners (4 corner nodes, all 3 DOFs each)
+    // Fix left face (all nodes at x=0, all 3 DOFs)
     const fixeddofs = [];
-    const corners = [
-        0 * nny * nnz + 0 * nnz + 0,
-        nelx * nny * nnz + 0 * nnz + 0,
-        0 * nny * nnz + nely * nnz + 0,
-        nelx * nny * nnz + nely * nnz + 0
-    ];
-    for (const n of corners) fixeddofs.push(3 * n, 3 * n + 1, 3 * n + 2);
+    for (let j = 0; j <= nely; j++) {
+        for (let k = 0; k <= nelz; k++) {
+            const nd = 0 * nny * nnz + j * nnz + k;
+            fixeddofs.push(3 * nd, 3 * nd + 1, 3 * nd + 2);
+        }
+    }
 
     const fixedMask = new Uint8Array(ndof);
-    for (const d of fixeddofs) fixedMask[d] = 1;
+    for (const d of fixeddofs) if (d >= 0 && d < ndof) fixedMask[d] = 1;
 
     let nFree = 0;
     for (let i = 0; i < ndof; i++) if (!fixedMask[i]) nFree++;
@@ -158,26 +157,26 @@ function setupProblem3D(nelx, nely, nelz) {
     let fp = 0;
     for (let i = 0; i < ndof; i++) if (!fixedMask[i]) freedofs[fp++] = i;
 
-    // Downward force at top center
+    // Downward force at right-center node
     const F = new Float64Array(ndof);
-    const n_tc = Math.floor(nelx / 2) * nny * nnz + Math.floor(nely / 2) * nnz + nelz;
-    F[3 * n_tc + 1] = -1.0;
+    const n_rc = nelx * nny * nnz + Math.floor(nely / 2) * nnz + Math.floor(nelz / 2);
+    F[3 * n_rc + 1] = -1.0;  // -Y direction
 
-    return { nel, ndof, fixedMask, freedofs, F };
+    return { nel, ndof, fixedMask, freedofs, F, fixeddofs };
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Jacobi-PCG solver (same algorithm as GPUFEASolver, but in JS/f64)
+// JS Jacobi-PCG solver (f64 reference)
 // ═══════════════════════════════════════════════════════════════════════
 function solveJacobiPCG(KEflat, edofArray, nel, ndof, F, fixedMask, penal) {
     const dE = E0 - Emin;
     const skipThreshold = Emin * 1000;
 
-    // Precompute element stiffnesses
+    // Precompute element stiffnesses (all-solid)
     const E_vals = new Float64Array(nel);
     const activeElements = [];
     for (let e = 0; e < nel; e++) {
-        const E = Emin + Math.pow(1.0, penal) * dE; // density = 1.0 (all solid)
+        const E = Emin + Math.pow(1.0, penal) * dE;
         E_vals[e] = E;
         if (E > skipThreshold) activeElements.push(e);
     }
@@ -264,282 +263,352 @@ function solveJacobiPCG(KEflat, edofArray, nel, ndof, F, fixedMask, penal) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Scale cube dimensions by +20% voxel count each step
-// voxels = n^3, so n_new = n * (1.2)^(1/3) ≈ n * 1.0627
+// Solution conformity check (JS f64 vs GPU f32)
+// ═══════════════════════════════════════════════════════════════════════
+function compareResults(jsU, gpuU, ndof) {
+    let maxDiff = 0, sumSqDiff = 0, sumSqRef = 0;
+    let maxAbsJS = 0;
+    for (let i = 0; i < ndof; i++) {
+        const ref = jsU[i];
+        const gpu = gpuU[i];
+        const d = Math.abs(ref - gpu);
+        if (d > maxDiff) maxDiff = d;
+        sumSqDiff += d * d;
+        sumSqRef += ref * ref;
+        if (Math.abs(ref) > maxAbsJS) maxAbsJS = Math.abs(ref);
+    }
+    const rmsDiff = Math.sqrt(sumSqDiff / ndof);
+    const relErr = Math.sqrt(sumSqRef) > 0 ? Math.sqrt(sumSqDiff / sumSqRef) : 0;
+    return { maxDiff, rmsDiff, relErr, maxAbsJS };
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Helpers
 // ═══════════════════════════════════════════════════════════════════════
 function nextCubeSize(n) {
-    // Scale voxel count by 1.2x → side by 1.2^(1/3) ≈ 1.0627
     return Math.ceil(n * Math.pow(1.2, 1 / 3));
 }
-
-// ═══════════════════════════════════════════════════════════════════════
-// Estimate GPU solver performance
-// ═══════════════════════════════════════════════════════════════════════
-// These estimates are based on typical GPU vs CPU speedup ratios for
-// each CG operation. The dominant cost is the EbE mat-vec (applyA).
-//
-// GPU advantages:
-//   - applyA: Each element's 24x24 mat-vec runs in 1 workgroup (24 threads),
-//     all nel elements execute in parallel → ~10-20x speedup over sequential CPU
-//     for large nel (limited by atomic scatter contention)
-//   - dotProduct / axpy / Jacobi: bandwidth-bound vector ops,
-//     GPU has ~5-10x memory bandwidth advantage
-//   - No per-iteration CPU readback (only dot-product partials, ~1KB)
-//
-// GPU disadvantages:
-//   - f32 precision (vs f64 CPU) may require ~20% more CG iterations
-//   - CAS-based atomic scatter adds contention at shared DOFs
-//   - Per-iteration mapAsync latency for dot product readback (~0.1-0.5ms)
-//   - Setup overhead (buffer upload, pipeline creation)
-//
-// Conservative estimate: GPU provides 8-15x speedup on applyA,
-// but with iteration overhead and f32 penalty, net ~5-10x overall.
-
-function estimateGPUTime(jsTimeMs, nel, ndof, cgIters) {
-    // applyA dominates: ~85% of CG iteration time for large problems
-    // Vector ops (dot, axpy, jacobi): ~15% of time
-    const applyAFraction = 0.85;
-    const vectorFraction = 0.15;
-
-    // GPU speedup factors (conservative for mid-range GPU)
-    const applyASpeedup = Math.min(15, 3 + nel / 10000); // scales with parallelism
-    const vectorSpeedup = Math.min(8, 2 + ndof / 50000);
-
-    // f32 precision penalty: ~20% more iterations
-    const f32IterPenalty = 1.2;
-
-    // Per-iteration GPU overhead: mapAsync latency for dot products
-    // 3 dot products per iteration × ~0.2ms each
-    const perIterOverheadMs = 3 * 0.2;
-
-    const jsIterTime = jsTimeMs / Math.max(cgIters, 1);
-    const gpuIterTime = jsIterTime * (
-        applyAFraction / applyASpeedup +
-        vectorFraction / vectorSpeedup
-    ) + perIterOverheadMs;
-
-    const gpuIters = Math.ceil(cgIters * f32IterPenalty);
-    const gpuSetupMs = 5 + nel * 0.001; // buffer upload + pipeline creation
-
-    return {
-        totalMs: gpuSetupMs + gpuIterTime * gpuIters,
-        iterTimeMs: gpuIterTime,
-        estimatedIters: gpuIters,
-        applyASpeedup,
-        vectorSpeedup,
-    };
-}
-
-// Estimate MGPCG time from Jacobi-PCG measurements.
-// MGPCG uses multigrid V-cycle preconditioning which dramatically reduces
-// CG iterations (typically 5-15x fewer), but each iteration costs more
-// due to restriction/prolongation/smoothing across grid levels.
-function estimateMGPCGTime(jsJacobiTimeMs, jsJacobiIters, nel) {
-    // MGPCG typically needs 5-15x fewer iterations than Jacobi-PCG
-    const iterReduction = Math.min(15, 5 + nel / 50000);
-    const mgIters = Math.max(5, Math.ceil(jsJacobiIters / iterReduction));
-
-    // But each MGPCG iteration is ~3-5x more expensive (V-cycle cost)
-    const perIterCostMultiplier = 3.5;
-
-    const jsIterTime = jsJacobiTimeMs / Math.max(jsJacobiIters, 1);
-    const mgIterTime = jsIterTime * perIterCostMultiplier;
-    const mgTotalMs = mgIterTime * mgIters;
-
-    return { totalMs: mgTotalMs, iterTimeMs: mgIterTime, estimatedIters: mgIters };
-}
-
-// Estimate WASM Jacobi-PCG time.
-// Based on measured WASM speedup ratios from benchmark-fea.js results.
-// WASM eliminates per-iteration JS↔WASM overhead and benefits from
-// SIMD and optimized memory access patterns.
-function estimateWASMTime(jsTimeMs) {
-    // WASM Jacobi-PCG is typically 1.5-3x faster than JS for 3D problems
-    const wasmSpeedup = 2.0;
-    return { totalMs: jsTimeMs / wasmSpeedup, speedup: wasmSpeedup };
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// Main benchmark
-// ═══════════════════════════════════════════════════════════════════════
-console.log('');
-console.log('╔' + '═'.repeat(88) + '╗');
-console.log('║  GPUFEASolver Scaling Benchmark — Jacobi-PCG Scaling & GPU Performance Estimate    ║');
-console.log('║  Starting at 20³, scaling voxel count by +20% until >30s per solve                 ║');
-console.log('╚' + '═'.repeat(88) + '╝');
-console.log('');
-
-const KE = lk3D(NU);
-const KEflat = flattenKE(KE);
-
-const results = [];
-
-// Warm up the JS engine with a small solve
-{
-    const warmEdof = precomputeEdofs3D(5, 5, 5);
-    const warmProb = setupProblem3D(5, 5, 5);
-    solveJacobiPCG(KEflat, warmEdof, 125, warmProb.ndof, warmProb.F, warmProb.fixedMask, PENAL);
-}
-
-let n = 20; // starting cube side length
-
-while (true) {
-    const nel = n * n * n;
-    const ndof = 3 * (n + 1) * (n + 1) * (n + 1);
-
-    console.log(`\n${'─'.repeat(88)}`);
-    console.log(`  Cube: ${n}×${n}×${n}  (${nel.toLocaleString()} elements, ${ndof.toLocaleString()} DOFs)`);
-    console.log('─'.repeat(88));
-
-    // Setup mesh
-    process.stdout.write('  Setting up mesh...');
-    const t0 = performance.now();
-    const edofArray = precomputeEdofs3D(n, n, n);
-    const { fixedMask, freedofs, F } = setupProblem3D(n, n, n);
-    const setupMs = performance.now() - t0;
-    console.log(` done (${(setupMs / 1000).toFixed(2)}s)`);
-
-    // Check memory constraints
-    const memGB = (
-        edofArray.byteLength + F.byteLength + fixedMask.byteLength +
-        ndof * 8 * 5 + // U, r, z, p, Ap
-        nel * 8 * 2 // E_vals, loc
-    ) / (1024 * 1024 * 1024);
-    console.log(`  Memory estimate: ${memGB.toFixed(2)} GB`);
-
-    if (memGB > 4.0) {
-        console.log('  ⚠ Memory limit reached (>4 GB). Stopping.');
-        break;
-    }
-
-    // Solve
-    process.stdout.write('  Solving Jacobi-PCG...');
-    const solveStart = performance.now();
-    const result = solveJacobiPCG(KEflat, edofArray, nel, ndof, F, fixedMask, PENAL);
-    const solveMs = performance.now() - solveStart;
-    console.log(` done (${(solveMs / 1000).toFixed(2)}s, ${result.iters} CG iterations)`);
-
-    // Estimate GPU performance
-    const gpuEst = estimateGPUTime(solveMs, nel, ndof, result.iters);
-    const mgEst = estimateMGPCGTime(solveMs, result.iters, nel);
-    const wasmEst = estimateWASMTime(solveMs);
-
-    const gpuSpeedup = solveMs / gpuEst.totalMs;
-
-    console.log(`  Compliance: ${result.compliance.toExponential(6)}`);
-    console.log('');
-    console.log('  ┌─────────────────────────────────────────────────────────────────┐');
-    console.log('  │  Solver Comparison (measured JS Jacobi + estimates)             │');
-    console.log('  ├─────────────────────┬──────────┬───────────┬────────────────────┤');
-    console.log('  │ Solver              │ Time     │ CG Iters  │ vs JS Jacobi       │');
-    console.log('  ├─────────────────────┼──────────┼───────────┼────────────────────┤');
-    console.log(`  │ JS Jacobi-PCG       │ ${fmtTime(solveMs).padStart(8)} │ ${String(result.iters).padStart(9)} │ ${'1.00x (baseline)'.padStart(18)} │`);
-    console.log(`  │ WASM Jacobi-PCG  ~  │ ${fmtTime(wasmEst.totalMs).padStart(8)} │ ${String(result.iters).padStart(9)} │ ${(wasmEst.speedup.toFixed(2) + 'x faster').padStart(18)} │`);
-    console.log(`  │ JS MGPCG         ~  │ ${fmtTime(mgEst.totalMs).padStart(8)} │ ${String(mgEst.estimatedIters).padStart(9)} │ ${((solveMs / mgEst.totalMs).toFixed(2) + 'x faster').padStart(18)} │`);
-    console.log(`  │ GPU Jacobi-PCG   ~  │ ${fmtTime(gpuEst.totalMs).padStart(8)} │ ${String(gpuEst.estimatedIters).padStart(9)} │ ${(gpuSpeedup.toFixed(2) + 'x faster').padStart(18)} │`);
-    console.log('  └─────────────────────┴──────────┴───────────┴────────────────────┘');
-    console.log(`    ~ = estimated  │  GPU applyA speedup: ${gpuEst.applyASpeedup.toFixed(1)}x  │  GPU vec ops: ${gpuEst.vectorSpeedup.toFixed(1)}x`);
-
-    results.push({
-        n, nel, ndof,
-        jsMs: solveMs,
-        jsIters: result.iters,
-        gpuMs: gpuEst.totalMs,
-        gpuIters: gpuEst.estimatedIters,
-        gpuSpeedup,
-        mgMs: mgEst.totalMs,
-        mgIters: mgEst.estimatedIters,
-        wasmMs: wasmEst.totalMs,
-    });
-
-    if (solveMs > TIMEOUT_SEC * 1000) {
-        console.log(`\n  ⏱ JS Jacobi-PCG exceeded ${TIMEOUT_SEC}s timeout. Stopping.`);
-        break;
-    }
-
-    n = nextCubeSize(n);
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// Summary table
-// ═══════════════════════════════════════════════════════════════════════
-console.log('\n\n' + '═'.repeat(120));
-console.log('  SCALING SUMMARY');
-console.log('═'.repeat(120));
-console.log(
-    'Cube       │ Elements      │ DOFs          │ JS Jacobi     │ WASM Jacobi~  │ MGPCG~        │ GPU Jacobi~   │ GPU Speedup'
-);
-console.log('─'.repeat(120));
-
-for (const r of results) {
-    const cube = `${r.n}³`.padEnd(10);
-    const elems = r.nel.toLocaleString().padStart(13);
-    const dofs = r.ndof.toLocaleString().padStart(13);
-    const js = fmtTime(r.jsMs).padStart(13);
-    const wasm = fmtTime(r.wasmMs).padStart(13);
-    const mg = fmtTime(r.mgMs).padStart(13);
-    const gpu = fmtTime(r.gpuMs).padStart(13);
-    const speedup = (r.gpuSpeedup.toFixed(2) + 'x').padStart(11);
-    console.log(`${cube} │ ${elems} │ ${dofs} │ ${js} │ ${wasm} │ ${mg} │ ${gpu} │ ${speedup}`);
-}
-
-console.log('═'.repeat(120));
-
-// Scaling analysis
-if (results.length >= 2) {
-    console.log('\n  SCALING ANALYSIS:');
-    const first = results[0];
-    const last = results[results.length - 1];
-    const volumeRatio = last.nel / first.nel;
-    const jsTimeRatio = last.jsMs / first.jsMs;
-
-    const alpha = Math.log(jsTimeRatio) / Math.log(volumeRatio);
-    console.log(`    Volume scaling: ${volumeRatio.toFixed(2)}x (${first.nel.toLocaleString()} → ${last.nel.toLocaleString()} elements)`);
-    console.log(`    JS Jacobi-PCG time scaling: ${jsTimeRatio.toFixed(2)}x (${fmtTime(first.jsMs)} → ${fmtTime(last.jsMs)})`);
-    console.log(`    Scaling exponent (time ~ N^α): α = ${alpha.toFixed(2)}`);
-    console.log('');
-    console.log('    Expected scaling behaviors:');
-    console.log('      • JS/WASM Jacobi-PCG:  O(N^1.33) — EbE matvec O(N) × CG iters O(N^0.33)');
-    console.log('      • MGPCG:               O(N)      — optimal multigrid: O(N) per V-cycle, O(1) iters');
-    console.log('      • GPU Jacobi-PCG:      O(N^0.33) — parallel EbE matvec O(1) × CG iters O(N^0.33)');
-    console.log('                             (until GPU saturates, then O(N^1.33) with smaller constant)');
-
-    // Extrapolated estimates for 50³ and beyond
-    console.log('\n  EXTRAPOLATED ESTIMATES (from measured scaling):');
-    console.log('  ┌────────────────────────────────────────────────────────────────────────────────────┐');
-    console.log('  │ Cube       │ Elements      │ JS Jacobi~    │ WASM~         │ MGPCG~        │ GPU~ │');
-    console.log('  ├────────────┼───────────────┼───────────────┼───────────────┼───────────────┼──────┤');
-
-    const extraSizes = [40, 50, 60, 70, 80, 100].filter(s => s > last.n);
-    for (const en of extraSizes) {
-        const eNel = en * en * en;
-        const eNdof = 3 * (en + 1) * (en + 1) * (en + 1);
-        // Extrapolate JS time using measured scaling exponent
-        const jsExtMs = last.jsMs * Math.pow(eNel / last.nel, alpha);
-        const eGpu = estimateGPUTime(jsExtMs, eNel, eNdof, MAX_CG_ITERATIONS);
-        const eMg = estimateMGPCGTime(jsExtMs, MAX_CG_ITERATIONS, eNel);
-        const eWasm = estimateWASMTime(jsExtMs);
-        const cubeStr = `${en}³`.padEnd(10);
-        const nelStr = eNel.toLocaleString().padStart(13);
-        console.log(`  │ ${cubeStr} │ ${nelStr} │ ${fmtTime(jsExtMs).padStart(13)} │ ${fmtTime(eWasm.totalMs).padStart(13)} │ ${fmtTime(eMg.totalMs).padStart(13)} │ ${fmtTime(eGpu.totalMs).padStart(4)} │`);
-    }
-    console.log('  └────────────┴───────────────┴───────────────┴───────────────┴───────────────┴──────┘');
-    console.log('    All values marked ~ are estimates based on measured scaling trends');
-}
-
-// GPU-specific notes
-console.log('\n  NOTES ON GPU ESTIMATES:');
-console.log('    • GPU estimates assume a mid-range discrete GPU (e.g. RTX 3060 / RX 6700)');
-console.log('    • applyA speedup: each element runs as 1 workgroup (24 threads), all elements parallel');
-console.log('    • Scatter-add uses CAS-based atomic f32 add (contention at shared DOFs)');
-console.log('    • f32 precision may require ~20% more CG iterations than f64');
-console.log('    • Only dot-product partials are read back per iteration (~1 KB)');
-console.log('    • Actual GPU performance varies significantly with hardware and driver');
-console.log('    • To get real GPU timings, run benchmark-gpu.html in a WebGPU-capable browser');
-console.log('');
 
 function fmtTime(ms) {
     if (ms < 1000) return ms.toFixed(0) + 'ms';
     if (ms < 60000) return (ms / 1000).toFixed(2) + 's';
     return (ms / 60000).toFixed(1) + 'min';
 }
+
+function fmtExp(v) { return v.toExponential(2); }
+
+function estimateWASMTime(jsTimeMs) {
+    return { totalMs: jsTimeMs / 2.0, speedup: 2.0 };
+}
+
+function estimateMGPCGTime(jsJacobiTimeMs, jsJacobiIters, nel) {
+    const iterReduction = Math.min(15, 5 + nel / 50000);
+    const mgIters = Math.max(5, Math.ceil(jsJacobiIters / iterReduction));
+    const jsIterTime = jsJacobiTimeMs / Math.max(jsJacobiIters, 1);
+    return { totalMs: jsIterTime * 3.5 * mgIters, estimatedIters: mgIters };
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Main benchmark
+// ═══════════════════════════════════════════════════════════════════════
+async function main() {
+    console.log('');
+    console.log('\u2554' + '\u2550'.repeat(92) + '\u2557');
+    console.log('\u2551  GPUFEASolver Benchmark \u2014 JS Jacobi-PCG (f64) vs GPU Jacobi-PCG (f32)' + ' '.repeat(20) + '\u2551');
+    console.log('\u2551  Cube sizes 20\u00b3\u219232\u00b3 (+20% voxels/step), comparing performance & solution conformity  \u2551');
+    console.log('\u255a' + '\u2550'.repeat(92) + '\u255d');
+    console.log('');
+
+    // ── Initialize GPU ──
+    const gpuSolver = new GPUFEASolver();
+    let gpuAvailable = false;
+    process.stdout.write('  Initializing WebGPU (Dawn)...');
+    try {
+        gpuAvailable = await gpuSolver.init();
+    } catch (err) {
+        console.log(` failed: ${err.message}`);
+    }
+    if (gpuAvailable) {
+        console.log(' OK');
+    } else {
+        console.log(' not available \u2014 GPU columns will show N/A');
+    }
+
+    // ── Element stiffness matrix ──
+    const KE = lk3D(NU);
+    const KEflat = flattenKE(KE);
+    const KEflat32 = new Float32Array(KEflat);
+
+    // Warm up JS engine
+    {
+        const we = precomputeEdofs3D(5, 5, 5);
+        const wp = setupProblem3D(5, 5, 5);
+        solveJacobiPCG(KEflat, we, 125, wp.ndof, wp.F, wp.fixedMask, PENAL);
+    }
+
+    const results = [];
+    let n = 20;
+    let gpuTimedOut = false;
+
+    while (n <= MAX_CUBE) {
+        const nel = n * n * n;
+        const ndof = 3 * (n + 1) * (n + 1) * (n + 1);
+
+        console.log(`\n${'─'.repeat(92)}`);
+        console.log(`  Cube: ${n}\u00d7${n}\u00d7${n}  (${nel.toLocaleString()} elements, ${ndof.toLocaleString()} DOFs)`);
+        console.log('─'.repeat(92));
+
+        // Setup mesh
+        process.stdout.write('  Building mesh...');
+        const t0 = performance.now();
+        const edofArray = precomputeEdofs3D(n, n, n);
+        const prob = setupProblem3D(n, n, n);
+        const { fixedMask, freedofs, F } = prob;
+        const meshMs = performance.now() - t0;
+        console.log(` ${(meshMs / 1000).toFixed(2)}s`);
+
+        // Memory estimate
+        const memGB = (edofArray.byteLength + F.byteLength + fixedMask.byteLength +
+            ndof * 8 * 5 + nel * 8 * 2) / (1024 ** 3);
+        if (memGB > 4.0) {
+            console.log(`  \u26a0 Memory limit reached (${memGB.toFixed(1)} GB > 4 GB). Stopping.`);
+            break;
+        }
+
+        // ── JS Jacobi-PCG (f64) ──
+        process.stdout.write('  JS Jacobi-PCG (f64)...');
+        const jsStart = performance.now();
+        const jsResult = solveJacobiPCG(KEflat, edofArray, nel, ndof, F, fixedMask, PENAL);
+        const jsMs = performance.now() - jsStart;
+        console.log(` ${fmtTime(jsMs)}  (${jsResult.iters} iters, compliance=${fmtExp(jsResult.compliance)})`);
+
+        // ── GPU Jacobi-PCG (f32) ──
+        let gpuMs = null, gpuIters = null, gpuCompliance = null, conformity = null;
+        let gpuSetupMs = null, gpuConverged = null;
+
+        if (gpuAvailable && !gpuTimedOut) {
+            try {
+                // Setup (upload buffers, create pipelines)
+                process.stdout.write('  GPU setup...');
+                const gsStart = performance.now();
+                const densities = new Float32Array(nel);
+                densities.fill(1.0);
+                const F32 = new Float32Array(F);
+                gpuSolver.setup({
+                    KEflat: KEflat32, edofArray, densities, fixedMask, F: F32,
+                    nel, ndof, E0, Emin, penal: PENAL,
+                });
+                gpuSetupMs = performance.now() - gsStart;
+                console.log(` ${fmtTime(gpuSetupMs)}`);
+
+                // Solve
+                process.stdout.write('  GPU Jacobi-PCG (f32)...');
+                const gpuStart = performance.now();
+                const gpuResult = await gpuSolver.solve({
+                    maxIterations: MAX_CG_ITERATIONS,
+                    tolerance: CG_TOLERANCE,
+                });
+                gpuMs = performance.now() - gpuStart;
+                gpuIters = gpuResult.iterations;
+                gpuConverged = gpuResult.converged;
+
+                // Compute compliance from GPU result
+                gpuCompliance = 0;
+                for (let i = 0; i < ndof; i++) gpuCompliance += F[i] * gpuResult.U[i];
+
+                console.log(` ${fmtTime(gpuMs)}  (${gpuIters} iters, compliance=${fmtExp(gpuCompliance)}, converged=${gpuConverged})`);
+
+                // Conformity check
+                conformity = compareResults(jsResult.U, gpuResult.U, ndof);
+                const relPct = (conformity.relErr * 100).toFixed(4);
+                const cDiffPct = Math.abs(jsResult.compliance - gpuCompliance) / Math.abs(jsResult.compliance) * 100;
+                console.log(`  Conformity: relErr=${fmtExp(conformity.relErr)} (${relPct}%), maxDiff=${fmtExp(conformity.maxDiff)}, rmsDiff=${fmtExp(conformity.rmsDiff)}`);
+                console.log(`  Compliance diff: ${cDiffPct.toFixed(4)}%`);
+
+                if (gpuMs > TIMEOUT_SEC * 1000) {
+                    gpuTimedOut = true;
+                    console.log(`  \u23f1 GPU solve exceeded ${TIMEOUT_SEC}s, skipping GPU for larger sizes.`);
+                }
+            } catch (err) {
+                console.log(` failed: ${err.message}`);
+                gpuMs = null;
+            }
+        } else if (!gpuAvailable) {
+            console.log('  GPU: N/A (WebGPU not available)');
+        } else {
+            console.log('  GPU: skipped (timed out on previous size)');
+        }
+
+        // ── Estimates ──
+        const wasmEst = estimateWASMTime(jsMs);
+        const mgEst = estimateMGPCGTime(jsMs, jsResult.iters, nel);
+
+        // ── Per-size comparison table ──
+        const gpuSpeedup = gpuMs ? (jsMs / gpuMs) : null;
+        console.log('');
+        console.log('  \u250c' + '\u2500'.repeat(80) + '\u2510');
+        console.log('  \u2502  Solver               \u2502 Time     \u2502 CG Iters  \u2502 vs JS Jacobi      \u2502 Status    \u2502');
+        console.log('  \u251c' + '\u2500'.repeat(80) + '\u2524');
+        console.log(`  \u2502 JS Jacobi-PCG (f64)   \u2502 ${fmtTime(jsMs).padStart(8)} \u2502 ${String(jsResult.iters).padStart(9)} \u2502 ${'1.00x (baseline)'.padStart(18)} \u2502 measured  \u2502`);
+        if (gpuMs !== null) {
+            const spStr = gpuSpeedup >= 1 ? `${gpuSpeedup.toFixed(2)}x faster` : `${(1 / gpuSpeedup).toFixed(2)}x slower`;
+            console.log(`  \u2502 GPU Jacobi-PCG (f32)  \u2502 ${fmtTime(gpuMs).padStart(8)} \u2502 ${String(gpuIters).padStart(9)} \u2502 ${spStr.padStart(18)} \u2502 measured  \u2502`);
+        } else {
+            console.log(`  \u2502 GPU Jacobi-PCG (f32)  \u2502 ${'N/A'.padStart(8)} \u2502 ${'N/A'.padStart(9)} \u2502 ${'N/A'.padStart(18)} \u2502 ${'N/A'.padStart(9)} \u2502`);
+        }
+        console.log(`  \u2502 WASM Jacobi-PCG    ~  \u2502 ${fmtTime(wasmEst.totalMs).padStart(8)} \u2502 ${String(jsResult.iters).padStart(9)} \u2502 ${(wasmEst.speedup.toFixed(2) + 'x faster').padStart(18)} \u2502 estimated \u2502`);
+        const mgSpeedup = jsMs / mgEst.totalMs;
+        console.log(`  \u2502 JS MGPCG            ~ \u2502 ${fmtTime(mgEst.totalMs).padStart(8)} \u2502 ${String(mgEst.estimatedIters).padStart(9)} \u2502 ${(mgSpeedup.toFixed(2) + 'x faster').padStart(18)} \u2502 estimated \u2502`);
+        console.log('  \u2514' + '\u2500'.repeat(80) + '\u2518');
+        console.log('    ~ = estimated');
+
+        results.push({
+            n, nel, ndof,
+            jsMs, jsIters: jsResult.iters, jsCompliance: jsResult.compliance,
+            gpuMs, gpuIters, gpuCompliance, gpuSetupMs, gpuConverged,
+            conformity,
+            wasmMs: wasmEst.totalMs,
+            mgMs: mgEst.totalMs, mgIters: mgEst.estimatedIters,
+        });
+
+        if (jsMs > TIMEOUT_SEC * 1000) {
+            console.log(`\n  \u23f1 JS Jacobi-PCG exceeded ${TIMEOUT_SEC}s. Stopping measurement loop.`);
+            break;
+        }
+
+        n = nextCubeSize(n);
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // Summary: Performance
+    // ═════════════════════════════════════════════════════════════════════
+    console.log('\n\n' + '\u2550'.repeat(132));
+    console.log('  PERFORMANCE SCALING SUMMARY');
+    console.log('\u2550'.repeat(132));
+    console.log(
+        'Cube       \u2502 Elements      \u2502 DOFs          \u2502 JS Jacobi     \u2502 GPU Jacobi    \u2502 GPU Speedup \u2502 WASM~         \u2502 MGPCG~'
+    );
+    console.log('\u2500'.repeat(132));
+
+    for (const r of results) {
+        const cube = `${r.n}\u00b3`.padEnd(10);
+        const elems = r.nel.toLocaleString().padStart(13);
+        const dofs = r.ndof.toLocaleString().padStart(13);
+        const js = fmtTime(r.jsMs).padStart(13);
+        const gpu = r.gpuMs !== null ? fmtTime(r.gpuMs).padStart(13) : 'N/A'.padStart(13);
+        let sp;
+        if (r.gpuMs !== null) {
+            const ratio = r.jsMs / r.gpuMs;
+            sp = ratio >= 1
+                ? (ratio.toFixed(2) + 'x faster').padStart(11)
+                : ((1 / ratio).toFixed(2) + 'x slower').padStart(11);
+        } else {
+            sp = 'N/A'.padStart(11);
+        }
+        const wasm = fmtTime(r.wasmMs).padStart(13);
+        const mg = fmtTime(r.mgMs).padStart(13);
+        console.log(`${cube} \u2502 ${elems} \u2502 ${dofs} \u2502 ${js} \u2502 ${gpu} \u2502 ${sp} \u2502 ${wasm} \u2502 ${mg}`);
+    }
+    console.log('\u2550'.repeat(132));
+
+    // ═════════════════════════════════════════════════════════════════════
+    // Summary: Conformity
+    // ═════════════════════════════════════════════════════════════════════
+    const conformityResults = results.filter(r => r.conformity);
+    if (conformityResults.length > 0) {
+        console.log('\n' + '\u2550'.repeat(115));
+        console.log('  SOLUTION CONFORMITY: JS (f64) vs GPU (f32)');
+        console.log('\u2550'.repeat(115));
+        console.log(
+            'Cube       \u2502 JS Compliance     \u2502 GPU Compliance    \u2502 Comp. Diff %  \u2502 Rel. Error    \u2502 Max |diff|    \u2502 RMS diff'
+        );
+        console.log('\u2500'.repeat(115));
+
+        for (const r of conformityResults) {
+            const cube = `${r.n}\u00b3`.padEnd(10);
+            const jsc = fmtExp(r.jsCompliance).padStart(17);
+            const gc = fmtExp(r.gpuCompliance).padStart(17);
+            const cDiff = (Math.abs(r.jsCompliance - r.gpuCompliance) / Math.abs(r.jsCompliance) * 100).toFixed(4);
+            const re = fmtExp(r.conformity.relErr).padStart(13);
+            const md = fmtExp(r.conformity.maxDiff).padStart(13);
+            const rd = fmtExp(r.conformity.rmsDiff).padStart(8);
+            console.log(`${cube} \u2502 ${jsc} \u2502 ${gc} \u2502 ${cDiff.padStart(12)}% \u2502 ${re} \u2502 ${md} \u2502 ${rd}`);
+        }
+        console.log('\u2550'.repeat(115));
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // Summary: Scaling analysis & extrapolation
+    // ═════════════════════════════════════════════════════════════════════
+    if (results.length >= 2) {
+        console.log('\n  SCALING ANALYSIS:');
+        const first = results[0], last = results[results.length - 1];
+        const volRatio = last.nel / first.nel;
+        const jsRatio = last.jsMs / first.jsMs;
+        const alpha = Math.log(jsRatio) / Math.log(volRatio);
+        console.log(`    Volume scaling: ${volRatio.toFixed(2)}x (${first.nel.toLocaleString()} \u2192 ${last.nel.toLocaleString()} elements)`);
+        console.log(`    JS Jacobi-PCG time scaling: ${jsRatio.toFixed(2)}x`);
+        console.log(`    Scaling exponent (time ~ N^\u03b1): \u03b1 = ${alpha.toFixed(2)}`);
+
+        const gpuResults = results.filter(r => r.gpuMs !== null);
+        if (gpuResults.length >= 2) {
+            const gFirst = gpuResults[0], gLast = gpuResults[gpuResults.length - 1];
+            const gRatio = gLast.gpuMs / gFirst.gpuMs;
+            const gAlpha = Math.log(gRatio) / Math.log(gLast.nel / gFirst.nel);
+            console.log(`    GPU Jacobi-PCG time scaling: ${gRatio.toFixed(2)}x, \u03b1 = ${gAlpha.toFixed(2)}`);
+        }
+
+        console.log('');
+        console.log('    Expected scaling behaviors:');
+        console.log('      \u2022 JS/WASM Jacobi:  O(N^1.33)  \u2014 EbE matvec O(N) \u00d7 CG iters O(N^0.33)');
+        console.log('      \u2022 MGPCG:           O(N)       \u2014 optimal MG: O(N) per V-cycle, O(1) iters');
+        console.log('      \u2022 GPU Jacobi:      O(N^0.33)  \u2014 once GPU saturates, parallel EbE is O(1), CG iters O(N^0.33)');
+
+        // Extrapolation
+        const extraSizes = [40, 50, 60, 70, 80, 100].filter(s => s > last.n);
+        if (extraSizes.length > 0) {
+            const lastGPURatio = gpuResults.length > 0
+                ? gpuResults[gpuResults.length - 1].gpuMs / gpuResults[gpuResults.length - 1].jsMs
+                : null;
+
+            console.log('\n  EXTRAPOLATED ESTIMATES (from measured JS \u03b1=' + alpha.toFixed(2) + '):');
+            console.log('  ' + '\u2500'.repeat(100));
+            console.log('  Cube       \u2502 Elements      \u2502 JS Jacobi~    \u2502 WASM~         \u2502 MGPCG~        \u2502 GPU~');
+            console.log('  ' + '\u2500'.repeat(100));
+
+            for (const en of extraSizes) {
+                const eNel = en ** 3;
+                const jsExtMs = last.jsMs * Math.pow(eNel / last.nel, alpha);
+                const wEst = estimateWASMTime(jsExtMs);
+                const mEst = estimateMGPCGTime(jsExtMs, MAX_CG_ITERATIONS, eNel);
+                const gpuExt = lastGPURatio !== null ? fmtTime(jsExtMs * lastGPURatio) : 'N/A';
+                console.log(`  ${(en + '\u00b3').padEnd(10)} \u2502 ${eNel.toLocaleString().padStart(13)} \u2502 ${fmtTime(jsExtMs).padStart(13)} \u2502 ${fmtTime(wEst.totalMs).padStart(13)} \u2502 ${fmtTime(mEst.totalMs).padStart(13)} \u2502 ${gpuExt.padStart(13)}`);
+            }
+            console.log('  ' + '\u2500'.repeat(100));
+            console.log('    All ~ values are estimates based on measured scaling trends');
+        }
+    }
+
+    // Notes
+    console.log('\n  NOTES:');
+    if (gpuAvailable) {
+        console.log('    \u2022 GPU solver ran via Dawn (webgpu npm package) in Node.js');
+        console.log('    \u2022 GPU uses f32 arithmetic, JS uses f64 \u2014 expect ~0.01-1% relative error');
+        console.log('    \u2022 GPU applyA: 2-pass (local EbE mat-vec \u2192 CAS atomic scatter-add)');
+        console.log('    \u2022 Only dot-product partials read back per CG iteration (~1 KB)');
+        console.log('    \u2022 Final solution read back once after convergence');
+    } else {
+        console.log('    \u2022 GPU solver unavailable \u2014 install "webgpu" package for GPU comparison');
+    }
+    console.log('    \u2022 WASM and MGPCG columns are estimates from measured JS timing');
+    console.log('    \u2022 All solves use uniform density=1.0 (cantilever beam, left-face fixed)');
+    console.log('');
+
+    // Cleanup
+    gpuSolver.destroy();
+}
+
+main().catch(err => {
+    console.error('Benchmark failed:', err);
+    process.exit(1);
+});

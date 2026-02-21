@@ -41,7 +41,8 @@ export async function _getGPU() {
 
         // Probe Dawn in a subprocess to avoid crashing the main process
         // (Dawn's create() can abort with a native assertion failure when no GPU is present)
-        const { execSync } = await import('child_process');
+        // Uses execFileSync (no shell) to avoid Windows cmd.exe single-quote issues.
+        const { execFileSync } = await import('child_process');
         const probeScript = [
             'import { create, globals } from "webgpu";',
             'Object.assign(globalThis, globals);',
@@ -50,7 +51,7 @@ export async function _getGPU() {
             'process.exit(a ? 0 : 1);',
         ].join(' ');
         try {
-            execSync(`node --input-type=module -e '${probeScript}'`,
+            execFileSync(process.execPath, ['--input-type=module', '-e', probeScript],
                 { timeout: 8000, stdio: 'ignore' }
             );
         } catch (_probeErr) {

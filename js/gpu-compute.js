@@ -1,6 +1,10 @@
 // WebGPU Compute Module for GPU-accelerated matrix operations
 // Provides GPU acceleration for the CG solver's matrix-vector multiply
 // Falls back gracefully when WebGPU is not available
+//
+// Cross-compatible: works in browser (navigator.gpu) and Node.js (via 'webgpu' / dawn.node)
+
+import { _getGPU } from './gpu-fea-solver.js';
 
 export class GPUCompute {
     constructor() {
@@ -22,18 +26,24 @@ export class GPUCompute {
 
     async _doInit() {
         try {
-            if (typeof navigator === 'undefined' || !navigator.gpu) {
+            const gpu = await _getGPU();
+            if (!gpu) {
                 console.log('WebGPU not supported in this environment');
                 return false;
             }
 
-            const adapter = await navigator.gpu.requestAdapter();
+            const adapter = await gpu.requestAdapter();
             if (!adapter) {
                 console.log('No WebGPU adapter available');
                 return false;
             }
 
-            this.device = await adapter.requestDevice();
+            this.device = await adapter.requestDevice({
+                requiredLimits: {
+                    maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+                    maxBufferSize:              adapter.limits.maxBufferSize,
+                },
+            });
             this.available = true;
             console.log('WebGPU compute initialized successfully');
             return true;
@@ -344,7 +354,7 @@ export class GPUCompute {
                 @group(0) @binding(2) var<storage, read_write> partials: array<f32>;
                 @group(0) @binding(3) var<uniform> params: u32;
 
-                var<workgroup> shared: array<f32, 256>;
+                var<workgroup> wg_scratch: array<f32, 256>;
 
                 @compute @workgroup_size(256)
                 fn main(@builtin(global_invocation_id) gid: vec3<u32>,
@@ -356,18 +366,18 @@ export class GPUCompute {
                     if (i < n) {
                         val = vecA[i] * vecB[i];
                     }
-                    shared[lid.x] = val;
+                    wg_scratch[lid.x] = val;
                     workgroupBarrier();
 
                     // Tree reduction inside workgroup
                     for (var s: u32 = 128u; s > 0u; s = s >> 1u) {
                         if (lid.x < s) {
-                            shared[lid.x] = shared[lid.x] + shared[lid.x + s];
+                            wg_scratch[lid.x] = wg_scratch[lid.x] + wg_scratch[lid.x + s];
                         }
                         workgroupBarrier();
                     }
                     if (lid.x == 0u) {
-                        partials[wid.x] = shared[0];
+                        partials[wid.x] = wg_scratch[0];
                     }
                 }
             `

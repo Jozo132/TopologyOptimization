@@ -64,6 +64,7 @@ class TopologyApp {
             manufacturingMinRadius: 0,
             manufacturingMaxDepth: 0,
             useGPU: false,
+            feaSolverBackend: 'auto',
             volumetricOutputMode: 'on-stop',
             useAMR: true,
             amrInterval: 3,
@@ -522,10 +523,12 @@ class TopologyApp {
             this.config.filterRadius = parseFloat(e.target.value);
         });
 
-        const useGPUCheckbox = document.getElementById('useGPU');
-        if (useGPUCheckbox) {
-            useGPUCheckbox.addEventListener('change', (e) => {
-                this.config.useGPU = e.target.checked;
+        const feaSolverBackendSelect = document.getElementById('feaSolverBackend');
+        if (feaSolverBackendSelect) {
+            feaSolverBackendSelect.addEventListener('change', (e) => {
+                this.config.feaSolverBackend = e.target.value;
+                // Legacy compat: set useGPU based on backend selection
+                this.config.useGPU = (e.target.value === 'webgpu');
             });
         }
 
@@ -957,7 +960,7 @@ class TopologyApp {
         setValue('amrInterval', cfg.amrInterval);
         setValue('volumetricOutputMode', cfg.volumetricOutputMode || 'on-stop');
 
-        setChecked('useGPU', cfg.useGPU);
+        setValue('feaSolverBackend', cfg.feaSolverBackend || 'auto');
         setChecked('constrainToSolid', cfg.constrainToSolid);
         setChecked('preventVoids', cfg.preventVoids);
         setChecked('manufacturingConstraint', cfg.manufacturingConstraint);
@@ -1256,29 +1259,45 @@ class TopologyApp {
     }
 
     async _initGPUControls() {
-        const useGPUCheckbox = document.getElementById('useGPU');
-        const gpuStatus = document.getElementById('gpuStatus');
-        if (!useGPUCheckbox || !gpuStatus) return;
+        const feaBackendSelect = document.getElementById('feaSolverBackend');
+        const feaStatus = document.getElementById('feaSolverStatus');
+        if (!feaBackendSelect || !feaStatus) return;
 
-        useGPUCheckbox.checked = false;
-        useGPUCheckbox.disabled = true;
-        this.config.useGPU = false;
+        // Probe available backends
+        const backends = ['js']; // JS always available
+        let gpuAvailable = false;
 
-        if (typeof navigator === 'undefined' || !navigator.gpu) {
-            gpuStatus.textContent = 'WebGPU not available in this browser.';
-            return;
+        // Check WASM (always available if the file exists — worker will probe at runtime)
+        backends.unshift('wasm');
+
+        // Check WebGPU
+        if (typeof navigator !== 'undefined' && navigator.gpu) {
+            try {
+                const adapter = await navigator.gpu.requestAdapter();
+                if (adapter) {
+                    gpuAvailable = true;
+                    backends.unshift('webgpu');
+                }
+            } catch (_err) { /* WebGPU not usable */ }
         }
 
-        try {
-            const adapter = await navigator.gpu.requestAdapter();
-            if (!adapter) {
-                gpuStatus.textContent = 'No compatible GPU adapter found.';
-                return;
-            }
-            useGPUCheckbox.disabled = false;
-            gpuStatus.textContent = 'WebGPU available. Enable GPU acceleration if desired.';
-        } catch (_err) {
-            gpuStatus.textContent = 'WebGPU probe failed; using CPU path.';
+        // Disable unavailable options
+        for (const opt of feaBackendSelect.options) {
+            if (opt.value === 'auto') continue;
+            opt.disabled = !backends.includes(opt.value);
+            if (opt.disabled) opt.textContent += ' (unavailable)';
+        }
+
+        // Build status text
+        const parts = [];
+        if (gpuAvailable) parts.push('WebGPU');
+        parts.push('WASM', 'JS');
+        feaStatus.textContent = `Available: ${parts.join(', ')}. Auto will pick: ${parts[0]}.`;
+
+        // Set initial config
+        if (this.config.feaSolverBackend === 'auto') {
+            // Resolve auto for useGPU legacy compat
+            this.config.useGPU = gpuAvailable;
         }
     }
 
