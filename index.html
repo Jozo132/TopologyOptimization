@@ -758,13 +758,9 @@
             // Mobile 3D viewer toggle logic
             var viewerBtn = document.getElementById('mobileToggleViewer');
             var viewerContainer = document.querySelector('.viewer-container');
-            var viewerMinimized = true;
+            var viewerMinimized = false;
 
             if (viewerBtn && viewerContainer) {
-                // Initially minimized on mobile
-                if (isMobile()) {
-                    viewerContainer.classList.add('viewer-minimized');
-                }
 
                 viewerBtn.addEventListener('click', function() {
                     if (!isMobile()) return;

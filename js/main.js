@@ -1266,6 +1266,7 @@ class TopologyApp {
         const geneticPanel = document.getElementById('geneticPanel');
         const solverParamsPanel = document.getElementById('solverParamsPanel');
         const runButton = document.getElementById('runOptimization');
+        const manufacturingStep = document.querySelector('[data-step="5"]');
 
         // Show/hide algorithm selector
         if (topoAlgorithmGroup) {
@@ -1284,6 +1285,10 @@ class TopologyApp {
         // Solver params (volume fraction etc.) only relevant for topology optimization
         if (solverParamsPanel) {
             solverParamsPanel.style.display = solutionType === 'topology' ? '' : 'none';
+        }
+        // Manufacturing step only relevant for topology optimization
+        if (manufacturingStep) {
+            manufacturingStep.style.display = solutionType === 'topology' ? '' : 'none';
         }
 
         // Update run button label

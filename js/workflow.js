@@ -8,6 +8,29 @@ export class WorkflowManager {
         this.onStepChange = null; // callback(stepNumber)
     }
 
+    /** Check if a step element is hidden via inline style (e.g. display:none from solution type logic) */
+    _isStepHidden(stepNum) {
+        const el = document.querySelector(`[data-step="${stepNum}"]`);
+        if (!el) return true;
+        return el.style.display === 'none' && !el.classList.contains('active');
+    }
+
+    /** Find the next visible step after the given step */
+    _nextVisibleStep(fromStep) {
+        for (let s = fromStep + 1; s <= this.totalSteps; s++) {
+            if (!this._isStepHidden(s)) return s;
+        }
+        return null;
+    }
+
+    /** Find the previous visible step before the given step */
+    _prevVisibleStep(fromStep) {
+        for (let s = fromStep - 1; s >= 1; s--) {
+            if (!this._isStepHidden(s)) return s;
+        }
+        return null;
+    }
+
     init() {
         // Insert navigation buttons into each step
         this.steps.forEach(stepNum => {
@@ -23,7 +46,8 @@ export class WorkflowManager {
                 backBtn.textContent = '← Back';
                 backBtn.addEventListener('click', (e) => {
                     e.stopPropagation();
-                    this.goToStep(stepNum - 1);
+                    const prev = this._prevVisibleStep(stepNum);
+                    if (prev !== null) this.goToStep(prev);
                 });
                 nav.appendChild(backBtn);
             }
@@ -34,7 +58,8 @@ export class WorkflowManager {
                 nextBtn.textContent = 'Next →';
                 nextBtn.addEventListener('click', (e) => {
                     e.stopPropagation();
-                    this.goToStep(stepNum + 1);
+                    const next = this._nextVisibleStep(stepNum);
+                    if (next !== null) this.goToStep(next);
                 });
                 nav.appendChild(nextBtn);
             }
@@ -79,6 +104,17 @@ export class WorkflowManager {
         // Allow advancing to the immediate next step from current
         if (stepNumber === this.currentStep + 1 && stepNumber === this.maxReachedStep + 1) {
             this.maxReachedStep = stepNumber;
+        }
+        // Also allow skipping hidden steps (e.g. manufacturing when non-topology)
+        if (stepNumber > this.maxReachedStep + 1) {
+            // Check if all steps between maxReached+1 and stepNumber are hidden
+            let allHidden = true;
+            for (let s = this.maxReachedStep + 1; s < stepNumber; s++) {
+                if (!this._isStepHidden(s)) { allHidden = false; break; }
+            }
+            if (allHidden && stepNumber === this.maxReachedStep + 2) {
+                this.maxReachedStep = stepNumber;
+            }
         }
         if (stepNumber > this.maxReachedStep) return;
         this.showStep(stepNumber);
