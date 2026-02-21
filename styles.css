@@ -371,6 +371,13 @@ button {
     color: var(--primary-color);
 }
 
+.projection-btn.selected {
+    background: rgba(37, 99, 235, 0.06);
+    border-color: var(--primary-color);
+    color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
 .btn-icon {
     background: rgba(255, 255, 255, 0.1);
     border: 1px solid rgba(255, 255, 255, 0.2);

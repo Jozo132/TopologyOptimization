@@ -1760,6 +1760,16 @@ class TopologyOptimizerWorker3D {
                 this._lastVolumetricMaxStress = maxStress;
                 this._lastVolumetricIteration = 1;
 
+                // Serialize step snapshots for time slider
+                const stepSnapshots = (nlResult.stepSnapshots || []).map(snap => ({
+                    step: snap.step,
+                    loadFraction: snap.loadFraction,
+                    displacement: Float32Array.from(snap.displacement),
+                    vonMisesStress: Float32Array.from(snap.vonMisesStress),
+                    converged: snap.converged,
+                    residualNorm: snap.residualNorm
+                }));
+
                 this._cleanupGPU();
                 postMessage({
                     type: 'complete',
@@ -1777,6 +1787,8 @@ class TopologyOptimizerWorker3D {
                         feaOnly: true,
                         nonlinearMode: true,
                         converged: nlResult.converged,
+                        failedAtStep: nlResult.failedAtStep || -1,
+                        stepSnapshots,
                         displacementU,
                         timing: {
                             totalTime,

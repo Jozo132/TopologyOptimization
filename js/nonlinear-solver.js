@@ -759,6 +759,10 @@ export class NonlinearSolver {
 
         let totalIterations = 0;
         let converged = true;
+        let failedAtStep = -1;
+
+        // Per-step snapshots for time slider playback
+        const stepSnapshots = [];
 
         // Incremental load stepping
         for (let step = 1; step <= this.numLoadSteps; step++) {
@@ -779,8 +783,20 @@ export class NonlinearSolver {
             totalIterations += result.iterations;
             elemStates = result.elemStates;
 
+            // Recover stresses at this step for the snapshot
+            const stepStress = this._recoverStresses(mesh, material, u, elemStates);
+            stepSnapshots.push({
+                step,
+                loadFraction,
+                displacement: new Float64Array(u),
+                vonMisesStress: stepStress.vonMisesStress,
+                converged: result.converged,
+                residualNorm: result.residualNorm || 0
+            });
+
             if (!result.converged) {
                 converged = false;
+                failedAtStep = step;
                 break;
             }
         }
@@ -797,7 +813,9 @@ export class NonlinearSolver {
             strainEnergy: stressResult.strainEnergy,
             materialStates: elemStates,
             converged,
-            totalIterations
+            totalIterations,
+            stepSnapshots,
+            failedAtStep
         };
     }
 
@@ -865,7 +883,7 @@ export class NonlinearSolver {
             this._lineSearch(mesh, material, u, du, f_ext, fixedDOFs, ndof, elemStates, assembled.fint);
         }
 
-        return { converged, iterations: iter, elemStates };
+        return { converged, iterations: iter, elemStates, residualNorm };
     }
 
     /**

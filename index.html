@@ -97,6 +97,34 @@
                         </label>
                         <button id="confirmMeshMethod" class="btn-primary" style="margin-top: 0.75rem;">Continue →</button>
                     </div>
+                    <div id="dimensionModeSelector" class="mesh-method-selector hidden">
+                        <p><strong>Analysis Mode:</strong></p>
+                        <label class="mesh-method-option">
+                            <input type="radio" name="dimensionMode" value="3d" checked>
+                            <span class="mesh-method-label">
+                                <strong>3D Analysis</strong>
+                                <small>Full three-dimensional mesh and solver.</small>
+                            </span>
+                        </label>
+                        <label class="mesh-method-option">
+                            <input type="radio" name="dimensionMode" value="2d">
+                            <span class="mesh-method-label">
+                                <strong>2D Analysis</strong>
+                                <small>Project to a single-depth 2D mesh. Choose projection side below.</small>
+                            </span>
+                        </label>
+                        <div id="projectionSideSelector" class="hidden" style="margin-top: 0.75rem;">
+                            <p style="font-size: 0.875rem; margin-bottom: 0.5rem;"><strong>Projection Side:</strong></p>
+                            <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
+                                <button class="btn-secondary projection-btn" data-side="front" title="Front (XY plane, looking from +Z)">Front (XY)</button>
+                                <button class="btn-secondary projection-btn" data-side="back" title="Back (XY plane, looking from -Z)">Back (XY)</button>
+                                <button class="btn-secondary projection-btn selected" data-side="top" title="Top (XZ plane, looking from +Y)">Top (XZ)</button>
+                                <button class="btn-secondary projection-btn" data-side="bottom" title="Bottom (XZ plane, looking from -Y)">Bottom (XZ)</button>
+                                <button class="btn-secondary projection-btn" data-side="right" title="Right (YZ plane, looking from +X)">Right (YZ)</button>
+                                <button class="btn-secondary projection-btn" data-side="left" title="Left (YZ plane, looking from -X)">Left (YZ)</button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -704,6 +732,19 @@
                         <span id="displacementScaleValue">1×</span>
                     </div>
                 </div>
+                <div id="loadStepContainer" class="section-slider-container hidden">
+                    <label class="section-slider-title">⏱ Load Step</label>
+                    <div class="section-slider-group">
+                        <label>Step</label>
+                        <input type="range" id="loadStepSlider" min="1" max="10" step="1" value="10">
+                        <span id="loadStepValue">10/10</span>
+                    </div>
+                    <div class="section-slider-group">
+                        <label>Load</label>
+                        <span id="loadStepFraction" style="font-size: 0.75rem;">100%</span>
+                    </div>
+                    <div id="loadStepStatus" style="font-size: 0.7rem; text-align: center; margin-top: 0.25rem;"></div>
+                </div>
                 <div id="sectionSliderContainer" class="section-slider-container hidden">
                     <label class="section-slider-title">✂ Section Plane</label>
                     <div class="section-slider-group">
@@ -726,6 +767,7 @@
             <div class="viewer-params-nav">
                 <button class="viewer-params-nav-btn active" data-target="densityThresholdContainer">Density</button>
                 <button class="viewer-params-nav-btn hidden-tab" data-target="displacementContainer">Displacement</button>
+                <button class="viewer-params-nav-btn hidden-tab" data-target="loadStepContainer">Load Step</button>
                 <button class="viewer-params-nav-btn hidden-tab" data-target="sectionSliderContainer">Section</button>
             </div>
         </div>
