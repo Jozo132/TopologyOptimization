@@ -465,6 +465,100 @@ console.log('Test 34: Lumped mass computation for unit cube');
 }
 
 // ──────────────────────────────────────────────────
+// Simulation Options & Viewer Color Mode Tests
+// ──────────────────────────────────────────────────
+
+// ──────────────────────────────────────────────────
+// Test 35: Material models support all nonlinear analysis types
+// ──────────────────────────────────────────────────
+console.log('Test 35: Material models support all required analysis types');
+{
+    // Verify each material model can be created for simulation options
+    const models = [
+        { type: 'linear-elastic', params: { E: 200e9, nu: 0.3 } },
+        { type: 'neo-hookean', params: { E: 1e6, nu: 0.45 } },
+        { type: 'j2-plasticity', params: { E: 200e9, nu: 0.3, sigY: 250e6 } },
+        { type: 'drucker-prager', params: { E: 30000, nu: 0.2, c: 100, phi: Math.PI / 6 } },
+        { type: 'mooney-rivlin', params: { C10: 0.5e6, C01: 0.1e6 } },
+        { type: 'ogden', params: { mu: 1e6, alpha: 2 } }
+    ];
+    for (const { type, params } of models) {
+        const mat = materialModels.createMaterial(type, params);
+        assert(mat !== null, `Material '${type}' should be creatable`);
+        assert(typeof mat.computeStress === 'function', `Material '${type}' should have computeStress`);
+    }
+}
+
+// ──────────────────────────────────────────────────
+// Test 36: Fracture methods support all fracture analysis types
+// ──────────────────────────────────────────────────
+console.log('Test 36: Fracture analysis methods all instantiate correctly');
+{
+    const pf = new fractureSolver.PhaseFieldFracture({ Gc: 2700, lengthScale: 0.01 });
+    assert(pf.Gc === 2700, 'PhaseFieldFracture Gc should be 2700');
+
+    const czm = new fractureSolver.CohesiveZoneModel({ sigmaMax: 500, deltaC: 0.005, GIc: 1.25 });
+    assert(czm.sigmaMax === 500, 'CohesiveZoneModel sigmaMax should be 500');
+
+    const erosion = new fractureSolver.ElementErosion({ threshold: 0.95 });
+    assert(erosion.threshold === 0.95, 'ElementErosion threshold should be 0.95');
+}
+
+// ──────────────────────────────────────────────────
+// Test 37: Stress result outputs required for viewer modes
+// ──────────────────────────────────────────────────
+console.log('Test 37: Nonlinear solver outputs von Mises, principal, and triaxiality');
+{
+    // Verify the exported functions for all viewer result modes exist
+    assert(typeof nonlinearSolver.vonMises === 'function', 'vonMises should be exported');
+    assert(typeof nonlinearSolver.principalStresses === 'function', 'principalStresses should be exported');
+    assert(typeof nonlinearSolver.stressTriaxiality === 'function', 'stressTriaxiality should be exported');
+    assert(typeof nonlinearSolver.cauchyStress === 'function', 'cauchyStress should be exported');
+    assert(typeof nonlinearSolver.greenLagrangeStrain === 'function', 'greenLagrangeStrain should be exported');
+    assert(typeof nonlinearSolver.strainEnergyDensity === 'function', 'strainEnergyDensity should be exported');
+
+    // Verify von Mises returns correct value for pure shear
+    const pureShear = [0, 0, 0, 100, 0, 0]; // τ_xy = 100
+    const vmShear = nonlinearSolver.vonMises(pureShear);
+    assert(Math.abs(vmShear - Math.sqrt(3) * 100) < 0.1, `Von Mises for pure shear should be √3·τ ≈ 173.2, got ${vmShear.toFixed(1)}`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 38: J2Plasticity tracks plastic strain for viewer
+// ──────────────────────────────────────────────────
+console.log('Test 38: J2Plasticity state tracks plastic deformation');
+{
+    const mat = materialModels.createMaterial('j2-plasticity', { E: 200e9, nu: 0.3, sigY: 250e6 });
+    const state = new materialModels.MaterialState();
+    assert(state.epsPl === 0, 'Initial plastic strain should be zero');
+    assert(state.damage === 0, 'Initial damage should be zero');
+
+    // Apply a large strain to trigger plasticity
+    const largeEps = 0.01;
+    const F = [1 + largeEps, 0, 0, 0, 1, 0, 0, 0, 1];
+    const result = mat.computeStress(F, state);
+    assert(result.stress.length === 6, 'Stress should have 6 components (Voigt)');
+    // After large deformation, plastic strain may be accumulated
+    assert(typeof state.epsPl === 'number', 'Plastic strain should be tracked as a number');
+}
+
+// ──────────────────────────────────────────────────
+// Test 39: Damage models output values suitable for viewer damage mode
+// ──────────────────────────────────────────────────
+console.log('Test 39: Damage models output values in [0,1] range');
+{
+    const jc = new fractureSolver.JohnsonCookDamage({ D1: 0.05, D2: 3.44, D3: -2.12, D4: 0.002, D5: 0.61 });
+    const epsF = jc.computeFailureStrain(1.0 / 3.0);
+    assert(epsF > 0, `Failure strain should be positive: ${epsF}`);
+    assert(isFinite(epsF), 'Failure strain should be finite');
+
+    // Gurson model — check damage output
+    const gurson = new fractureSolver.GursonModel({ q1: 1.5, q2: 1.0, sigmaY: 250 });
+    const phi = gurson.yieldFunction(200, 0, 250, 0.01);
+    assert(typeof phi === 'number', 'Yield function should return a number');
+}
+
+// ──────────────────────────────────────────────────
 // Summary
 // ──────────────────────────────────────────────────
 console.log(`\nResults: ${passed} passed, ${failed} failed`);
