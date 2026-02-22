@@ -100,6 +100,13 @@ class TopologyApp {
             betaInterval: 5,
             // Solution type: 'topology' | 'fea' | 'nonlinear' | 'fatigue'
             solutionType: 'topology',
+            // Linear FEA sub-type: 'static' | 'buckling' | 'shear'
+            feaSubType: 'static',
+            // Linear FEA buckling parameters
+            feaBucklingModes: 3,
+            feaBucklingImperfection: 0.01,
+            // Viewer result color mode persistence
+            resultColorMode: 'stress',
             // Nonlinear FEA parameters
             nonlinearLoadSteps: 10,
             nonlinearMaxNewtonIter: 20,
@@ -778,6 +785,28 @@ class TopologyApp {
             });
         }
 
+        // Linear FEA sub-type selector
+        const feaSubTypeEl = document.getElementById('feaSubType');
+        if (feaSubTypeEl) {
+            feaSubTypeEl.addEventListener('change', (e) => {
+                this.config.feaSubType = e.target.value;
+                this._updateFeaSubTypeUI(e.target.value);
+            });
+        }
+        // Linear FEA buckling parameters
+        const feaBucklingModesEl = document.getElementById('feaBucklingModes');
+        if (feaBucklingModesEl) {
+            feaBucklingModesEl.addEventListener('input', (e) => {
+                this.config.feaBucklingModes = parseInt(e.target.value) || 3;
+            });
+        }
+        const feaBucklingImperfectionEl = document.getElementById('feaBucklingImperfection');
+        if (feaBucklingImperfectionEl) {
+            feaBucklingImperfectionEl.addEventListener('input', (e) => {
+                this.config.feaBucklingImperfection = parseFloat(e.target.value) || 0.01;
+            });
+        }
+
         // Nonlinear analysis sub-type and material model
         const analysisTypeEl = document.getElementById('nonlinearAnalysisType');
         if (analysisTypeEl) {
@@ -837,8 +866,38 @@ class TopologyApp {
         if (resultColorModeEl) {
             resultColorModeEl.addEventListener('change', (e) => {
                 const mode = e.target.value;
+                this.config.resultColorMode = mode;
                 this.viewer.setColorMode(mode);
                 this._updateStressBarForMode(mode);
+            });
+        }
+
+        // Result overlay toggles
+        const resultShowDeformedEl = document.getElementById('resultShowDeformed');
+        if (resultShowDeformedEl) {
+            resultShowDeformedEl.addEventListener('change', (e) => {
+                this.viewer.showDeformed = e.target.checked;
+                this.viewer._needsRebuild = true;
+                this.viewer.draw();
+            });
+        }
+        const resultIsoSurfaceEl = document.getElementById('resultIsoSurface');
+        if (resultIsoSurfaceEl) {
+            resultIsoSurfaceEl.addEventListener('input', (e) => {
+                const val = parseInt(e.target.value);
+                const label = document.getElementById('resultIsoSurfaceValue');
+                if (label) label.textContent = val + '%';
+                this.viewer.isoSurfaceLevel = val / 100;
+                this.viewer._needsRebuild = true;
+                this.viewer.draw();
+            });
+        }
+        const resultClipPlaneEl = document.getElementById('resultClipPlane');
+        if (resultClipPlaneEl) {
+            resultClipPlaneEl.addEventListener('change', (e) => {
+                this.viewer.resultClipPlane = e.target.checked;
+                this.viewer._needsRebuild = true;
+                this.viewer.draw();
             });
         }
         
@@ -1300,6 +1359,12 @@ class TopologyApp {
             c.classList.toggle('selected', c.dataset.solution === solutionType);
         });
         this._applySolutionType(solutionType);
+        // Restore linear FEA sub-type
+        setValue('feaSubType', cfg.feaSubType || 'static');
+        setValue('feaBucklingModes', cfg.feaBucklingModes || 3);
+        setValue('feaBucklingImperfection', cfg.feaBucklingImperfection || 0.01);
+        this._updateFeaSubTypeUI(cfg.feaSubType || 'static');
+        // Restore nonlinear FEA params
         setValue('nonlinearLoadSteps', cfg.nonlinearLoadSteps || 10);
         setValue('nonlinearMaxNewtonIter', cfg.nonlinearMaxNewtonIter || 20);
         setValue('nonlinearTolerance', cfg.nonlinearTolerance || 1e-6);
@@ -1312,6 +1377,12 @@ class TopologyApp {
         setValue('bucklingImperfection', cfg.bucklingImperfection || 0.01);
         setValue('hardeningModulus', cfg.hardeningModulus || 1000);
         this._updateNonlinearSubTypeUI(cfg.nonlinearAnalysisType || 'large-deformation');
+        // Restore viewer result color mode
+        setValue('resultColorMode', cfg.resultColorMode || 'stress');
+        if (this.viewer) {
+            this.viewer.setColorMode(cfg.resultColorMode || 'stress');
+            this._updateStressBarForMode(cfg.resultColorMode || 'stress');
+        }
     }
 
     _applySelectionState(selectionState) {
@@ -1472,6 +1543,7 @@ class TopologyApp {
         this.config.solutionType = solutionType;
 
         const topoAlgorithmGroup = document.getElementById('topoAlgorithmGroup');
+        const feaParamsGroup = document.getElementById('feaParamsGroup');
         const nonlinearParamsGroup = document.getElementById('nonlinearParamsGroup');
         const geneticPanel = document.getElementById('geneticPanel');
         const solverParamsPanel = document.getElementById('solverParamsPanel');
@@ -1481,6 +1553,10 @@ class TopologyApp {
         // Show/hide algorithm selector
         if (topoAlgorithmGroup) {
             topoAlgorithmGroup.style.display = solutionType === 'topology' ? '' : 'none';
+        }
+        // Show/hide linear FEA params
+        if (feaParamsGroup) {
+            feaParamsGroup.style.display = solutionType === 'fea' ? '' : 'none';
         }
         // Show/hide nonlinear params
         if (nonlinearParamsGroup) {
@@ -1554,6 +1630,20 @@ class TopologyApp {
                 this.config.nonlinearMaterialModel = 'neo-hookean';
             }
         }
+    }
+
+    /**
+     * Show/hide linear FEA sub-type parameter groups based on selected sub-type.
+     * @param {string} subType - 'static'|'buckling'|'shear'
+     */
+    _updateFeaSubTypeUI(subType) {
+        const staticParams = document.getElementById('feaStaticParamsGroup');
+        const bucklingParams = document.getElementById('feaBucklingParamsGroup');
+        const shearParams = document.getElementById('feaShearParamsGroup');
+
+        if (staticParams) staticParams.style.display = subType === 'static' ? '' : 'none';
+        if (bucklingParams) bucklingParams.style.display = subType === 'buckling' ? '' : 'none';
+        if (shearParams) shearParams.style.display = subType === 'shear' ? '' : 'none';
     }
 
     /**
