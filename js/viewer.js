@@ -3372,7 +3372,7 @@ export class Viewer3D {
             const s = (t - 0.33) / 0.33;
             r = 1; g = s; b = 0;
         } else {
-            const s = (t - 0.66) / 0.34;
+            const s = (t - 0.66) / (1.0 - 0.66);
             r = 1; g = 1; b = s;
         }
         return { r, g, b };
@@ -3450,7 +3450,7 @@ export class Viewer3D {
             const s = (t - 0.33) / 0.33;
             r = 0.3 + 0.5 * s; g = 0; b = 0.4 + 0.3 * s;
         } else {
-            const s = (t - 0.66) / 0.34;
+            const s = (t - 0.66) / (1.0 - 0.66);
             r = 0.8 + 0.2 * s; g = 0.3 * s; b = 0.7 + 0.3 * s;
         }
         return { r, g, b };
