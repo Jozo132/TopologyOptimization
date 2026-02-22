@@ -6,8 +6,8 @@
  *   - Vertical force (upward) applied at the top center node
  *   - Fixed constraint at the bottom center node(s)
  *
- * Covers: large-deformation, stress, plastic-deformation, shear,
- *         buckling, and fracture/damage via all material models.
+ * Covers: large-deformation, stress distribution, plastic-deformation, shear,
+ *         compression, energy conservation, and multiple material models.
  *
  * Run with: node tests/test-nonlinear-compliance.js
  */
@@ -762,7 +762,7 @@ console.log(`\nTest ${testNumber}: Linear proportionality — 2× force ≈ 2× 
     const uy1 = result1.displacement[topCenterNode * 3 + 1];
     const uy2 = result2.displacement[topCenterNode * 3 + 1];
     const ratio = uy2 / uy1;
-    assert(Math.abs(ratio - 2.0) < 0.15,
+    assert(Math.abs(ratio - 2.0) < 0.05,
         `Force doubling: uy ratio = ${ratio.toFixed(3)} (expected ~2.0), uy1=${uy1.toExponential(3)}, uy2=${uy2.toExponential(3)}`);
 }
 
