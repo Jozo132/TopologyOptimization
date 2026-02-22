@@ -1212,6 +1212,29 @@ class TopologyApp {
             this.viewer.setVolumetricStressData(volData);
         }
 
+        // Update triaxiality scalar field for this step
+        if (snap.triaxiality) {
+            let minTri = Infinity, maxTri = -Infinity;
+            for (let i = 0; i < snap.triaxiality.length; i++) {
+                if (snap.triaxiality[i] < minTri) minTri = snap.triaxiality[i];
+                if (snap.triaxiality[i] > maxTri) maxTri = snap.triaxiality[i];
+            }
+            this.viewer.setScalarField('triaxiality', snap.triaxiality, minTri, maxTri);
+        }
+
+        // Update damage / phase-field for this step
+        if (snap.damageField) {
+            this.viewer.setDamageField(snap.damageField);
+            this.viewer.setScalarField('damage', snap.damageField, 0, 1);
+        }
+
+        // Update eroded elements for this step
+        if (snap.erodedElements) {
+            this.viewer.setErodedElements(new Set(snap.erodedElements));
+        } else {
+            this.viewer.setErodedElements(null);
+        }
+
         // Update displacement data for this step
         if (snap.displacement && this._nonlinearNx) {
             const U = snap.displacement;
@@ -2520,6 +2543,27 @@ class TopologyApp {
             } else {
                 this._nonlinearSnapshots = null;
                 if (loadStepContainer) loadStepContainer.classList.add('hidden');
+            }
+
+            // Set triaxiality scalar field for nonlinear results
+            if (result.nonlinearMode && result.triaxiality) {
+                let minTri = Infinity, maxTri = -Infinity;
+                for (let i = 0; i < result.triaxiality.length; i++) {
+                    if (result.triaxiality[i] < minTri) minTri = result.triaxiality[i];
+                    if (result.triaxiality[i] > maxTri) maxTri = result.triaxiality[i];
+                }
+                this.viewer.setScalarField('triaxiality', result.triaxiality, minTri, maxTri);
+            }
+
+            // Set damage / phase-field data for nonlinear fracture results
+            if (result.nonlinearMode && result.damageField) {
+                this.viewer.setDamageField(result.damageField);
+                this.viewer.setScalarField('damage', result.damageField, 0, 1);
+            }
+
+            // Set eroded elements for crack visualization
+            if (result.nonlinearMode && result.erodedElements) {
+                this.viewer.setErodedElements(new Set(result.erodedElements));
             }
             
             // Update viewer with final mesh
