@@ -2375,6 +2375,67 @@ console.log('Test 80: NonlinearSolver – small 2×1×1 mesh converges');
 }
 
 // ──────────────────────────────────────────────────
+// Test 81: Gasket template – basic properties
+// ──────────────────────────────────────────────────
+console.log('Test 81: Gasket template – basic properties');
+{
+    const gasket = importer.createGasketTemplate(30);
+    assert(gasket.type === 'gasket', `Gasket type should be 'gasket', got '${gasket.type}'`);
+    assert(gasket.nz === 1, `Gasket should be 2D (nz=1), got nz=${gasket.nz}`);
+    assert(gasket.nx >= 10, `Gasket nx should be >= 10, got ${gasket.nx}`);
+    assert(gasket.ny >= 8, `Gasket ny should be >= 8, got ${gasket.ny}`);
+    assert(gasket.nx > gasket.ny, `Gasket should be wider than tall (squished), nx=${gasket.nx}, ny=${gasket.ny}`);
+    assert(gasket.elements.length === gasket.nx * gasket.ny, `Gasket elements length should be nx*ny=${gasket.nx * gasket.ny}, got ${gasket.elements.length}`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 82: Gasket template – has voids (not all-solid)
+// ──────────────────────────────────────────────────
+console.log('Test 82: Gasket template – has voids (not all-solid)');
+{
+    const gasket = importer.createGasketTemplate(30);
+    let solidCount = 0;
+    for (let i = 0; i < gasket.elements.length; i++) {
+        if (gasket.elements[i] > 0.5) solidCount++;
+    }
+    assert(solidCount > 0, `Gasket should have some solid voxels, got ${solidCount}`);
+    assert(solidCount < gasket.elements.length, `Gasket should have voids (not all-solid): ${solidCount}/${gasket.elements.length}`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 83: Gasket template – boundary conditions
+// ──────────────────────────────────────────────────
+console.log('Test 83: Gasket template – boundary conditions');
+{
+    const gasket = importer.createTemplate('gasket', 30);
+    assert(gasket.forcePosition === 'top-center', `Gasket forcePosition should be 'top-center', got '${gasket.forcePosition}'`);
+    assert(gasket.forceDirection === 'down', `Gasket forceDirection should be 'down', got '${gasket.forceDirection}'`);
+    assert(gasket.constraintPositions === 'bottom', `Gasket constraintPositions should be 'bottom', got '${gasket.constraintPositions}'`);
+    assert(gasket.recommendedSolver === 'nonlinear', `Gasket recommendedSolver should be 'nonlinear', got '${gasket.recommendedSolver}'`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 84: Gasket template – scaling responds to resolution
+// ──────────────────────────────────────────────────
+console.log('Test 84: Gasket template – scaling responds to resolution');
+{
+    const gasket1mm = importer.createGasketTemplate(30);
+    const gasket2mm = importer.createGasketTemplate(15);
+    assert(gasket1mm.nx === 30, `Gasket at resolution 30 should have nx=30, got ${gasket1mm.nx}`);
+    assert(gasket2mm.nx === 15, `Gasket at resolution 15 should have nx=15, got ${gasket2mm.nx}`);
+    assert(gasket1mm.nx > gasket2mm.nx, `Higher resolution gasket should have more voxels in x`);
+}
+
+// ──────────────────────────────────────────────────
+// Test 85: Gasket template – getTemplateMaxDim returns 30
+// ──────────────────────────────────────────────────
+console.log('Test 85: Gasket template – getTemplateMaxDim returns 30');
+{
+    const maxDim = ModelImporter.getTemplateMaxDim('gasket');
+    assert(maxDim === 30, `Gasket max dim should be 30, got ${maxDim}`);
+}
+
+// ──────────────────────────────────────────────────
 // Summary
 // ──────────────────────────────────────────────────
 console.log(`\nResults: ${passed} passed, ${failed} failed`);
