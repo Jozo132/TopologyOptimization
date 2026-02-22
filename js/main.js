@@ -1522,6 +1522,12 @@ class TopologyApp {
             } else if (analysisType === 'fracture') {
                 materialModelEl.value = 'linear-elastic';
                 this.config.nonlinearMaterialModel = 'linear-elastic';
+            } else if (analysisType === 'buckling' || analysisType === 'shear') {
+                materialModelEl.value = 'linear-elastic';
+                this.config.nonlinearMaterialModel = 'linear-elastic';
+            } else {
+                materialModelEl.value = 'neo-hookean';
+                this.config.nonlinearMaterialModel = 'neo-hookean';
             }
         }
     }

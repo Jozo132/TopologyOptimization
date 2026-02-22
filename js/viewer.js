@@ -3268,8 +3268,8 @@ export class Viewer3D {
         }
 
         if (mode === 'strain') {
-            // Strain coloring uses the same normalized stress value as a proxy
-            // for strain energy density (proportional in linear regime)
+            // Strain energy density coloring: the normalized stress value is proportional
+            // to strain energy density in the linear elastic regime (σ·ε / 2 ∝ σ²)
             return this._heatmapColor(stress);
         }
 
