@@ -1214,6 +1214,8 @@ export class ModelImporter {
                 return this.createBridgeTemplate(granuleDensity);
             case 'cube':
                 return this.createCubeTemplate(granuleDensity);
+            case 'stress-cube':
+                return this.createStressCubeTemplate(granuleDensity);
             case 'gasket':
                 return this.createGasketTemplate(granuleDensity);
             default:
@@ -1226,7 +1228,7 @@ export class ModelImporter {
      * Used externally to convert voxel size in mm to a resolution value.
      */
     static getTemplateMaxDim(type) {
-        const dims = { beam: 30, bridge: 40, cube: 50, gasket: 30 };
+        const dims = { beam: 30, bridge: 40, cube: 50, 'stress-cube': 50, gasket: 30 };
         return dims[type] || 20;
     }
 
@@ -1275,7 +1277,10 @@ export class ModelImporter {
             // Predefined boundary conditions for cantilever beam
             forcePosition: 'right',           // Force at right end
             forceDirection: 'down',            // Force pointing down
-            constraintPositions: 'left'        // Fixed left end
+            constraintPositions: 'left',       // Fixed left end
+            recommendedParams: {
+                solutionType: 'topology'
+            }
         };
     }
 
@@ -1302,7 +1307,10 @@ export class ModelImporter {
             // Predefined boundary conditions for bridge
             forcePosition: 'top-center',       // Force at top center
             forceDirection: 'down',             // Force pointing down
-            constraintPositions: 'both-ends'    // Both ends fixed
+            constraintPositions: 'both-ends',   // Both ends fixed
+            recommendedParams: {
+                solutionType: 'topology'
+            }
         };
     }
 
@@ -1330,7 +1338,10 @@ export class ModelImporter {
             // Predefined boundary conditions for cube test
             forcePosition: 'top-center',  // Force at top center
             forceDirection: 'down',       // Force pointing down
-            constraintPositions: 'bottom-corners'  // Constraints at bottom 4 corners
+            constraintPositions: 'bottom-corners',  // Constraints at bottom 4 corners
+            recommendedParams: {
+                solutionType: 'fea'
+            }
         };
     }
 
@@ -1397,7 +1408,73 @@ export class ModelImporter {
             forceDirection: 'down',
             constraintPositions: 'bottom',
             // Hint that nonlinear analysis is recommended
-            recommendedSolver: 'nonlinear'
+            recommendedSolver: 'nonlinear',
+            recommendedParams: {
+                solutionType: 'nonlinear',
+                nonlinearAnalysisType: 'buckling'
+            }
+        };
+    }
+
+    createStressCubeTemplate(resolution = 50) {
+        // Stress Cube: 50×50×50 mm benchmark for material damage simulation
+        // Top-left half of top face has force UP, all bottom faces constrained
+        const baseSize = 50;
+        const scale = resolution / baseSize;
+        const scaledSize = Math.max(3, Math.round(baseSize * scale));
+        const nx = scaledSize;
+        const ny = scaledSize;
+        const nz = scaledSize;
+        const elements = new Float32Array(nx * ny * nz).fill(1);
+        const voxelSize = baseSize / nx;
+
+        // Generate painted force faces: top face (+Y), left half (x < nx/2)
+        const paintedForces = [];
+        const halfX = Math.floor(nx / 2);
+        for (let ez = 0; ez < nz; ez++) {
+            for (let ex = 0; ex < halfX; ex++) {
+                // Top face (+Y) of element at (ex, ny-1, ez), face index 3
+                paintedForces.push(`${ex},${ny - 1},${ez},3`);
+            }
+        }
+
+        // Generate painted constraint faces: all bottom face (-Y)
+        const paintedConstraints = [];
+        for (let ez = 0; ez < nz; ez++) {
+            for (let ex = 0; ex < nx; ex++) {
+                // Bottom face (-Y) of element at (ex, 0, ez), face index 2
+                paintedConstraints.push(`${ex},0,${ez},2`);
+            }
+        }
+
+        return {
+            nx,
+            ny,
+            nz,
+            elements,
+            type: 'stress-cube',
+            templateScale: { baseNx: baseSize, baseNy: baseSize, baseNz: baseSize },
+            voxelSize,
+            bounds: { minX: 0, maxX: baseSize, minY: 0, maxY: baseSize, minZ: 0, maxZ: baseSize },
+            originalVertices: this._generateBoxTriangles(baseSize, baseSize, baseSize),
+            // Force applied upward on left half of top face
+            forcePosition: 'top-left-half',
+            forceDirection: 'up',
+            constraintPositions: 'bottom',
+            // Pre-painted boundary conditions
+            paintedForces,
+            paintedConstraints,
+            // Recommended simulation parameters for damage analysis
+            recommendedSolver: 'nonlinear',
+            recommendedParams: {
+                solutionType: 'nonlinear',
+                nonlinearAnalysisType: 'fracture',
+                nonlinearLoadSteps: 20,
+                nonlinearMaxNewtonIter: 25,
+                nonlinearTolerance: 1e-6,
+                forceMagnitude: 5000,
+                material: 'steel'
+            }
         };
     }
 }

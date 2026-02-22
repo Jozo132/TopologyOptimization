@@ -231,6 +231,9 @@ class TopologyApp {
         document.getElementById('useCubeTemplate').addEventListener('click', () => {
             this.loadTemplate('cube');
         });
+        document.getElementById('useStressCubeTemplate').addEventListener('click', () => {
+            this.loadTemplate('stress-cube');
+        });
         document.getElementById('useGasketTemplate').addEventListener('click', () => {
             this.loadTemplate('gasket');
         });
@@ -2327,6 +2330,69 @@ class TopologyApp {
             }
         }
 
+        // Apply painted force/constraint faces from templates
+        if (model.paintedForces && model.paintedForces.length > 0) {
+            this.viewer.paintedForceFaces = new Set(model.paintedForces);
+        }
+        if (model.paintedConstraints && model.paintedConstraints.length > 0) {
+            this.viewer.paintedConstraintFaces = new Set(model.paintedConstraints);
+        }
+
+        // Pre-select recommended simulation parameters (user can still change them)
+        if (model.recommendedParams) {
+            const params = model.recommendedParams;
+            if (params.solutionType) {
+                this._applySolutionType(params.solutionType);
+                document.querySelectorAll('.solution-type-card').forEach(c => {
+                    c.classList.toggle('selected', c.dataset.solution === params.solutionType);
+                });
+            }
+            if (params.nonlinearAnalysisType) {
+                this.config.nonlinearAnalysisType = params.nonlinearAnalysisType;
+                const el = document.getElementById('nonlinearAnalysisType');
+                if (el) el.value = params.nonlinearAnalysisType;
+                this._updateNonlinearSubTypeUI(params.nonlinearAnalysisType);
+            }
+            if (params.nonlinearLoadSteps) {
+                this.config.nonlinearLoadSteps = params.nonlinearLoadSteps;
+                const el = document.getElementById('nonlinearLoadSteps');
+                if (el) el.value = params.nonlinearLoadSteps;
+            }
+            if (params.nonlinearMaxNewtonIter) {
+                this.config.nonlinearMaxNewtonIter = params.nonlinearMaxNewtonIter;
+                const el = document.getElementById('nonlinearMaxNewtonIter');
+                if (el) el.value = params.nonlinearMaxNewtonIter;
+            }
+            if (params.nonlinearTolerance) {
+                this.config.nonlinearTolerance = params.nonlinearTolerance;
+                const el = document.getElementById('nonlinearTolerance');
+                if (el) el.value = params.nonlinearTolerance;
+            }
+            if (params.forceMagnitude) {
+                this.config.forceMagnitude = params.forceMagnitude;
+                const el = document.getElementById('forceMagnitude');
+                if (el) el.value = params.forceMagnitude;
+            }
+            if (params.material && MATERIAL_PRESETS[params.material]) {
+                const preset = MATERIAL_PRESETS[params.material];
+                this.config.material = params.material;
+                this.config.youngsModulus = preset.youngsModulus;
+                this.config.poissonsRatio = preset.poissonsRatio;
+                this.config.yieldStrength = preset.yieldStrength;
+                if (preset.nonlinearType) {
+                    this.config.nonlinearMaterialModel = preset.nonlinearType;
+                }
+                const matEl = document.getElementById('materialSelect');
+                if (matEl) matEl.value = params.material;
+                const eEl = document.getElementById('youngsModulus');
+                if (eEl) eEl.value = preset.youngsModulus;
+                const nuEl = document.getElementById('poissonsRatio');
+                if (nuEl) nuEl.value = preset.poissonsRatio;
+                const yEl = document.getElementById('yieldStrength');
+                if (yEl) yEl.value = preset.yieldStrength;
+            }
+        }
+
         // Enable template defaults checkbox and check it
         const defaultsCheckbox = document.getElementById('useTemplateDefaults');
         if (defaultsCheckbox) {
@@ -2348,6 +2414,9 @@ class TopologyApp {
             infoHTML += `<br><strong>Defaults:</strong>`;
             if (model.forcePosition) infoHTML += ` Force: ${model.forcePosition} (${model.forceDirection || 'down'})`;
             if (model.constraintPositions) infoHTML += ` | Constraint: ${model.constraintPositions}`;
+        }
+        if (model.recommendedParams) {
+            infoHTML += `<br><strong>Recommended:</strong> ${model.recommendedParams.solutionType || ''} analysis`;
         }
         info.innerHTML = infoHTML;
         
