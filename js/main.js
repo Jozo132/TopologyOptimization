@@ -87,7 +87,19 @@ class TopologyApp {
             // Nonlinear FEA parameters
             nonlinearLoadSteps: 10,
             nonlinearMaxNewtonIter: 20,
-            nonlinearTolerance: 1e-6
+            nonlinearTolerance: 1e-6,
+            // Nonlinear analysis sub-type and material model
+            nonlinearAnalysisType: 'large-deformation',
+            nonlinearMaterialModel: 'neo-hookean',
+            // Fracture parameters
+            fractureMethod: 'phase-field',
+            fractureToughness: 2700,
+            fractureLengthScale: 0.01,
+            // Buckling parameters
+            bucklingModes: 3,
+            bucklingImperfection: 0.01,
+            // Plasticity parameters
+            hardeningModulus: 1000
         };
         
         // Benchmark tracking
@@ -741,6 +753,70 @@ class TopologyApp {
                 this.config.nonlinearTolerance = parseFloat(e.target.value) || 1e-6;
             });
         }
+
+        // Nonlinear analysis sub-type and material model
+        const analysisTypeEl = document.getElementById('nonlinearAnalysisType');
+        if (analysisTypeEl) {
+            analysisTypeEl.addEventListener('change', (e) => {
+                this.config.nonlinearAnalysisType = e.target.value;
+                this._updateNonlinearSubTypeUI(e.target.value);
+            });
+        }
+        const materialModelEl = document.getElementById('nonlinearMaterialModel');
+        if (materialModelEl) {
+            materialModelEl.addEventListener('change', (e) => {
+                this.config.nonlinearMaterialModel = e.target.value;
+            });
+        }
+        // Fracture parameters
+        const fractureMethodEl = document.getElementById('fractureMethod');
+        if (fractureMethodEl) {
+            fractureMethodEl.addEventListener('change', (e) => {
+                this.config.fractureMethod = e.target.value;
+            });
+        }
+        const fractureToughnessEl = document.getElementById('fractureToughness');
+        if (fractureToughnessEl) {
+            fractureToughnessEl.addEventListener('input', (e) => {
+                this.config.fractureToughness = parseFloat(e.target.value) || 2700;
+            });
+        }
+        const fractureLengthScaleEl = document.getElementById('fractureLengthScale');
+        if (fractureLengthScaleEl) {
+            fractureLengthScaleEl.addEventListener('input', (e) => {
+                this.config.fractureLengthScale = parseFloat(e.target.value) || 0.01;
+            });
+        }
+        // Buckling parameters
+        const bucklingModesEl = document.getElementById('bucklingModes');
+        if (bucklingModesEl) {
+            bucklingModesEl.addEventListener('input', (e) => {
+                this.config.bucklingModes = parseInt(e.target.value) || 3;
+            });
+        }
+        const bucklingImperfectionEl = document.getElementById('bucklingImperfection');
+        if (bucklingImperfectionEl) {
+            bucklingImperfectionEl.addEventListener('input', (e) => {
+                this.config.bucklingImperfection = parseFloat(e.target.value) || 0.01;
+            });
+        }
+        // Plasticity parameters
+        const hardeningModulusEl = document.getElementById('hardeningModulus');
+        if (hardeningModulusEl) {
+            hardeningModulusEl.addEventListener('input', (e) => {
+                this.config.hardeningModulus = parseFloat(e.target.value) || 1000;
+            });
+        }
+
+        // Result display mode selector
+        const resultColorModeEl = document.getElementById('resultColorMode');
+        if (resultColorModeEl) {
+            resultColorModeEl.addEventListener('change', (e) => {
+                const mode = e.target.value;
+                this.viewer.setColorMode(mode);
+                this._updateStressBarForMode(mode);
+            });
+        }
         
         document.getElementById('runOptimization').addEventListener('click', () => {
             this.runOptimization();
@@ -1203,6 +1279,15 @@ class TopologyApp {
         setValue('nonlinearLoadSteps', cfg.nonlinearLoadSteps || 10);
         setValue('nonlinearMaxNewtonIter', cfg.nonlinearMaxNewtonIter || 20);
         setValue('nonlinearTolerance', cfg.nonlinearTolerance || 1e-6);
+        setValue('nonlinearAnalysisType', cfg.nonlinearAnalysisType || 'large-deformation');
+        setValue('nonlinearMaterialModel', cfg.nonlinearMaterialModel || 'neo-hookean');
+        setValue('fractureMethod', cfg.fractureMethod || 'phase-field');
+        setValue('fractureToughness', cfg.fractureToughness || 2700);
+        setValue('fractureLengthScale', cfg.fractureLengthScale || 0.01);
+        setValue('bucklingModes', cfg.bucklingModes || 3);
+        setValue('bucklingImperfection', cfg.bucklingImperfection || 0.01);
+        setValue('hardeningModulus', cfg.hardeningModulus || 1000);
+        this._updateNonlinearSubTypeUI(cfg.nonlinearAnalysisType || 'large-deformation');
     }
 
     _applySelectionState(selectionState) {
@@ -1415,6 +1500,56 @@ class TopologyApp {
         }
     }
 
+    /**
+     * Show/hide nonlinear analysis sub-type parameter groups based on selected analysis type.
+     * @param {string} analysisType - 'large-deformation'|'buckling'|'plastic-deformation'|'fracture'|'shear'
+     */
+    _updateNonlinearSubTypeUI(analysisType) {
+        const fractureParams = document.getElementById('fractureParamsGroup');
+        const bucklingParams = document.getElementById('bucklingParamsGroup');
+        const plasticParams = document.getElementById('plasticParamsGroup');
+        const materialModelEl = document.getElementById('nonlinearMaterialModel');
+
+        if (fractureParams) fractureParams.style.display = analysisType === 'fracture' ? '' : 'none';
+        if (bucklingParams) bucklingParams.style.display = analysisType === 'buckling' ? '' : 'none';
+        if (plasticParams) plasticParams.style.display = analysisType === 'plastic-deformation' ? '' : 'none';
+
+        // Auto-select appropriate material model for analysis type
+        if (materialModelEl) {
+            if (analysisType === 'plastic-deformation') {
+                materialModelEl.value = 'j2-plasticity';
+                this.config.nonlinearMaterialModel = 'j2-plasticity';
+            } else if (analysisType === 'fracture') {
+                materialModelEl.value = 'linear-elastic';
+                this.config.nonlinearMaterialModel = 'linear-elastic';
+            } else if (analysisType === 'buckling' || analysisType === 'shear') {
+                materialModelEl.value = 'linear-elastic';
+                this.config.nonlinearMaterialModel = 'linear-elastic';
+            } else {
+                materialModelEl.value = 'neo-hookean';
+                this.config.nonlinearMaterialModel = 'neo-hookean';
+            }
+        }
+    }
+
+    /**
+     * Update the stress bar label and unit based on the selected result color mode.
+     * @param {string} mode - Color mode identifier
+     */
+    _updateStressBarForMode(mode) {
+        const labels = {
+            stress: ['Stress (N/mm² = MPa)', 'MPa'],
+            strain: ['Strain Energy Density', ''],
+            displacement: ['Displacement Magnitude', 'mm'],
+            density: ['Material Density', ''],
+            damage: ['Damage (0=intact, 1=failed)', ''],
+            triaxiality: ['Stress Triaxiality', ''],
+            plasticStrain: ['Equivalent Plastic Strain', '']
+        };
+        const [label, unit] = labels[mode] || labels.stress;
+        this.viewer.setStressBarLabel(label, unit);
+    }
+
     _applyManufacturingPreset(method) {
         const constrainToSolid = document.getElementById('constrainToSolid');
         const preventVoids = document.getElementById('preventVoids');
@@ -1510,6 +1645,15 @@ class TopologyApp {
 
         document.getElementById('optimizationResults').innerHTML = '<em>Solution reset. Configuration, forces, constraints and model are preserved.</em>';
         document.getElementById('exportSection').classList.add('hidden');
+
+        // Hide result display controls
+        const resultDisplayReset = document.getElementById('resultDisplayContainer');
+        if (resultDisplayReset) resultDisplayReset.classList.add('hidden');
+        // Hide displacement and load step containers
+        const dispReset = document.getElementById('displacementContainer');
+        if (dispReset) dispReset.classList.add('hidden');
+        const loadStepReset = document.getElementById('loadStepContainer');
+        if (loadStepReset) loadStepReset.classList.add('hidden');
 
         // Stay in step 6 (solve & export) for re-running
         this.workflow.goToStep(6);
@@ -2098,6 +2242,8 @@ class TopologyApp {
         if (dispContainerReset) dispContainerReset.classList.add('hidden');
         const loadStepContainerReset = document.getElementById('loadStepContainer');
         if (loadStepContainerReset) loadStepContainerReset.classList.add('hidden');
+        const resultDisplayReset = document.getElementById('resultDisplayContainer');
+        if (resultDisplayReset) resultDisplayReset.classList.add('hidden');
         this._nonlinearSnapshots = null;
         this.viewer.draw();
         
@@ -2333,6 +2479,10 @@ class TopologyApp {
             
             // Show export section within step 6
             document.getElementById('exportSection').classList.remove('hidden');
+
+            // Show result display controls for toggling color mode
+            const resultDisplayContainer = document.getElementById('resultDisplayContainer');
+            if (resultDisplayContainer) resultDisplayContainer.classList.remove('hidden');
             
             console.log('Optimization completed successfully');
             

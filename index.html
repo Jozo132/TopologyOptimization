@@ -183,6 +183,29 @@
                     <div id="nonlinearParamsGroup" class="control-group" style="margin-top: 1rem; display: none;">
                         <label style="font-weight: 600; font-size: 0.875rem; display: block; margin-bottom: 0.5rem;">Nonlinear FEA Parameters</label>
                         <div class="control-group">
+                            <label>Analysis Type</label>
+                            <select id="nonlinearAnalysisType">
+                                <option value="large-deformation" selected>Large Deformation (default)</option>
+                                <option value="buckling">Buckling Analysis</option>
+                                <option value="plastic-deformation">Plastic Deformation</option>
+                                <option value="fracture">Fracture / Tearing</option>
+                                <option value="shear">Shear Analysis</option>
+                            </select>
+                            <small style="display: block; color: #666; margin-top: 0.25rem;">Select the type of nonlinear analysis to perform</small>
+                        </div>
+                        <div class="control-group">
+                            <label>Material Model</label>
+                            <select id="nonlinearMaterialModel">
+                                <option value="neo-hookean" selected>Neo-Hookean (hyperelastic)</option>
+                                <option value="linear-elastic">Linear Elastic</option>
+                                <option value="j2-plasticity">J2 Plasticity (von Mises)</option>
+                                <option value="mooney-rivlin">Mooney-Rivlin (rubber-like)</option>
+                                <option value="drucker-prager">Drucker-Prager (soil/concrete)</option>
+                                <option value="ogden">Ogden (hyperelastic)</option>
+                            </select>
+                            <small style="display: block; color: #666; margin-top: 0.25rem;">Constitutive model for material behavior</small>
+                        </div>
+                        <div class="control-group">
                             <label>Load Steps</label>
                             <input type="number" id="nonlinearLoadSteps" value="10" min="1" max="100" step="1">
                             <small style="display: block; color: #666; margin-top: 0.25rem;">Number of incremental load steps (more = more stable, slower)</small>
@@ -194,6 +217,51 @@
                         <div class="control-group">
                             <label>Convergence Tolerance</label>
                             <input type="number" id="nonlinearTolerance" value="1e-6" min="1e-12" max="1e-2" step="1e-6">
+                        </div>
+                        <!-- Fracture-specific parameters (shown only for fracture analysis) -->
+                        <div id="fractureParamsGroup" class="control-group" style="display: none;">
+                            <label style="font-weight: 600; font-size: 0.8rem; display: block; margin-bottom: 0.5rem;">Fracture Parameters</label>
+                            <div class="control-group">
+                                <label>Fracture Method</label>
+                                <select id="fractureMethod">
+                                    <option value="phase-field" selected>Phase-Field Fracture</option>
+                                    <option value="cohesive-zone">Cohesive Zone Model (CZM)</option>
+                                    <option value="element-erosion">Element Erosion</option>
+                                </select>
+                            </div>
+                            <div class="control-group">
+                                <label>Critical Energy Release Rate (G_c)</label>
+                                <input type="number" id="fractureToughness" value="2700" min="0" step="100">
+                                <small style="display: block; color: #666; margin-top: 0.25rem;">J/m² — resistance to crack growth</small>
+                            </div>
+                            <div class="control-group">
+                                <label>Fracture Length Scale</label>
+                                <input type="number" id="fractureLengthScale" value="0.01" min="0.001" max="1" step="0.001">
+                                <small style="display: block; color: #666; margin-top: 0.25rem;">Phase-field regularization width</small>
+                            </div>
+                        </div>
+                        <!-- Buckling-specific parameters -->
+                        <div id="bucklingParamsGroup" class="control-group" style="display: none;">
+                            <label style="font-weight: 600; font-size: 0.8rem; display: block; margin-bottom: 0.5rem;">Buckling Parameters</label>
+                            <div class="control-group">
+                                <label>Number of Buckling Modes</label>
+                                <input type="number" id="bucklingModes" value="3" min="1" max="10" step="1">
+                                <small style="display: block; color: #666; margin-top: 0.25rem;">Number of eigenvalue buckling modes to extract</small>
+                            </div>
+                            <div class="control-group">
+                                <label>Geometric Imperfection Scale</label>
+                                <input type="number" id="bucklingImperfection" value="0.01" min="0" max="1" step="0.001">
+                                <small style="display: block; color: #666; margin-top: 0.25rem;">Magnitude of initial geometric imperfection (fraction of model size)</small>
+                            </div>
+                        </div>
+                        <!-- Plastic deformation specific parameters -->
+                        <div id="plasticParamsGroup" class="control-group" style="display: none;">
+                            <label style="font-weight: 600; font-size: 0.8rem; display: block; margin-bottom: 0.5rem;">Plasticity Parameters</label>
+                            <div class="control-group">
+                                <label>Hardening Modulus (MPa)</label>
+                                <input type="number" id="hardeningModulus" value="1000" min="0" step="100">
+                                <small style="display: block; color: #666; margin-top: 0.25rem;">Post-yield tangent modulus for isotropic hardening</small>
+                            </div>
                         </div>
                     </div>
                     <div class="transform-controls hidden" id="transformControls">
@@ -746,6 +814,27 @@
                     </div>
                     <div id="loadStepStatus" style="font-size: 0.7rem; text-align: center; margin-top: 0.25rem;"></div>
                 </div>
+                <div id="resultDisplayContainer" class="section-slider-container hidden">
+                    <label class="section-slider-title">🎨 Result Display</label>
+                    <div class="section-slider-group">
+                        <label>Color Mode</label>
+                        <select id="resultColorMode" style="flex: 1; font-size: 0.75rem; padding: 0.15rem 0.25rem;">
+                            <option value="stress" selected>Von Mises Stress</option>
+                            <option value="strain">Strain Energy</option>
+                            <option value="displacement">Displacement Magnitude</option>
+                            <option value="density">Material Density</option>
+                            <option value="plasticStrain">Plastic Strain</option>
+                            <option value="triaxiality">Stress Triaxiality</option>
+                            <option value="damage">Damage / Phase Field</option>
+                        </select>
+                    </div>
+                    <div class="section-slider-group">
+                        <label>
+                            <input type="checkbox" id="resultAutoRange" checked>
+                            Auto Range
+                        </label>
+                    </div>
+                </div>
                 <div id="sectionSliderContainer" class="section-slider-container hidden">
                     <label class="section-slider-title">✂ Section Plane</label>
                     <div class="section-slider-group">
@@ -769,6 +858,7 @@
                 <button class="viewer-params-nav-btn active" data-target="densityThresholdContainer">Density</button>
                 <button class="viewer-params-nav-btn hidden-tab" data-target="displacementContainer">Displacement</button>
                 <button class="viewer-params-nav-btn hidden-tab" data-target="loadStepContainer">Load Step</button>
+                <button class="viewer-params-nav-btn hidden-tab" data-target="resultDisplayContainer">Result</button>
                 <button class="viewer-params-nav-btn hidden-tab" data-target="sectionSliderContainer">Section</button>
             </div>
         </div>

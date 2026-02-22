@@ -3219,10 +3219,10 @@ export class Viewer3D {
 
     /**
      * Set the color mode for rendering.
-     * @param {'stress'|'damage'|'displacement'|'density'|'triaxiality'|'plasticStrain'} mode
+     * @param {'stress'|'strain'|'damage'|'displacement'|'density'|'triaxiality'|'plasticStrain'} mode
      */
     setColorMode(mode) {
-        const validModes = ['stress', 'damage', 'displacement', 'density', 'triaxiality', 'plasticStrain'];
+        const validModes = ['stress', 'strain', 'damage', 'displacement', 'density', 'triaxiality', 'plasticStrain'];
         if (!validModes.includes(mode)) return;
         this._colorMode = mode;
         this._needsRebuild = true;
@@ -3265,6 +3265,22 @@ export class Viewer3D {
             const d = Math.max(0, Math.min(1, this._damageField[cellIdx] || 0));
             // Intact (0): blue, Damaged (1): bright red
             return { r: d, g: 0.1 * (1 - d), b: 0.8 * (1 - d) };
+        }
+
+        if (mode === 'strain') {
+            // Strain energy density coloring: the normalized stress value is proportional
+            // to strain energy density in the linear elastic regime (σ·ε / 2 ∝ σ²)
+            return this._heatmapColor(stress);
+        }
+
+        if (mode === 'density') {
+            // Color by material density: blue (0) → green (0.5) → red (1)
+            const dMap = this._cachedDensityMap;
+            if (dMap && dMap[cellIdx] !== undefined) {
+                const d = Math.max(0, Math.min(1, dMap[cellIdx]));
+                return this._heatmapColor(d);
+            }
+            return { r: 0.5, g: 0.5, b: 0.5 };
         }
 
         if (mode === 'displacement' && this.displacementData) {
