@@ -18,6 +18,8 @@ import { PhaseFieldFracture, ElementErosion } from './fracture-solver.js';
 const EPSILON = 1e-12;
 const MAX_CG_ITERATIONS = 400;
 const CG_TOLERANCE = 1e-8;
+const ELEMENT_DOFS = 24;          // 8 nodes × 3 DOF per node
+const ELEMENT_KE_SIZE = ELEMENT_DOFS * ELEMENT_DOFS; // 576
 
 /** 2×2×2 Gauss quadrature: points and weights */
 const GP = 1.0 / Math.sqrt(3.0);
@@ -999,7 +1001,7 @@ export class NonlinearSolver {
         for (let e = 0; e < elemCount; e++) {
             // Skip eroded elements (fully damaged)
             if (erodedSet && erodedSet.has(e)) {
-                elemTangents[e] = new Float64Array(576); // zero stiffness
+                elemTangents[e] = new Float64Array(ELEMENT_KE_SIZE); // zero stiffness
                 newElemStates[e] = elemStates ? elemStates[e] : null;
                 continue;
             }

@@ -2415,8 +2415,8 @@ class TopologyApp {
             if (model.forcePosition) infoHTML += ` Force: ${model.forcePosition} (${model.forceDirection || 'down'})`;
             if (model.constraintPositions) infoHTML += ` | Constraint: ${model.constraintPositions}`;
         }
-        if (model.recommendedParams) {
-            infoHTML += `<br><strong>Recommended:</strong> ${model.recommendedParams.solutionType || ''} analysis`;
+        if (model.recommendedParams && model.recommendedParams.solutionType) {
+            infoHTML += `<br><strong>Recommended:</strong> ${model.recommendedParams.solutionType} analysis`;
         }
         info.innerHTML = infoHTML;
         
