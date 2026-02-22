@@ -1718,11 +1718,16 @@ class TopologyOptimizerWorker3D {
                 for (let i = 0; i < fixeddofs.length; i++) constraints[i] = fixeddofs[i];
 
                 // Run nonlinear solver
+                const enableDamage = config.nonlinearAnalysisType === 'fracture';
                 const nlSolver = new NonlinearSolver({
                     numLoadSteps: config.nonlinearLoadSteps || 10,
                     maxNewtonIter: config.nonlinearMaxNewtonIter || 20,
                     residualTol: config.nonlinearTolerance || 1e-6,
-                    incrementTol: config.nonlinearTolerance || 1e-6
+                    incrementTol: config.nonlinearTolerance || 1e-6,
+                    enableDamage,
+                    fractureToughness: config.fractureToughness || 2700,
+                    fractureLengthScale: config.fractureLengthScale || 0.01,
+                    erosionThreshold: 0.95
                 });
 
                 let nlStep = 0;
@@ -1761,14 +1766,25 @@ class TopologyOptimizerWorker3D {
                 this._lastVolumetricIteration = 1;
 
                 // Serialize step snapshots for time slider
-                const stepSnapshots = (nlResult.stepSnapshots || []).map(snap => ({
-                    step: snap.step,
-                    loadFraction: snap.loadFraction,
-                    displacement: Float32Array.from(snap.displacement),
-                    vonMisesStress: Float32Array.from(snap.vonMisesStress),
-                    converged: snap.converged,
-                    residualNorm: snap.residualNorm
-                }));
+                const stepSnapshots = (nlResult.stepSnapshots || []).map(snap => {
+                    const s = {
+                        step: snap.step,
+                        loadFraction: snap.loadFraction,
+                        displacement: Float32Array.from(snap.displacement),
+                        vonMisesStress: Float32Array.from(snap.vonMisesStress),
+                        converged: snap.converged,
+                        residualNorm: snap.residualNorm
+                    };
+                    if (snap.triaxiality) s.triaxiality = Float32Array.from(snap.triaxiality);
+                    if (snap.damageField) s.damageField = Float32Array.from(snap.damageField);
+                    if (snap.erodedElements) s.erodedElements = snap.erodedElements;
+                    return s;
+                });
+
+                // Extract triaxiality and damage from final result
+                const triaxiality = nlResult.triaxiality ? Float32Array.from(nlResult.triaxiality) : null;
+                const damageField = nlResult.damageField ? Float32Array.from(nlResult.damageField) : null;
+                const erodedElements = nlResult.erodedElements || null;
 
                 this._cleanupGPU();
                 postMessage({
@@ -1790,6 +1806,9 @@ class TopologyOptimizerWorker3D {
                         failedAtStep: nlResult.failedAtStep || -1,
                         stepSnapshots,
                         displacementU,
+                        triaxiality,
+                        damageField,
+                        erodedElements,
                         timing: {
                             totalTime,
                             avgIterationTime: totalTime,

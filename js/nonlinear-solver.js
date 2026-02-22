@@ -9,6 +9,7 @@
  */
 
 import { createMaterial, MaterialState } from './material-models.js';
+import { PhaseFieldFracture, ElementErosion } from './fracture-solver.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -17,6 +18,8 @@ import { createMaterial, MaterialState } from './material-models.js';
 const EPSILON = 1e-12;
 const MAX_CG_ITERATIONS = 400;
 const CG_TOLERANCE = 1e-8;
+const ELEMENT_DOFS = 24;          // 8 nodes × 3 DOF per node
+const ELEMENT_KE_SIZE = ELEMENT_DOFS * ELEMENT_DOFS; // 576
 
 /** 2×2×2 Gauss quadrature: points and weights */
 const GP = 1.0 / Math.sqrt(3.0);
@@ -723,6 +726,12 @@ export class NonlinearSolver {
         /** @type {number} */ this.lineSearchBeta = c.lineSearchBeta || 0.5;
         /** @type {number} */ this.cgTolerance = c.cgTolerance || CG_TOLERANCE;
         /** @type {number} */ this.cgMaxIter = c.cgMaxIter || MAX_CG_ITERATIONS;
+
+        // Fracture / damage configuration
+        /** @type {boolean} */ this.enableDamage = c.enableDamage || false;
+        /** @type {number} */ this.fractureToughness = c.fractureToughness || 2700;
+        /** @type {number} */ this.fractureLengthScale = c.fractureLengthScale || 0.01;
+        /** @type {number} */ this.erosionThreshold = c.erosionThreshold || 0.95;
     }
 
     /**
@@ -761,6 +770,49 @@ export class NonlinearSolver {
         let converged = true;
         let failedAtStep = -1;
 
+        // Phase-field damage tracking
+        let damageField = null;
+        let damageHistory = null;
+        let erodedSet = null;
+        let phaseField = null;
+        let erosion = null;
+
+        if (this.enableDamage) {
+            // Build flat connectivity and nodeCoords arrays for fracture solver
+            const connectivity = new Int32Array(mesh.elemCount * 8);
+            const nodeCoords = new Float64Array(mesh.nodeCount * 3);
+            for (let e = 0; e < mesh.elemCount; e++) {
+                const nodes = mesh.getElementNodes(e);
+                for (let n = 0; n < 8; n++) connectivity[e * 8 + n] = nodes[n];
+            }
+            for (let n = 0; n < mesh.nodeCount; n++) {
+                const c = mesh.getNodeCoords(n);
+                nodeCoords[n * 3]     = c[0];
+                nodeCoords[n * 3 + 1] = c[1];
+                nodeCoords[n * 3 + 2] = c[2];
+            }
+
+            // Material properties for energy split
+            const E  = material.E  || 210000;
+            const nu = material.nu || 0.3;
+
+            phaseField = new PhaseFieldFracture({
+                Gc: this.fractureToughness,
+                lengthScale: this.fractureLengthScale,
+                E, nu
+            });
+            erosion = new ElementErosion({ threshold: this.erosionThreshold });
+
+            const init = phaseField.initializeField(mesh.elemCount);
+            damageField = init.d;
+            damageHistory = init.H;
+            erodedSet = erosion.erodedElements;
+
+            // Attach flat arrays to mesh for fracture solver access
+            mesh._fractureConnectivity = connectivity;
+            mesh._fractureNodeCoords = nodeCoords;
+        }
+
         // Per-step snapshots for time slider playback
         const stepSnapshots = [];
 
@@ -774,25 +826,64 @@ export class NonlinearSolver {
                 f_ext[i] = loads[i] * loadFraction;
             }
 
+            // Zero out forces on eroded element DOFs
+            if (erodedSet && erodedSet.size > 0) {
+                for (const e of erodedSet) {
+                    const nodes = mesh.getElementNodes(e);
+                    for (let n = 0; n < 8; n++) {
+                        const nid = nodes[n];
+                        f_ext[nid * 3]     = 0;
+                        f_ext[nid * 3 + 1] = 0;
+                        f_ext[nid * 3 + 2] = 0;
+                    }
+                }
+            }
+
             // Newton-Raphson iterations
             const result = this._newtonLoop(
                 mesh, material, u, f_ext, fixedDOFs, ndof, elemStates,
-                step, progressCallback
+                step, progressCallback, damageField, phaseField, erodedSet
             );
 
             totalIterations += result.iterations;
             elemStates = result.elemStates;
 
+            // Update damage field after mechanical equilibrium (staggered scheme)
+            if (this.enableDamage && phaseField) {
+                const fractureMesh = {
+                    nElements: mesh.elemCount,
+                    connectivity: mesh._fractureConnectivity,
+                    nodeCoords: mesh._fractureNodeCoords
+                };
+                const updated = phaseField.updateDamageField(
+                    fractureMesh, u, material, damageField, damageHistory
+                );
+                damageField = updated.d;
+                damageHistory = updated.H;
+
+                // Check for element erosion
+                erosion.checkAndErode(damageField);
+                erodedSet = erosion.erodedElements;
+            }
+
             // Recover stresses at this step for the snapshot
             const stepStress = this._recoverStresses(mesh, material, u, elemStates);
-            stepSnapshots.push({
+            const snapData = {
                 step,
                 loadFraction,
                 displacement: new Float64Array(u),
                 vonMisesStress: stepStress.vonMisesStress,
+                triaxiality: stepStress.triaxiality,
                 converged: result.converged,
                 residualNorm: result.residualNorm || 0
-            });
+            };
+            if (damageField) {
+                snapData.damageField = new Float64Array(damageField);
+            }
+            if (erodedSet && erodedSet.size > 0) {
+                snapData.erodedElements = Array.from(erodedSet);
+            }
+            stepSnapshots.push(snapData);
 
             if (!result.converged) {
                 converged = false;
@@ -804,7 +895,7 @@ export class NonlinearSolver {
         // Final stress recovery
         const stressResult = this._recoverStresses(mesh, material, u, elemStates);
 
-        return {
+        const result = {
             displacement: u,
             cauchyStress: stressResult.cauchyStress,
             vonMisesStress: stressResult.vonMisesStress,
@@ -817,6 +908,15 @@ export class NonlinearSolver {
             stepSnapshots,
             failedAtStep
         };
+
+        if (damageField) {
+            result.damageField = damageField;
+        }
+        if (erodedSet && erodedSet.size > 0) {
+            result.erodedElements = Array.from(erodedSet);
+        }
+
+        return result;
     }
 
     /**
@@ -844,14 +944,15 @@ export class NonlinearSolver {
      * Newton-Raphson loop for a single load step.
      * @private
      */
-    _newtonLoop(mesh, material, u, f_ext, fixedDOFs, ndof, elemStates, step, progressCallback) {
+    _newtonLoop(mesh, material, u, f_ext, fixedDOFs, ndof, elemStates, step, progressCallback, damageField, phaseField, erodedSet) {
         let converged = false;
         let iter = 0;
         let residualNorm = Infinity;
 
         for (iter = 0; iter < this.maxNewtonIter; iter++) {
             const assembled = this._assembleAndSolve(
-                mesh, material, u, f_ext, fixedDOFs, ndof, elemStates
+                mesh, material, u, f_ext, fixedDOFs, ndof, elemStates,
+                damageField, phaseField, erodedSet
             );
 
             residualNorm = assembled.residualNorm;
@@ -890,7 +991,7 @@ export class NonlinearSolver {
      * Assemble global residual and tangent, solve for displacement increment.
      * @private
      */
-    _assembleAndSolve(mesh, material, u, f_ext, fixedDOFs, ndof, elemStates) {
+    _assembleAndSolve(mesh, material, u, f_ext, fixedDOFs, ndof, elemStates, damageField, phaseField, erodedSet) {
         const elemCount = mesh.elemCount;
         const fint_global = new Float64Array(ndof);
         const elemTangents = new Array(elemCount);
@@ -898,6 +999,13 @@ export class NonlinearSolver {
 
         // Element loop: compute internal forces and tangent stiffness
         for (let e = 0; e < elemCount; e++) {
+            // Skip eroded elements (fully damaged)
+            if (erodedSet && erodedSet.has(e)) {
+                elemTangents[e] = new Float64Array(ELEMENT_KE_SIZE); // zero stiffness
+                newElemStates[e] = elemStates ? elemStates[e] : null;
+                continue;
+            }
+
             const nodes = mesh.getElementNodes(e);
             const nodeCoords = new Float64Array(24);
             const u_elem = new Float64Array(24);
@@ -916,6 +1024,13 @@ export class NonlinearSolver {
             const res = elementForceAndTangent(
                 nodeCoords, u_elem, material, elemStates ? elemStates[e] : null
             );
+
+            // Apply stiffness degradation from phase-field damage
+            if (damageField && phaseField && damageField[e] > 0) {
+                phaseField.degradeStiffness(res.Kt, damageField[e]);
+                const g = phaseField.degradation(damageField[e]);
+                for (let i = 0; i < 24; i++) res.fint[i] *= g;
+            }
 
             elemTangents[e] = res.Kt;
             newElemStates[e] = res.newState;

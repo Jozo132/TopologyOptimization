@@ -1799,6 +1799,10 @@ export class Viewer3D {
             const vy = Math.min(Math.max(Math.floor(cy - fny * 0.5), 0), ny - 1);
             const vz = Math.min(Math.max(Math.floor(cz - fnz * 0.5), 0), nz - 1);
             const cellIdx = vx + vy * nx + vz * nx * ny;
+
+            // Skip eroded (fully damaged) elements — they represent cracks
+            if (this._erodedElements && this._erodedElements.has(cellIdx)) continue;
+
             const stressRaw = stressMap ? stressMap[cellIdx] : 0;
             const stress = Math.max(0, Math.min(1, stressRaw || 0));
 

@@ -231,6 +231,9 @@ class TopologyApp {
         document.getElementById('useCubeTemplate').addEventListener('click', () => {
             this.loadTemplate('cube');
         });
+        document.getElementById('useStressCubeTemplate').addEventListener('click', () => {
+            this.loadTemplate('stress-cube');
+        });
         document.getElementById('useGasketTemplate').addEventListener('click', () => {
             this.loadTemplate('gasket');
         });
@@ -1210,6 +1213,29 @@ class TopologyApp {
                 }
             }
             this.viewer.setVolumetricStressData(volData);
+        }
+
+        // Update triaxiality scalar field for this step
+        if (snap.triaxiality) {
+            let minTri = Infinity, maxTri = -Infinity;
+            for (let i = 0; i < snap.triaxiality.length; i++) {
+                if (snap.triaxiality[i] < minTri) minTri = snap.triaxiality[i];
+                if (snap.triaxiality[i] > maxTri) maxTri = snap.triaxiality[i];
+            }
+            this.viewer.setScalarField('triaxiality', snap.triaxiality, minTri, maxTri);
+        }
+
+        // Update damage / phase-field for this step
+        if (snap.damageField) {
+            this.viewer.setDamageField(snap.damageField);
+            this.viewer.setScalarField('damage', snap.damageField, 0, 1);
+        }
+
+        // Update eroded elements for this step
+        if (snap.erodedElements) {
+            this.viewer.setErodedElements(new Set(snap.erodedElements));
+        } else {
+            this.viewer.setErodedElements(null);
         }
 
         // Update displacement data for this step
@@ -2304,6 +2330,69 @@ class TopologyApp {
             }
         }
 
+        // Apply painted force/constraint faces from templates
+        if (model.paintedForces && model.paintedForces.length > 0) {
+            this.viewer.paintedForceFaces = new Set(model.paintedForces);
+        }
+        if (model.paintedConstraints && model.paintedConstraints.length > 0) {
+            this.viewer.paintedConstraintFaces = new Set(model.paintedConstraints);
+        }
+
+        // Pre-select recommended simulation parameters (user can still change them)
+        if (model.recommendedParams) {
+            const params = model.recommendedParams;
+            if (params.solutionType) {
+                this._applySolutionType(params.solutionType);
+                document.querySelectorAll('.solution-type-card').forEach(c => {
+                    c.classList.toggle('selected', c.dataset.solution === params.solutionType);
+                });
+            }
+            if (params.nonlinearAnalysisType) {
+                this.config.nonlinearAnalysisType = params.nonlinearAnalysisType;
+                const el = document.getElementById('nonlinearAnalysisType');
+                if (el) el.value = params.nonlinearAnalysisType;
+                this._updateNonlinearSubTypeUI(params.nonlinearAnalysisType);
+            }
+            if (params.nonlinearLoadSteps) {
+                this.config.nonlinearLoadSteps = params.nonlinearLoadSteps;
+                const el = document.getElementById('nonlinearLoadSteps');
+                if (el) el.value = params.nonlinearLoadSteps;
+            }
+            if (params.nonlinearMaxNewtonIter) {
+                this.config.nonlinearMaxNewtonIter = params.nonlinearMaxNewtonIter;
+                const el = document.getElementById('nonlinearMaxNewtonIter');
+                if (el) el.value = params.nonlinearMaxNewtonIter;
+            }
+            if (params.nonlinearTolerance) {
+                this.config.nonlinearTolerance = params.nonlinearTolerance;
+                const el = document.getElementById('nonlinearTolerance');
+                if (el) el.value = params.nonlinearTolerance;
+            }
+            if (params.forceMagnitude) {
+                this.config.forceMagnitude = params.forceMagnitude;
+                const el = document.getElementById('forceMagnitude');
+                if (el) el.value = params.forceMagnitude;
+            }
+            if (params.material && MATERIAL_PRESETS[params.material]) {
+                const preset = MATERIAL_PRESETS[params.material];
+                this.config.material = params.material;
+                this.config.youngsModulus = preset.youngsModulus;
+                this.config.poissonsRatio = preset.poissonsRatio;
+                this.config.yieldStrength = preset.yieldStrength;
+                if (preset.nonlinearType) {
+                    this.config.nonlinearMaterialModel = preset.nonlinearType;
+                }
+                const matEl = document.getElementById('materialSelect');
+                if (matEl) matEl.value = params.material;
+                const eEl = document.getElementById('youngsModulus');
+                if (eEl) eEl.value = preset.youngsModulus;
+                const nuEl = document.getElementById('poissonsRatio');
+                if (nuEl) nuEl.value = preset.poissonsRatio;
+                const yEl = document.getElementById('yieldStrength');
+                if (yEl) yEl.value = preset.yieldStrength;
+            }
+        }
+
         // Enable template defaults checkbox and check it
         const defaultsCheckbox = document.getElementById('useTemplateDefaults');
         if (defaultsCheckbox) {
@@ -2325,6 +2414,9 @@ class TopologyApp {
             infoHTML += `<br><strong>Defaults:</strong>`;
             if (model.forcePosition) infoHTML += ` Force: ${model.forcePosition} (${model.forceDirection || 'down'})`;
             if (model.constraintPositions) infoHTML += ` | Constraint: ${model.constraintPositions}`;
+        }
+        if (model.recommendedParams && model.recommendedParams.solutionType) {
+            infoHTML += `<br><strong>Recommended:</strong> ${model.recommendedParams.solutionType} analysis`;
         }
         info.innerHTML = infoHTML;
         
@@ -2520,6 +2612,27 @@ class TopologyApp {
             } else {
                 this._nonlinearSnapshots = null;
                 if (loadStepContainer) loadStepContainer.classList.add('hidden');
+            }
+
+            // Set triaxiality scalar field for nonlinear results
+            if (result.nonlinearMode && result.triaxiality) {
+                let minTri = Infinity, maxTri = -Infinity;
+                for (let i = 0; i < result.triaxiality.length; i++) {
+                    if (result.triaxiality[i] < minTri) minTri = result.triaxiality[i];
+                    if (result.triaxiality[i] > maxTri) maxTri = result.triaxiality[i];
+                }
+                this.viewer.setScalarField('triaxiality', result.triaxiality, minTri, maxTri);
+            }
+
+            // Set damage / phase-field data for nonlinear fracture results
+            if (result.nonlinearMode && result.damageField) {
+                this.viewer.setDamageField(result.damageField);
+                this.viewer.setScalarField('damage', result.damageField, 0, 1);
+            }
+
+            // Set eroded elements for crack visualization
+            if (result.nonlinearMode && result.erodedElements) {
+                this.viewer.setErodedElements(new Set(result.erodedElements));
             }
             
             // Update viewer with final mesh
