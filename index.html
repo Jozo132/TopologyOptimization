@@ -179,6 +179,55 @@
                         </select>
                         <small style="display: block; color: #666; margin-top: 0.25rem;">Select 2D or 3D solving, or let the app auto-detect from your model.</small>
                     </div>
+                    <!-- Linear FEA parameters: shown only for fea -->
+                    <div id="feaParamsGroup" class="control-group" style="margin-top: 1rem; display: none;">
+                        <label style="font-weight: 600; font-size: 0.875rem; display: block; margin-bottom: 0.5rem;">Linear FEA Parameters</label>
+                        <div class="control-group">
+                            <label>Analysis Sub-type</label>
+                            <select id="feaSubType">
+                                <option value="static" selected>Static</option>
+                                <option value="buckling">Buckling</option>
+                                <option value="shear">Shear</option>
+                            </select>
+                            <small style="display: block; color: #666; margin-top: 0.25rem;">Select the type of linear analysis to perform</small>
+                        </div>
+                        <!-- Static-specific parameters -->
+                        <div id="feaStaticParamsGroup" class="control-group">
+                            <label style="font-weight: 600; font-size: 0.8rem; display: block; margin-bottom: 0.5rem;">Static Analysis Settings</label>
+                            <div class="control-group">
+                                <label>Output Requests</label>
+                                <div style="display: flex; flex-direction: column; gap: 0.25rem;">
+                                    <label style="font-weight: normal; font-size: 0.8rem;"><input type="checkbox" id="feaOutputStress" checked> Von Mises Stress</label>
+                                    <label style="font-weight: normal; font-size: 0.8rem;"><input type="checkbox" id="feaOutputDisplacement" checked> Displacement</label>
+                                    <label style="font-weight: normal; font-size: 0.8rem;"><input type="checkbox" id="feaOutputStrain" checked> Strain Energy</label>
+                                </div>
+                            </div>
+                        </div>
+                        <!-- Buckling-specific parameters for linear FEA -->
+                        <div id="feaBucklingParamsGroup" class="control-group" style="display: none;">
+                            <label style="font-weight: 600; font-size: 0.8rem; display: block; margin-bottom: 0.5rem;">Buckling Parameters</label>
+                            <div class="control-group">
+                                <label>Number of Buckling Modes</label>
+                                <input type="number" id="feaBucklingModes" value="3" min="1" max="10" step="1">
+                                <small style="display: block; color: #666; margin-top: 0.25rem;">Number of eigenvalue buckling modes to extract</small>
+                            </div>
+                            <div class="control-group">
+                                <label>Geometric Imperfection Scale</label>
+                                <input type="number" id="feaBucklingImperfection" value="0.01" min="0" max="1" step="0.001">
+                                <small style="display: block; color: #666; margin-top: 0.25rem;">Magnitude of initial geometric imperfection (fraction of model size)</small>
+                            </div>
+                        </div>
+                        <!-- Shear-specific parameters for linear FEA -->
+                        <div id="feaShearParamsGroup" class="control-group" style="display: none;">
+                            <label style="font-weight: 600; font-size: 0.8rem; display: block; margin-bottom: 0.5rem;">Shear Analysis Settings</label>
+                            <div class="control-group">
+                                <label>
+                                    <input type="checkbox" id="feaShearOutputShearStress" checked>
+                                    Output Shear Stress Components
+                                </label>
+                            </div>
+                        </div>
+                    </div>
                     <!-- Nonlinear FEA parameters: shown only for nonlinear -->
                     <div id="nonlinearParamsGroup" class="control-group" style="margin-top: 1rem; display: none;">
                         <label style="font-weight: 600; font-size: 0.875rem; display: block; margin-bottom: 0.5rem;">Nonlinear FEA Parameters</label>
@@ -851,6 +900,23 @@
                         <label>
                             <input type="checkbox" id="resultAutoRange" checked>
                             Auto Range
+                        </label>
+                    </div>
+                    <div class="section-slider-group">
+                        <label>
+                            <input type="checkbox" id="resultShowDeformed">
+                            Show Deformed Shape
+                        </label>
+                    </div>
+                    <div class="section-slider-group">
+                        <label>Iso-surface</label>
+                        <input type="range" id="resultIsoSurface" min="0" max="100" step="1" value="50" style="flex: 1;">
+                        <span id="resultIsoSurfaceValue" style="font-size: 0.75rem;">50%</span>
+                    </div>
+                    <div class="section-slider-group">
+                        <label>
+                            <input type="checkbox" id="resultClipPlane">
+                            Clip Plane
                         </label>
                     </div>
                 </div>
