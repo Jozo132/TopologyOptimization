@@ -61,7 +61,7 @@ class TopologyApp {
         this.config = {
             solver: 'auto',
             petscPC: 'bddc',
-            volumeFraction: 0.1,
+            volumeFraction: 0.7,
             forceDirection: 'down',
             forceVector: null, // Custom force vector [fx, fy, fz]
             forceMagnitude: 1000,
@@ -82,7 +82,7 @@ class TopologyApp {
             useGPU: false,
             feaSolverBackend: 'auto',
             volumetricOutputMode: 'on-stop',
-            useAMR: true,
+            useAMR: false,
             amrInterval: 3,
             minGranuleSize: 0.02,
             maxGranuleSize: 2,
@@ -166,6 +166,9 @@ class TopologyApp {
 
         // Initialize solution type UI to match default config
         this._applySolutionType(this.config.solutionType || 'topology');
+
+        // Show benchmark button if history exists
+        this.displayBenchmarkHistory();
         
         console.log('App initialized successfully');
     }
@@ -404,11 +407,7 @@ class TopologyApp {
                 document.getElementById('yieldStrength').value = preset.yieldStrength;
                 // Auto-select matching nonlinear material model
                 if (preset.nonlinearType) {
-                    const nlModelEl = document.getElementById('nonlinearMaterialModel');
-                    if (nlModelEl) {
-                        nlModelEl.value = preset.nonlinearType;
-                        this.config.nonlinearMaterialModel = preset.nonlinearType;
-                    }
+                    this.config.nonlinearMaterialModel = preset.nonlinearType;
                 }
             }
         });
@@ -815,12 +814,6 @@ class TopologyApp {
                 this._updateNonlinearSubTypeUI(e.target.value);
             });
         }
-        const materialModelEl = document.getElementById('nonlinearMaterialModel');
-        if (materialModelEl) {
-            materialModelEl.addEventListener('change', (e) => {
-                this.config.nonlinearMaterialModel = e.target.value;
-            });
-        }
         // Fracture parameters
         const fractureMethodEl = document.getElementById('fractureMethod');
         if (fractureMethodEl) {
@@ -940,6 +933,20 @@ class TopologyApp {
         
         document.getElementById('resetApp').addEventListener('click', () => {
             this.reset();
+        });
+
+        // Benchmark history modal
+        document.getElementById('showBenchmarkHistory').addEventListener('click', () => {
+            this.displayBenchmarkHistory();
+            document.getElementById('benchmarkModal').classList.remove('hidden');
+        });
+        document.getElementById('closeBenchmarkModal').addEventListener('click', () => {
+            document.getElementById('benchmarkModal').classList.add('hidden');
+        });
+        document.getElementById('benchmarkModal').addEventListener('click', (e) => {
+            if (e.target === e.currentTarget) {
+                document.getElementById('benchmarkModal').classList.add('hidden');
+            }
         });
         
         // Viewer controls
@@ -1369,7 +1376,6 @@ class TopologyApp {
         setValue('nonlinearMaxNewtonIter', cfg.nonlinearMaxNewtonIter || 20);
         setValue('nonlinearTolerance', cfg.nonlinearTolerance || 1e-6);
         setValue('nonlinearAnalysisType', cfg.nonlinearAnalysisType || 'large-deformation');
-        setValue('nonlinearMaterialModel', cfg.nonlinearMaterialModel || 'neo-hookean');
         setValue('fractureMethod', cfg.fractureMethod || 'phase-field');
         setValue('fractureToughness', cfg.fractureToughness || 2700);
         setValue('fractureLengthScale', cfg.fractureLengthScale || 0.01);
@@ -1608,27 +1614,20 @@ class TopologyApp {
         const fractureParams = document.getElementById('fractureParamsGroup');
         const bucklingParams = document.getElementById('bucklingParamsGroup');
         const plasticParams = document.getElementById('plasticParamsGroup');
-        const materialModelEl = document.getElementById('nonlinearMaterialModel');
 
         if (fractureParams) fractureParams.style.display = analysisType === 'fracture' ? '' : 'none';
         if (bucklingParams) bucklingParams.style.display = analysisType === 'buckling' ? '' : 'none';
         if (plasticParams) plasticParams.style.display = analysisType === 'plastic-deformation' ? '' : 'none';
 
         // Auto-select appropriate material model for analysis type
-        if (materialModelEl) {
-            if (analysisType === 'plastic-deformation') {
-                materialModelEl.value = 'j2-plasticity';
-                this.config.nonlinearMaterialModel = 'j2-plasticity';
-            } else if (analysisType === 'fracture') {
-                materialModelEl.value = 'linear-elastic';
-                this.config.nonlinearMaterialModel = 'linear-elastic';
-            } else if (analysisType === 'buckling' || analysisType === 'shear') {
-                materialModelEl.value = 'linear-elastic';
-                this.config.nonlinearMaterialModel = 'linear-elastic';
-            } else {
-                materialModelEl.value = 'neo-hookean';
-                this.config.nonlinearMaterialModel = 'neo-hookean';
-            }
+        if (analysisType === 'plastic-deformation') {
+            this.config.nonlinearMaterialModel = 'j2-plasticity';
+        } else if (analysisType === 'fracture') {
+            this.config.nonlinearMaterialModel = 'linear-elastic';
+        } else if (analysisType === 'buckling' || analysisType === 'shear') {
+            this.config.nonlinearMaterialModel = 'linear-elastic';
+        } else {
+            this.config.nonlinearMaterialModel = 'neo-hookean';
         }
     }
 
@@ -2764,15 +2763,15 @@ class TopologyApp {
     }
     
     displayBenchmarkHistory() {
-        const benchmarkInfo = document.getElementById('benchmarkInfo');
+        const showBtn = document.getElementById('showBenchmarkHistory');
         const benchmarkResults = document.getElementById('benchmarkResults');
         
         if (this.benchmarkHistory.length === 0) {
-            benchmarkInfo.classList.add('hidden');
+            if (showBtn) showBtn.classList.add('hidden');
             return;
         }
         
-        benchmarkInfo.classList.remove('hidden');
+        if (showBtn) showBtn.classList.remove('hidden');
         
         // Find baseline (first cube test or first entry)
         const baseline = this.benchmarkHistory.find(b => b.modelType === 'cube') || this.benchmarkHistory[0];

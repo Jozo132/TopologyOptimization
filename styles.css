@@ -987,40 +987,27 @@ button {
 }
 
 /* Benchmark Info */
-.benchmark-info {
-    margin-top: 1rem;
-    padding: 1rem;
-    background: var(--bg-color);
-    border-radius: 8px;
-    border: 1px solid var(--border-color);
-}
+/* Benchmark table styles */
 
-.benchmark-info h3 {
-    font-size: 0.875rem;
-    font-weight: 600;
-    margin-bottom: 0.75rem;
-    color: var(--text-primary);
-}
-
-.benchmark-info table {
+#benchmarkResults table {
     width: 100%;
     font-size: 0.75rem;
     border-collapse: collapse;
 }
 
-.benchmark-info th,
-.benchmark-info td {
+#benchmarkResults th,
+#benchmarkResults td {
     padding: 0.375rem;
     text-align: left;
     border-bottom: 1px solid var(--border-color);
 }
 
-.benchmark-info th {
+#benchmarkResults th {
     font-weight: 600;
     color: var(--text-secondary);
 }
 
-.benchmark-info tr:last-child td {
+#benchmarkResults tr:last-child td {
     border-bottom: none;
 }
 
