@@ -1802,20 +1802,9 @@ export class Viewer3D {
             const stressRaw = stressMap ? stressMap[cellIdx] : 0;
             const stress = Math.max(0, Math.min(1, stressRaw || 0));
 
-            // Per-face color from closest voxel stress (0 when unavailable)
-            // Below yield: navy-blue → red gradient; above yield: bright purple
-            let r, g, b;
-            const yieldNorm = this._yieldNormalized;
-            if (yieldNorm > 0 && yieldNorm < 1 && stress > yieldNorm) {
-                r = 0.75;
-                g = 0;
-                b = 1.0;
-            } else {
-                const t = yieldNorm > 0 && yieldNorm < 1 ? stress / yieldNorm : stress;
-                r = t;
-                g = DENSITY_COLOR_GREEN;
-                b = 0.5 * (1 - t);
-            }
+            // Per-face color based on current color mode
+            const color = this._getElementColor(cellIdx, stress);
+            const { r, g, b } = color;
 
             // Two triangles for this quad
             positions.push(...v0, ...v1, ...v2, ...v0, ...v2, ...v3);
@@ -2427,7 +2416,7 @@ export class Viewer3D {
         const colors = [];
         const capNormal = [-n[0], -n[1], -n[2]];
 
-        const appendIntersectionPolygon = (pts, stress) => {
+        const appendIntersectionPolygon = (pts, stress, cellIdx) => {
             if (pts.length < 3) return;
 
             const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length;
@@ -2454,21 +2443,10 @@ export class Viewer3D {
                 return angleA - angleB;
             });
 
-            // Color based on stress and yield threshold
+            // Per-face color based on current color mode
             const s = Math.max(0, Math.min(1, stress || 0));
-            let cr, cg, cb;
-            const yieldNorm = this._yieldNormalized;
-            if (yieldNorm > 0 && yieldNorm < 1 && s > yieldNorm) {
-                // Plastic zone: interpolate orange→red above yield
-                const t = Math.min(1, (s - yieldNorm) / (1 - yieldNorm));
-                cr = 1.0;
-                cg = 0.6 * (1 - t);
-                cb = 0;
-            } else {
-                cr = s;
-                cg = DENSITY_COLOR_GREEN;
-                cb = 1 - s;
-            }
+            const color = this._getElementColor(cellIdx !== undefined ? cellIdx : 0, s);
+            const { r: cr, g: cg, b: cb } = color;
 
             // Apply displacement to sorted polygon points before rendering
             if (_applyDisp) {
@@ -2579,7 +2557,7 @@ export class Viewer3D {
                             }
                         }
 
-                        appendIntersectionPolygon(pts, stressMap[idx] || 0);
+                        appendIntersectionPolygon(pts, stressMap[idx] || 0, idx);
                     }
                 }
             }

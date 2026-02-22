@@ -243,18 +243,6 @@
                             <small style="display: block; color: #666; margin-top: 0.25rem;">Select the type of nonlinear analysis to perform</small>
                         </div>
                         <div class="control-group">
-                            <label>Material Model</label>
-                            <select id="nonlinearMaterialModel">
-                                <option value="neo-hookean" selected>Neo-Hookean (hyperelastic)</option>
-                                <option value="linear-elastic">Linear Elastic</option>
-                                <option value="j2-plasticity">J2 Plasticity (von Mises)</option>
-                                <option value="mooney-rivlin">Mooney-Rivlin (rubber-like)</option>
-                                <option value="drucker-prager">Drucker-Prager (soil/concrete)</option>
-                                <option value="ogden">Ogden (hyperelastic)</option>
-                            </select>
-                            <small style="display: block; color: #666; margin-top: 0.25rem;">Constitutive model for material behavior</small>
-                        </div>
-                        <div class="control-group">
                             <label>Load Steps</label>
                             <input type="number" id="nonlinearLoadSteps" value="10" min="1" max="100" step="1">
                             <small style="display: block; color: #666; margin-top: 0.25rem;">Number of incremental load steps (more = more stable, slower)</small>
@@ -622,8 +610,8 @@
                         <div class="sub-panel-body">
                             <div class="control-group">
                                 <label>Volume Fraction (target material %)</label>
-                                <input type="range" id="volumeFraction" min="0.1" max="0.9" step="0.05" value="0.1">
-                                <span id="volumeFractionValue">10%</span>
+                                <input type="range" id="volumeFraction" min="0.1" max="0.9" step="0.05" value="0.7">
+                                <span id="volumeFractionValue">70%</span>
                             </div>
                             <div class="control-group">
                                 <label>Max Iterations</label>
@@ -745,7 +733,7 @@
                             <hr style="border: none; border-top: 1px solid var(--border-color); margin: 1rem 0;">
                             <div class="control-group">
                                 <label>
-                                    <input type="checkbox" id="useAMR" checked>
+                                    <input type="checkbox" id="useAMR">
                                     Adaptive Mesh Refinement (AMR)
                                 </label>
                                 <small style="display: block; color: #666; margin-top: 0.25rem;">Dynamically refine high-stress areas</small>
@@ -793,10 +781,7 @@
                         <button id="importSetup" class="btn-secondary">Import Setup</button>
                     </div>
 
-                    <div id="benchmarkInfo" class="benchmark-info hidden">
-                        <h3>📊 Benchmark History</h3>
-                        <div id="benchmarkResults"></div>
-                    </div>
+                    <button id="showBenchmarkHistory" class="btn-secondary hidden" style="margin-top: 0.5rem;">📊 Benchmark History</button>
 
                     <button id="resetApp" class="btn-secondary" style="margin-top: 1rem;">Start Over</button>
                 </div>
@@ -847,7 +832,7 @@
                 </button>
             </div>
             <div class="viewer-params-row">
-                <div id="densityThresholdContainer" class="section-slider-container">
+                <div id="densityThresholdContainer" class="section-slider-container hidden">
                     <label class="section-slider-title">Density Threshold</label>
                     <div class="section-slider-group">
                         <label>Min</label>
@@ -940,7 +925,7 @@
                 </div>
             </div>
             <div class="viewer-params-nav">
-                <button class="viewer-params-nav-btn active" data-target="densityThresholdContainer">Density</button>
+                <button class="viewer-params-nav-btn hidden-tab" data-target="densityThresholdContainer">Density</button>
                 <button class="viewer-params-nav-btn hidden-tab" data-target="displacementContainer">Displacement</button>
                 <button class="viewer-params-nav-btn hidden-tab" data-target="loadStepContainer">Load Step</button>
                 <button class="viewer-params-nav-btn hidden-tab" data-target="resultDisplayContainer">Result</button>
@@ -1065,6 +1050,19 @@
             }
         })();
     </script>
+
+    <!-- Benchmark History Modal -->
+    <div id="benchmarkModal" class="modal-overlay hidden">
+        <div class="modal" style="max-width: 720px;">
+            <div class="modal-header">
+                <h3>📊 Benchmark History</h3>
+                <button class="modal-close" id="closeBenchmarkModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="benchmarkResults"></div>
+            </div>
+        </div>
+    </div>
 
     <!-- Import application modules -->
     <script type="module" src="js/main.js"></script>
