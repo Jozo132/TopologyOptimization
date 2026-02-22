@@ -199,6 +199,25 @@ class TopologyApp {
             this._confirmMeshMethod();
         });
 
+        // Dimension mode radio buttons (2D/3D)
+        document.querySelectorAll('input[name="dimensionMode"]').forEach(radio => {
+            radio.addEventListener('change', (e) => {
+                const is2D = e.target.value === '2d';
+                const projSelector = document.getElementById('projectionSideSelector');
+                if (projSelector) {
+                    projSelector.classList.toggle('hidden', !is2D);
+                }
+            });
+        });
+
+        // Projection side buttons
+        document.querySelectorAll('.projection-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.projection-btn').forEach(b => b.classList.remove('selected'));
+                btn.classList.add('selected');
+            });
+        });
+
         // Apply transform button (scale + rotate)
         document.getElementById('applyTransform').addEventListener('click', () => {
             if (!this.currentModel || !this.currentModel.originalVertices) return;
@@ -866,6 +885,14 @@ class TopologyApp {
                 if (dispScaleValue) dispScaleValue.textContent = `${val}×`;
             });
         }
+
+        // Load step slider for nonlinear FEA time stepping
+        const loadStepSlider = document.getElementById('loadStepSlider');
+        if (loadStepSlider) {
+            loadStepSlider.addEventListener('input', () => {
+                this._applyLoadStep(parseInt(loadStepSlider.value, 10));
+            });
+        }
     }
 
     _updateForceVector() {
@@ -966,6 +993,77 @@ class TopologyApp {
         if (source === 'pause') this.pausedVolumetricData = volumetricData;
         if (source === 'complete') this.finalVolumetricData = volumetricData;
         this.viewer.setVolumetricStressData(volumetricData);
+    }
+
+    /**
+     * Apply a specific nonlinear load step snapshot to the viewer.
+     * Updates displacement and stress data to reflect the state at the given step.
+     */
+    _applyLoadStep(stepIndex) {
+        if (!this._nonlinearSnapshots || stepIndex < 1) return;
+        const snapshots = this._nonlinearSnapshots;
+        const idx = Math.min(stepIndex, snapshots.length) - 1;
+        const snap = snapshots[idx];
+        if (!snap) return;
+
+        const totalSteps = snapshots.length;
+        const loadStepValue = document.getElementById('loadStepValue');
+        const loadStepFraction = document.getElementById('loadStepFraction');
+        const loadStepStatus = document.getElementById('loadStepStatus');
+        if (loadStepValue) loadStepValue.textContent = `${snap.step}/${totalSteps}`;
+        if (loadStepFraction) loadStepFraction.textContent = `${(snap.loadFraction * 100).toFixed(1)}%`;
+
+        // Show convergence/failure status
+        if (loadStepStatus) {
+            if (!snap.converged) {
+                loadStepStatus.textContent = '⚠ Not converged — possible failure';
+                loadStepStatus.style.color = '#dc2626';
+            } else {
+                loadStepStatus.textContent = '✓ Converged';
+                loadStepStatus.style.color = '#10b981';
+            }
+        }
+
+        // Update volumetric stress for this step
+        if (snap.vonMisesStress && this._nonlinearNx) {
+            const volData = {
+                nx: this._nonlinearNx,
+                ny: this._nonlinearNy,
+                nz: this._nonlinearNz,
+                iteration: snap.step,
+                maxStress: 0,
+                stress: snap.vonMisesStress
+            };
+            // Compute max stress for this step
+            for (let i = 0; i < snap.vonMisesStress.length; i++) {
+                if (snap.vonMisesStress[i] > volData.maxStress) {
+                    volData.maxStress = snap.vonMisesStress[i];
+                }
+            }
+            this.viewer.setVolumetricStressData(volData);
+        }
+
+        // Update displacement data for this step
+        if (snap.displacement && this._nonlinearNx) {
+            const U = snap.displacement;
+            let maxU = 0;
+            for (let i = 0; i < U.length; i++) {
+                const v = Math.abs(U[i]);
+                if (v > maxU) maxU = v;
+            }
+            const normalizedU = new Float32Array(U.length);
+            if (maxU > 0) {
+                for (let i = 0; i < U.length; i++) normalizedU[i] = U[i] / maxU;
+            }
+            this.viewer.setDisplacementData({
+                U: normalizedU,
+                nx: this._nonlinearNx,
+                ny: this._nonlinearNy,
+                nz: this._nonlinearNz
+            });
+            this.viewer._needsRebuild = true;
+            this.viewer.draw();
+        }
     }
 
     requestVolumetricSnapshot() {
@@ -1266,6 +1364,7 @@ class TopologyApp {
         const geneticPanel = document.getElementById('geneticPanel');
         const solverParamsPanel = document.getElementById('solverParamsPanel');
         const runButton = document.getElementById('runOptimization');
+        const manufacturingStep = document.querySelector('[data-step="5"]');
 
         // Show/hide algorithm selector
         if (topoAlgorithmGroup) {
@@ -1284,6 +1383,10 @@ class TopologyApp {
         // Solver params (volume fraction etc.) only relevant for topology optimization
         if (solverParamsPanel) {
             solverParamsPanel.style.display = solutionType === 'topology' ? '' : 'none';
+        }
+        // Manufacturing step only relevant for topology optimization
+        if (manufacturingStep) {
+            manufacturingStep.dataset.skip = solutionType === 'topology' ? '' : 'true';
         }
 
         // Update run button label
@@ -1666,10 +1769,20 @@ class TopologyApp {
 
             // Show mesh method selector (3D files only)
             const selector = document.getElementById('meshMethodSelector');
+            const dimSelector = document.getElementById('dimensionModeSelector');
             if (is2D) {
                 selector.classList.add('hidden');
+                if (dimSelector) dimSelector.classList.add('hidden');
             } else {
                 selector.classList.remove('hidden');
+                if (dimSelector) {
+                    dimSelector.classList.remove('hidden');
+                    // Reset to 3D mode
+                    const radio3D = document.querySelector('input[name="dimensionMode"][value="3d"]');
+                    if (radio3D) radio3D.checked = true;
+                    const projSelector = document.getElementById('projectionSideSelector');
+                    if (projSelector) projSelector.classList.add('hidden');
+                }
             }
 
             // Enable/disable blended curvature option based on file type
@@ -1746,6 +1859,12 @@ class TopologyApp {
         const meshMethod = document.querySelector('input[name="meshMethod"]:checked').value;
         const voxelSizeMM = this.config.voxelSizeMM;
 
+        // Check dimension mode
+        const dimModeRadio = document.querySelector('input[name="dimensionMode"]:checked');
+        const dimMode = dimModeRadio ? dimModeRadio.value : '3d';
+        const projSideBtn = document.querySelector('.projection-btn.selected');
+        const projSide = projSideBtn ? projSideBtn.dataset.side : 'top';
+
         let finalModel;
         if (meshMethod === 'blended-curvature') {
             finalModel = this.importer.blendedCurvatureMesh(model.originalVertices, null, voxelSizeMM);
@@ -1755,6 +1874,12 @@ class TopologyApp {
         finalModel.originalVertices = model.originalVertices;
         if (model.sourceFormat) finalModel.sourceFormat = model.sourceFormat;
         if (model.protocol) finalModel.protocol = model.protocol;
+
+        // If 2D mode selected on a 3D model, project to single depth
+        if (dimMode === '2d') {
+            finalModel = this._projectTo2D(finalModel, projSide);
+        }
+
         this.currentModel = finalModel;
 
         // Update info display
@@ -1765,9 +1890,11 @@ class TopologyApp {
         const physZ = finalModel.bounds ? (finalModel.bounds.maxZ - finalModel.bounds.minZ).toFixed(1) : '?';
         const voxelSizeStr = finalModel.voxelSize ? finalModel.voxelSize.toFixed(2) : '?';
         const meshLabel = meshMethod === 'blended-curvature' ? 'Blended Curvature' : 'Box (Voxelized)';
+        let modeLabel = dimMode === '2d' ? `2D (${projSide})` : '3D';
         info.innerHTML = `
             <strong>Model loaded:</strong> ${file.name}<br>
             <strong>Mesh type:</strong> ${meshLabel}<br>
+            <strong>Mode:</strong> ${modeLabel}<br>
             <strong>Size:</strong> ${physX} × ${physY} × ${physZ} mm<br>
             <strong>Voxel size:</strong> ${voxelSizeStr} mm<br>
             <strong>Elements:</strong> ${finalModel.nx * finalModel.ny * finalModel.nz}<br>
@@ -1778,8 +1905,10 @@ class TopologyApp {
         this.viewer.setModel(finalModel);
         this._showMobileViewerToggle();
 
-        // Hide mesh method selector
+        // Hide mesh method selector and dimension mode selector
         document.getElementById('meshMethodSelector').classList.add('hidden');
+        const dimSelector = document.getElementById('dimensionModeSelector');
+        if (dimSelector) dimSelector.classList.add('hidden');
 
         // Clean up pending import
         this._pendingImport = null;
@@ -1787,6 +1916,96 @@ class TopologyApp {
         // Enable and navigate to step 3 (preview)
         this.workflow.enableStep(3);
         this.workflow.goToStep(3);
+    }
+
+    /**
+     * Project a 3D model to 2D (depth=1) by collapsing one axis based on the projection side.
+     * The projection flattens the model along the selected viewing direction.
+     */
+    _projectTo2D(model, side) {
+        const { nx, ny, nz, elements } = model;
+
+        let outNx, outNy, outNz;
+        let projectedElements;
+
+        // Determine which axis to collapse based on the projection side
+        switch (side) {
+            case 'front':
+            case 'back': {
+                // XY plane: collapse Z axis → outNz=1
+                outNx = nx; outNy = ny; outNz = 1;
+                projectedElements = new Float32Array(outNx * outNy);
+                for (let iy = 0; iy < ny; iy++) {
+                    for (let ix = 0; ix < nx; ix++) {
+                        let maxVal = 0;
+                        for (let iz = 0; iz < nz; iz++) {
+                            const idx = iz * ny * nx + iy * nx + ix;
+                            if (elements[idx] > maxVal) maxVal = elements[idx];
+                        }
+                        projectedElements[iy * outNx + ix] = maxVal;
+                    }
+                }
+                break;
+            }
+            case 'top':
+            case 'bottom': {
+                // XZ plane: collapse Y axis → outNy=1
+                outNx = nx; outNy = 1; outNz = nz;
+                projectedElements = new Float32Array(outNx * outNz);
+                for (let iz = 0; iz < nz; iz++) {
+                    for (let ix = 0; ix < nx; ix++) {
+                        let maxVal = 0;
+                        for (let iy = 0; iy < ny; iy++) {
+                            const idx = iz * ny * nx + iy * nx + ix;
+                            if (elements[idx] > maxVal) maxVal = elements[idx];
+                        }
+                        projectedElements[iz * outNx + ix] = maxVal;
+                    }
+                }
+                break;
+            }
+            case 'right':
+            case 'left': {
+                // YZ plane: collapse X axis → outNx=1
+                outNx = 1; outNy = ny; outNz = nz;
+                projectedElements = new Float32Array(outNy * outNz);
+                for (let iz = 0; iz < nz; iz++) {
+                    for (let iy = 0; iy < ny; iy++) {
+                        let maxVal = 0;
+                        for (let ix = 0; ix < nx; ix++) {
+                            const idx = iz * ny * nx + iy * nx + ix;
+                            if (elements[idx] > maxVal) maxVal = elements[idx];
+                        }
+                        projectedElements[iz * outNy + iy] = maxVal;
+                    }
+                }
+                break;
+            }
+            default: {
+                // Default: collapse Z
+                outNx = nx; outNy = ny; outNz = 1;
+                projectedElements = new Float32Array(outNx * outNy);
+                for (let iy = 0; iy < ny; iy++) {
+                    for (let ix = 0; ix < nx; ix++) {
+                        let maxVal = 0;
+                        for (let iz = 0; iz < nz; iz++) {
+                            const idx = iz * ny * nx + iy * nx + ix;
+                            if (elements[idx] > maxVal) maxVal = elements[idx];
+                        }
+                        projectedElements[iy * outNx + ix] = maxVal;
+                    }
+                }
+                break;
+            }
+        }
+
+        return {
+            ...model,
+            nx: outNx,
+            ny: outNy,
+            nz: outNz,
+            elements: projectedElements
+        };
     }
 
     loadTemplate(type) {
@@ -1874,6 +2093,9 @@ class TopologyApp {
         this.viewer.setStressBarLabel('Stress (N/mm² = MPa)', 'MPa');
         const dispContainerReset = document.getElementById('displacementContainer');
         if (dispContainerReset) dispContainerReset.classList.add('hidden');
+        const loadStepContainerReset = document.getElementById('loadStepContainer');
+        if (loadStepContainerReset) loadStepContainerReset.classList.add('hidden');
+        this._nonlinearSnapshots = null;
         this.viewer.draw();
         
         // Show progress
@@ -2009,6 +2231,29 @@ class TopologyApp {
                 const dispContainer = document.getElementById('displacementContainer');
                 if (dispContainer) dispContainer.classList.add('hidden');
             }
+
+            // Show load step slider for nonlinear FEA results with time stepping
+            const loadStepContainer = document.getElementById('loadStepContainer');
+            if (result.nonlinearMode && result.stepSnapshots && result.stepSnapshots.length > 0) {
+                this._nonlinearSnapshots = result.stepSnapshots;
+                this._nonlinearNx = result.nx;
+                this._nonlinearNy = result.ny;
+                this._nonlinearNz = result.nz;
+
+                const totalSteps = result.stepSnapshots.length;
+                const loadStepSlider = document.getElementById('loadStepSlider');
+                if (loadStepSlider) {
+                    loadStepSlider.max = totalSteps;
+                    loadStepSlider.value = totalSteps;
+                }
+                if (loadStepContainer) loadStepContainer.classList.remove('hidden');
+
+                // Show final step status
+                this._applyLoadStep(totalSteps);
+            } else {
+                this._nonlinearSnapshots = null;
+                if (loadStepContainer) loadStepContainer.classList.add('hidden');
+            }
             
             // Update viewer with final mesh
             if (result.meshData) {
@@ -2019,7 +2264,13 @@ class TopologyApp {
             let resultsTitle;
             if (result.feaOnly) {
                 if (result.fatigueMode) resultsTitle = 'Fatigue Analysis Complete!';
-                else if (result.nonlinearMode) resultsTitle = `Nonlinear FEA Complete!${!result.converged ? ' (not converged)' : ''}`;
+                else if (result.nonlinearMode) {
+                    if (!result.converged) {
+                        resultsTitle = `⚠ Nonlinear FEA — Catastrophic Failure Detected`;
+                    } else {
+                        resultsTitle = 'Nonlinear FEA Complete!';
+                    }
+                }
                 else resultsTitle = 'FEA Analysis Complete!';
             } else {
                 resultsTitle = 'Optimization Complete!';
@@ -2030,6 +2281,28 @@ class TopologyApp {
                 Iterations: ${result.iterations}<br>
                 Volume Fraction: ${(result.volumeFraction * 100).toFixed(1)}%
             `;
+
+            // Add nonlinear failure details
+            if (result.nonlinearMode && !result.converged) {
+                const failStep = result.failedAtStep || '?';
+                const totalSteps = this.config.nonlinearLoadSteps || 10;
+                const failLoad = result.failedAtStep > 0 ? ((result.failedAtStep / totalSteps) * 100).toFixed(0) : '?';
+                resultsHTML += `<br><br><span style="color: #dc2626;"><strong>⚠ Failure at load step ${failStep}/${totalSteps} (${failLoad}% load)</strong></span>`;
+                resultsHTML += `<br><small>The solver did not converge, indicating structural failure or crack propagation. Use the Load Step slider to inspect the progression.</small>`;
+            }
+
+            // Count elements exceeding yield (cracks indicator)
+            if (result.nonlinearMode && result.elementStress && this.config.yieldStrength > 0) {
+                const yieldStress = this.config.yieldStrength;
+                let yieldedCount = 0;
+                for (let i = 0; i < result.elementStress.length; i++) {
+                    if (result.elementStress[i] > yieldStress) yieldedCount++;
+                }
+                if (yieldedCount > 0) {
+                    const pct = ((yieldedCount / result.elementStress.length) * 100).toFixed(1);
+                    resultsHTML += `<br><span style="color: #f59e0b;"><strong>⚡ ${yieldedCount} elements (${pct}%) exceeded yield strength (${yieldStress} MPa)</strong></span>`;
+                }
+            }
             
             // Add AMR statistics if available
             if (result.amrStats) {
@@ -2148,6 +2421,8 @@ class TopologyApp {
         if (pauseBtn) { pauseBtn.classList.add('hidden'); pauseBtn.textContent = 'Pause'; }
         document.getElementById('transformControls').classList.add('hidden');
         document.getElementById('meshMethodSelector').classList.add('hidden');
+        const dimSelector = document.getElementById('dimensionModeSelector');
+        if (dimSelector) dimSelector.classList.add('hidden');
         document.getElementById('exportSection').classList.add('hidden');
         // Clear manufacturing card selection
         document.querySelectorAll('.manufacturing-card').forEach(c => c.classList.remove('selected'));
