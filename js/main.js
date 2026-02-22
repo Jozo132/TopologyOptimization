@@ -1767,6 +1767,9 @@ class TopologyApp {
         if (dispReset) dispReset.classList.add('hidden');
         const loadStepReset = document.getElementById('loadStepContainer');
         if (loadStepReset) loadStepReset.classList.add('hidden');
+        // Hide density threshold container
+        const densityReset = document.getElementById('densityThresholdContainer');
+        if (densityReset) densityReset.classList.add('hidden');
 
         // Stay in step 6 (solve & export) for re-running
         this.workflow.goToStep(6);
@@ -2357,6 +2360,8 @@ class TopologyApp {
         if (loadStepContainerReset) loadStepContainerReset.classList.add('hidden');
         const resultDisplayReset = document.getElementById('resultDisplayContainer');
         if (resultDisplayReset) resultDisplayReset.classList.add('hidden');
+        const densityContainerReset = document.getElementById('densityThresholdContainer');
+        if (densityContainerReset) densityContainerReset.classList.add('hidden');
         this._nonlinearSnapshots = null;
         this.viewer.draw();
         
@@ -2596,6 +2601,16 @@ class TopologyApp {
             // Show result display controls for toggling color mode
             const resultDisplayContainer = document.getElementById('resultDisplayContainer');
             if (resultDisplayContainer) resultDisplayContainer.classList.remove('hidden');
+
+            // Show density threshold only for topology optimization results
+            const densityContainer = document.getElementById('densityThresholdContainer');
+            if (densityContainer) {
+                if (!result.feaOnly) {
+                    densityContainer.classList.remove('hidden');
+                } else {
+                    densityContainer.classList.add('hidden');
+                }
+            }
             
             console.log('Optimization completed successfully');
             
