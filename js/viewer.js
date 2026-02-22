@@ -2741,21 +2741,29 @@ export class Viewer3D {
         // Store bar geometry for hit testing on drag handles
         this._stressBarRect = { x: barX, y: barY, width: barWidth, height: barHeight };
 
-        // Draw gradient bar (navy-blue at bottom = low stress, red at top = high stress)
-        // When yield strength is set, above-yield region uses bright purple
+        // Draw gradient bar using mode-specific color palette
+        // When yield strength is set and in stress mode, above-yield region uses bright purple
         const yieldNorm = this._yieldNormalized;
+        const barMode = this._colorMode || 'stress';
         for (let i = 0; i < barHeight; i++) {
             const t = 1 - i / barHeight; // 0 at bottom, 1 at top
             let r, g, b;
-            if (yieldNorm > 0 && yieldNorm < 1 && t > yieldNorm) {
-                r = 0.75;
-                g = 0;
-                b = 1.0;
+            if (barMode === 'stress') {
+                // Stress mode: preserve original yield-aware gradient
+                if (yieldNorm > 0 && yieldNorm < 1 && t > yieldNorm) {
+                    r = 0.75;
+                    g = 0;
+                    b = 1.0;
+                } else {
+                    const tn = yieldNorm > 0 && yieldNorm < 1 ? t / yieldNorm : t;
+                    r = tn;
+                    g = DENSITY_COLOR_GREEN;
+                    b = 0.5 * (1 - tn);
+                }
             } else {
-                const tn = yieldNorm > 0 && yieldNorm < 1 ? t / yieldNorm : t;
-                r = tn;
-                g = DENSITY_COLOR_GREEN;
-                b = 0.5 * (1 - tn);
+                // Use mode-specific color palette for the bar
+                const c = this._getColorForMode(t, barMode);
+                r = c.r; g = c.g; b = c.b;
             }
             ctx.fillStyle = `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`;
             ctx.fillRect(barX, barY + i, barWidth, 1);
@@ -3268,17 +3276,16 @@ export class Viewer3D {
         }
 
         if (mode === 'strain') {
-            // Strain energy density coloring: the normalized stress value is proportional
-            // to strain energy density in the linear elastic regime (σ·ε / 2 ∝ σ²)
-            return this._heatmapColor(stress);
+            // Strain energy density: "hot" colormap — black → red → yellow → white
+            return this._hotColor(stress);
         }
 
         if (mode === 'density') {
-            // Color by material density: blue (0) → green (0.5) → red (1)
+            // Color by material density: dark purple (0) → teal (0.5) → bright green (1)
             const dMap = this._cachedDensityMap;
             if (dMap && dMap[cellIdx] !== undefined) {
                 const d = Math.max(0, Math.min(1, dMap[cellIdx]));
-                return this._heatmapColor(d);
+                return this._densityColor(d);
             }
             return { r: 0.5, g: 0.5, b: 0.5 };
         }
@@ -3292,18 +3299,30 @@ export class Viewer3D {
                 const mag = Math.sqrt(ux * ux + uy * uy + uz * uz);
                 const maxMag = this._maxDisplacementMag || 1;
                 const t = Math.min(1, mag / maxMag);
-                // Blue → cyan → green → yellow → red
-                return this._heatmapColor(t);
+                // Cool-warm diverging: dark blue → light blue → white → orange → dark red
+                return this._coolWarmColor(t);
             }
         }
 
-        if (mode === 'triaxiality' || mode === 'plasticStrain') {
+        if (mode === 'triaxiality') {
             const field = this._scalarFields && this._scalarFields[mode];
             if (field && field.values) {
                 const raw = field.values[cellIdx] || 0;
                 const range = field.max - field.min || 1;
                 const t = Math.max(0, Math.min(1, (raw - field.min) / range));
-                return this._heatmapColor(t);
+                // Diverging: compression (teal) → neutral (white) → tension (magenta)
+                return this._triaxialityColor(t);
+            }
+        }
+
+        if (mode === 'plasticStrain') {
+            const field = this._scalarFields && this._scalarFields[mode];
+            if (field && field.values) {
+                const raw = field.values[cellIdx] || 0;
+                const range = field.max - field.min || 1;
+                const t = Math.max(0, Math.min(1, (raw - field.min) / range));
+                // Sequential purple: black → purple → magenta → pink
+                return this._plasticStrainColor(t);
             }
         }
 
@@ -3337,6 +3356,127 @@ export class Viewer3D {
             r = 1; g = 1 - s; b = 0;
         }
         return { r, g, b };
+    }
+
+    /**
+     * "Hot" colormap: black → red → yellow → white. Used for strain energy.
+     * @param {number} t - Value in [0, 1]
+     * @returns {{ r: number, g: number, b: number }}
+     */
+    _hotColor(t) {
+        let r, g, b;
+        if (t < 0.33) {
+            const s = t / 0.33;
+            r = s; g = 0; b = 0;
+        } else if (t < 0.66) {
+            const s = (t - 0.33) / 0.33;
+            r = 1; g = s; b = 0;
+        } else {
+            const s = (t - 0.66) / (1.0 - 0.66);
+            r = 1; g = 1; b = s;
+        }
+        return { r, g, b };
+    }
+
+    /**
+     * Cool-warm diverging: dark blue → light blue → white → orange → dark red.
+     * Used for displacement magnitude.
+     * @param {number} t - Value in [0, 1]
+     * @returns {{ r: number, g: number, b: number }}
+     */
+    _coolWarmColor(t) {
+        let r, g, b;
+        if (t < 0.25) {
+            const s = t / 0.25;
+            r = 0.1 * s; g = 0.1 + 0.4 * s; b = 0.5 + 0.5 * s;
+        } else if (t < 0.5) {
+            const s = (t - 0.25) / 0.25;
+            r = 0.1 + 0.9 * s; g = 0.5 + 0.5 * s; b = 1;
+        } else if (t < 0.75) {
+            const s = (t - 0.5) / 0.25;
+            r = 1; g = 1 - 0.35 * s; b = 1 - 0.8 * s;
+        } else {
+            const s = (t - 0.75) / 0.25;
+            r = 1 - 0.3 * s; g = 0.65 - 0.45 * s; b = 0.2 - 0.15 * s;
+        }
+        return { r, g, b };
+    }
+
+    /**
+     * Density colormap: dark purple → teal → bright green.
+     * @param {number} t - Value in [0, 1]
+     * @returns {{ r: number, g: number, b: number }}
+     */
+    _densityColor(t) {
+        let r, g, b;
+        if (t < 0.5) {
+            const s = t / 0.5;
+            r = 0.3 * (1 - s); g = 0.1 + 0.5 * s; b = 0.5 + 0.1 * s;
+        } else {
+            const s = (t - 0.5) / 0.5;
+            r = 0.1 * s; g = 0.6 + 0.4 * s; b = 0.6 - 0.4 * s;
+        }
+        return { r, g, b };
+    }
+
+    /**
+     * Triaxiality diverging colormap: teal (compression) → white → magenta (tension).
+     * @param {number} t - Value in [0, 1]
+     * @returns {{ r: number, g: number, b: number }}
+     */
+    _triaxialityColor(t) {
+        let r, g, b;
+        if (t < 0.5) {
+            const s = t / 0.5;
+            r = s; g = 0.6 + 0.4 * s; b = 0.7 + 0.3 * s;
+        } else {
+            const s = (t - 0.5) / 0.5;
+            r = 1 - 0.2 * s; g = 1 - 0.8 * s; b = 1 - 0.2 * s;
+        }
+        return { r, g, b };
+    }
+
+    /**
+     * Plastic strain sequential: black → purple → magenta → pink.
+     * @param {number} t - Value in [0, 1]
+     * @returns {{ r: number, g: number, b: number }}
+     */
+    _plasticStrainColor(t) {
+        let r, g, b;
+        if (t < 0.33) {
+            const s = t / 0.33;
+            r = 0.3 * s; g = 0; b = 0.4 * s;
+        } else if (t < 0.66) {
+            const s = (t - 0.33) / 0.33;
+            r = 0.3 + 0.5 * s; g = 0; b = 0.4 + 0.3 * s;
+        } else {
+            const s = (t - 0.66) / (1.0 - 0.66);
+            r = 0.8 + 0.2 * s; g = 0.3 * s; b = 0.7 + 0.3 * s;
+        }
+        return { r, g, b };
+    }
+
+    /**
+     * Get the color for a given normalized value based on the specified color mode.
+     * Used by the stress bar and element coloring to ensure visual consistency.
+     * @param {number} t - Normalized value in [0, 1]
+     * @param {string} [mode] - Color mode (defaults to current mode)
+     * @returns {{ r: number, g: number, b: number }}
+     */
+    _getColorForMode(t, mode) {
+        mode = mode || this._colorMode || 'stress';
+        switch (mode) {
+            case 'strain': return this._hotColor(t);
+            case 'displacement': return this._coolWarmColor(t);
+            case 'density': return this._densityColor(t);
+            case 'triaxiality': return this._triaxialityColor(t);
+            case 'plasticStrain': return this._plasticStrainColor(t);
+            case 'damage': {
+                const d = t;
+                return { r: d, g: 0.1 * (1 - d), b: 0.8 * (1 - d) };
+            }
+            default: return this._heatmapColor(t); // stress uses standard heatmap in bar
+        }
     }
 
     /**

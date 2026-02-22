@@ -6,9 +6,25 @@ import { ModelExporter } from './exporter.js';
 import { WorkflowManager } from './workflow.js';
 
 const MATERIAL_PRESETS = {
-    plastic: { youngsModulus: 2.3, poissonsRatio: 0.35, yieldStrength: 40 },
-    aluminum: { youngsModulus: 69, poissonsRatio: 0.33, yieldStrength: 270 },
-    steel: { youngsModulus: 200, poissonsRatio: 0.30, yieldStrength: 250 }
+    // ── Rubber-like materials ──
+    'natural-rubber':  { youngsModulus: 0.01, poissonsRatio: 0.499, yieldStrength: 0, nonlinearType: 'neo-hookean', category: 'rubber' },
+    'silicone':        { youngsModulus: 0.005, poissonsRatio: 0.499, yieldStrength: 0, nonlinearType: 'mooney-rivlin', category: 'rubber' },
+    'neoprene':        { youngsModulus: 0.007, poissonsRatio: 0.499, yieldStrength: 0, nonlinearType: 'neo-hookean', category: 'rubber' },
+    'epdm':            { youngsModulus: 0.008, poissonsRatio: 0.499, yieldStrength: 0, nonlinearType: 'ogden', category: 'rubber' },
+    // ── Hard plastics ──
+    'abs':             { youngsModulus: 2.3, poissonsRatio: 0.35, yieldStrength: 40, nonlinearType: 'j2-plasticity', category: 'plastic' },
+    'polycarbonate':   { youngsModulus: 2.4, poissonsRatio: 0.37, yieldStrength: 62, nonlinearType: 'j2-plasticity', category: 'plastic' },
+    'nylon':           { youngsModulus: 2.7, poissonsRatio: 0.39, yieldStrength: 70, nonlinearType: 'j2-plasticity', category: 'plastic' },
+    'pla':             { youngsModulus: 3.5, poissonsRatio: 0.36, yieldStrength: 60, nonlinearType: 'linear-elastic', category: 'plastic' },
+    'peek':            { youngsModulus: 4.0, poissonsRatio: 0.38, yieldStrength: 100, nonlinearType: 'j2-plasticity', category: 'plastic' },
+    // ── Metals ──
+    'aluminum':        { youngsModulus: 69, poissonsRatio: 0.33, yieldStrength: 270, nonlinearType: 'j2-plasticity', category: 'metal' },
+    'steel':           { youngsModulus: 200, poissonsRatio: 0.30, yieldStrength: 250, nonlinearType: 'j2-plasticity', category: 'metal' },
+    'stainless-steel': { youngsModulus: 193, poissonsRatio: 0.29, yieldStrength: 205, nonlinearType: 'j2-plasticity', category: 'metal' },
+    'titanium':        { youngsModulus: 116, poissonsRatio: 0.34, yieldStrength: 880, nonlinearType: 'j2-plasticity', category: 'metal' },
+    'copper':          { youngsModulus: 117, poissonsRatio: 0.34, yieldStrength: 70, nonlinearType: 'j2-plasticity', category: 'metal' },
+    'brass':           { youngsModulus: 100, poissonsRatio: 0.34, yieldStrength: 200, nonlinearType: 'j2-plasticity', category: 'metal' },
+    'cast-iron':       { youngsModulus: 170, poissonsRatio: 0.26, yieldStrength: 130, nonlinearType: 'drucker-prager', category: 'metal' }
 };
 
 const DOF_DESCRIPTIONS = {
@@ -73,7 +89,7 @@ class TopologyApp {
             youngsModulus: 2.3,
             poissonsRatio: 0.35,
             yieldStrength: 40,
-            material: 'plastic',
+            material: 'abs',
             // Accuracy scheduling: adaptive CG tolerance (auto-enabled)
             // Penalization continuation: ramp penal from penalStart → penaltyFactor
             penalStart: 1.5,
@@ -379,6 +395,14 @@ class TopologyApp {
                 document.getElementById('youngsModulus').value = preset.youngsModulus;
                 document.getElementById('poissonsRatio').value = preset.poissonsRatio;
                 document.getElementById('yieldStrength').value = preset.yieldStrength;
+                // Auto-select matching nonlinear material model
+                if (preset.nonlinearType) {
+                    const nlModelEl = document.getElementById('nonlinearMaterialModel');
+                    if (nlModelEl) {
+                        nlModelEl.value = preset.nonlinearType;
+                        this.config.nonlinearMaterialModel = preset.nonlinearType;
+                    }
+                }
             }
         });
 
