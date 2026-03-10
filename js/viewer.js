@@ -381,9 +381,583 @@ export class Viewer3D {
         this._overlayProgram = this._createProgram(gl, OVERLAY_VERTEX_SHADER, OVERLAY_FRAGMENT_SHADER);
 
         this.setupControls();
+        this._createOverlayToolbar();
+        this._setupKeyboardShortcuts();
         window.addEventListener('resize', () => this.onWindowResize());
         this.draw();
         console.log('WebGL Viewer initialized');
+    }
+
+    // ─── Overlay Toolbar & Sidebar (CAD-like tools) ────────────────────────
+
+    _createOverlayToolbar() {
+        // ── Top bar: selection method toggles ────────────────────────────────
+        this._toolbar = document.createElement('div');
+        this._toolbar.className = 'cad-toolbar';
+        this._toolbar.style.display = 'none';
+        this.container.appendChild(this._toolbar);
+
+        // Point select toggle
+        this._toolButtons = {};
+        const pointBtn = document.createElement('button');
+        pointBtn.className = 'cad-tool-btn active';
+        pointBtn.title = 'Point / Pen Select [P]';
+        pointBtn.innerHTML = '<span class="cad-tool-icon">✏️</span><span class="cad-tool-label">Point</span><kbd>P</kbd>';
+        pointBtn.addEventListener('click', (e) => { e.stopPropagation(); this._setSelectionMethod('point'); });
+        this._toolButtons['point'] = pointBtn;
+        this._toolbar.appendChild(pointBtn);
+
+        // Brush size slider (inline with point)
+        const brushWrap = document.createElement('div');
+        brushWrap.className = 'cad-toolbar-inline-slider';
+        brushWrap.innerHTML = '<label>Radius <input type="range" min="1" max="10" step="1" value="1" class="cad-brush-slider"><span class="cad-brush-value">1</span></label>';
+        this._toolbar.appendChild(brushWrap);
+        this._brushSlider = brushWrap.querySelector('.cad-brush-slider');
+        this._brushValueSpan = brushWrap.querySelector('.cad-brush-value');
+        this._brushSlider.addEventListener('input', (e) => {
+            e.stopPropagation();
+            this.brushSize = parseInt(e.target.value);
+            this._brushValueSpan.textContent = this.brushSize;
+            if (this.onToolbarChange) this.onToolbarChange('brushSize', this.brushSize);
+        });
+        this._brushSlider.addEventListener('mousedown', (e) => e.stopPropagation());
+
+        // Separator
+        const sep = document.createElement('div');
+        sep.className = 'cad-toolbar-separator';
+        this._toolbar.appendChild(sep);
+
+        // Face select toggle
+        const faceBtn = document.createElement('button');
+        faceBtn.className = 'cad-tool-btn';
+        faceBtn.title = 'Face / Surface Select [A]';
+        faceBtn.innerHTML = '<span class="cad-tool-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.35)" stroke-width="0.8"><polygon points="12,2 22,8 12,14 2,8" fill="rgba(255,255,255,0.1)"/><polygon points="2,8 12,14 12,22 2,16" fill="rgba(0,220,255,0.45)"/><polygon points="22,8 12,14 12,22 22,16" fill="rgba(255,255,255,0.06)"/></svg></span><span class="cad-tool-label">Face</span><kbd>A</kbd>';
+        faceBtn.addEventListener('click', (e) => { e.stopPropagation(); this._setSelectionMethod('face'); });
+        this._toolButtons['face'] = faceBtn;
+        this._toolbar.appendChild(faceBtn);
+
+        // Angle tolerance slider (inline with face)
+        this._angleTolWrap = document.createElement('div');
+        this._angleTolWrap.className = 'cad-toolbar-inline-slider';
+        this._angleTolWrap.style.display = 'none';
+        this._angleTolWrap.innerHTML = '<label>Tolerance <input type="range" min="1" max="180" step="1" value="45" class="cad-angle-slider"><span class="cad-angle-value">45°</span></label>';
+        this._toolbar.appendChild(this._angleTolWrap);
+        this._angleSlider = this._angleTolWrap.querySelector('.cad-angle-slider');
+        this._angleValueSpan = this._angleTolWrap.querySelector('.cad-angle-value');
+        this._angleSlider.addEventListener('input', (e) => {
+            e.stopPropagation();
+            this.angleTolerance = parseInt(e.target.value);
+            this._angleValueSpan.textContent = this.angleTolerance + '°';
+            this.updateAngleSelection();
+            if (this.onToolbarChange) this.onToolbarChange('angleTolerance', this.angleTolerance);
+        });
+        this._angleSlider.addEventListener('mousedown', (e) => e.stopPropagation());
+
+        // Separator
+        const sep2 = document.createElement('div');
+        sep2.className = 'cad-toolbar-separator';
+        this._toolbar.appendChild(sep2);
+
+        // Erase toggle
+        const eraseBtn = document.createElement('button');
+        eraseBtn.className = 'cad-tool-btn';
+        eraseBtn.title = 'Erase [E]';
+        eraseBtn.innerHTML = '<span class="cad-tool-icon">🧹</span><span class="cad-tool-label">Erase</span><kbd>E</kbd>';
+        eraseBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this._eraseMode = !this._eraseMode;
+            this._updateToolbarState();
+        });
+        this._toolButtons['erase'] = eraseBtn;
+        this._toolbar.appendChild(eraseBtn);
+
+        // Selection method state
+        this._selectionMethod = 'point'; // 'point' or 'face'
+
+        // ── Left overlay sidebar ─────────────────────────────────────────────
+        this._overlaySidebar = document.createElement('div');
+        this._overlaySidebar.className = 'cad-overlay-sidebar';
+        this._overlaySidebar.style.display = 'none';
+        this.container.appendChild(this._overlaySidebar);
+
+        // Sidebar: group list view
+        this._sidebarListView = document.createElement('div');
+        this._sidebarListView.className = 'cad-sidebar-list';
+        this._overlaySidebar.appendChild(this._sidebarListView);
+
+        // Sidebar header
+        const listHeader = document.createElement('div');
+        listHeader.className = 'cad-sidebar-header';
+        listHeader.innerHTML = '<span>Selection Groups</span>';
+        const addBtn = document.createElement('button');
+        addBtn.className = 'cad-sidebar-add-btn';
+        addBtn.textContent = '+ Add';
+        addBtn.title = 'Add new selection group [N]';
+        addBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this._addGroupAndEdit('force');
+        });
+        listHeader.appendChild(addBtn);
+        this._sidebarListView.appendChild(listHeader);
+
+        // Group items container
+        this._groupListContainer = document.createElement('div');
+        this._groupListContainer.className = 'cad-group-list';
+        this._sidebarListView.appendChild(this._groupListContainer);
+
+        // Sidebar: active group edit view (hidden by default)
+        this._sidebarEditView = document.createElement('div');
+        this._sidebarEditView.className = 'cad-sidebar-edit';
+        this._sidebarEditView.style.display = 'none';
+        this._overlaySidebar.appendChild(this._sidebarEditView);
+
+        // Status bar at bottom of canvas
+        this._statusBar = document.createElement('div');
+        this._statusBar.className = 'cad-status-bar';
+        this._statusBar.style.display = 'none';
+        this.container.appendChild(this._statusBar);
+
+        // Erase mode flag
+        this._eraseMode = false;
+    }
+
+    _setSelectionMethod(method) {
+        this._selectionMethod = method;
+        this.useAngleSelection = (method === 'face');
+        this._updateToolbarState();
+        if (this.onToolbarChange) this.onToolbarChange('angleSelect', this.useAngleSelection);
+    }
+
+    _addGroupAndEdit(type) {
+        const group = this.addSelectionGroup(type);
+        this.setPaintMode(type);
+        this._showGroupEditView(group.id);
+        if (this.onToolbarChange) this.onToolbarChange('groupAdded', group);
+    }
+
+    /** Show or hide the overlay toolbar (call from main.js when entering/leaving step 6) */
+    showToolbar(visible) {
+        this._toolbarEnabled = visible;
+        if (!visible) {
+            // Hide everything when leaving selection mode
+            if (this._toolbar) this._toolbar.style.display = 'none';
+            if (this._overlaySidebar) this._overlaySidebar.style.display = 'none';
+            if (this._statusBar) this._statusBar.style.display = 'none';
+            this.setPaintMode(null);
+            this._eraseMode = false;
+        } else {
+            // Create a default group if none exist (first time entering selection mode)
+            if (this.selectionGroups.length === 0) {
+                this._addGroupAndEdit('constraint');
+            }
+            // Always show sidebar; toolbar + status only when editing a group
+            if (this._overlaySidebar) this._overlaySidebar.style.display = '';
+            this._renderGroupList();
+            this._updateToolbarVisibility();
+        }
+    }
+
+    /** Show/hide toolbar & status bar based on whether we are actively editing a group */
+    _updateToolbarVisibility() {
+        const isEditing = this._sidebarEditView && this._sidebarEditView.style.display !== 'none';
+        if (this._toolbar) this._toolbar.style.display = isEditing ? '' : 'none';
+        if (this._statusBar) this._statusBar.style.display = isEditing ? '' : 'none';
+        if (isEditing) this._updateToolbarState();
+    }
+
+    _updateToolbarState() {
+        if (!this._toolButtons) return;
+        // Selection method toggles
+        this._toolButtons['point']?.classList.toggle('active', this._selectionMethod === 'point');
+        this._toolButtons['face']?.classList.toggle('active', this._selectionMethod === 'face');
+        this._toolButtons['erase']?.classList.toggle('active', !!this._eraseMode);
+
+        // Show/hide angle slider
+        if (this._angleTolWrap) {
+            this._angleTolWrap.style.display = this._selectionMethod === 'face' ? '' : 'none';
+        }
+        // Sync slider values
+        if (this._brushSlider) {
+            this._brushSlider.value = this.brushSize;
+            this._brushValueSpan.textContent = this.brushSize;
+        }
+        if (this._angleSlider) {
+            this._angleSlider.value = this.angleTolerance;
+            this._angleValueSpan.textContent = this.angleTolerance + '°';
+        }
+        this._updateStatusBar();
+    }
+
+    _updateStatusBar() {
+        if (!this._statusBar) return;
+        const parts = [];
+        // Active tool indicator
+        if (this._eraseMode) {
+            parts.push('<span class="status-tool status-erase">🧹 Erase</span>');
+        } else if (this.paintMode) {
+            const modeLabels = { constraint: '📌 Constraint', force: '⬇ Force', keep: '🔒 Keep' };
+            parts.push(`<span class="status-tool status-${this.paintMode}">${modeLabels[this.paintMode] || this.paintMode}</span>`);
+        } else {
+            parts.push('<span class="status-tool status-idle">🖱 Navigate</span>');
+        }
+        // Active group name
+        const ag = this.getActiveGroup();
+        if (ag) {
+            parts.push(`<span class="status-counts">${ag.name} — ${ag.faces.size} faces</span>`);
+        }
+        // Hotkey hints
+        if (this.paintMode) {
+            parts.push('<span class="status-hints">LMB: select · RMB: erase · Esc: done · MMB: orbit</span>');
+        } else {
+            parts.push('<span class="status-hints">Double-click group to edit · N: new group · Esc: exit</span>');
+        }
+        this._statusBar.innerHTML = parts.join('');
+    }
+
+    // ─── Overlay Sidebar: Group List ─────────────────────────────────────────
+
+    _renderGroupList() {
+        if (!this._groupListContainer) return;
+        this._groupListContainer.innerHTML = '';
+
+        const groupColors = { constraint: '#10b981', force: '#f97316', keep: '#3b82f6' };
+        const groupIcons = { constraint: '📌', force: '⬇', keep: '🔒' };
+
+        if (this.selectionGroups.length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'cad-group-empty';
+            empty.textContent = 'No groups yet. Click "+ Add" to create one.';
+            this._groupListContainer.appendChild(empty);
+            return;
+        }
+
+        for (const group of this.selectionGroups) {
+            const item = document.createElement('div');
+            item.className = 'cad-group-item' + (group.id === this.activeGroupId ? ' active' : '');
+
+            const colorDot = document.createElement('span');
+            colorDot.className = 'cad-group-dot';
+            colorDot.style.background = groupColors[group.type] || '#f97316';
+
+            const icon = document.createElement('span');
+            icon.className = 'cad-group-icon';
+            icon.textContent = groupIcons[group.type] || '⬇';
+
+            const label = document.createElement('span');
+            label.className = 'cad-group-label';
+            label.textContent = group.name;
+
+            const count = document.createElement('span');
+            count.className = 'cad-group-count';
+            count.textContent = `${group.faces.size}`;
+
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'cad-group-remove';
+            removeBtn.textContent = '×';
+            removeBtn.title = 'Delete group';
+            removeBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.removeSelectionGroup(group.id);
+                this._renderGroupList();
+                // If we were editing this group, go back to list
+                if (this._sidebarEditView.style.display !== 'none') {
+                    this._showGroupListView();
+                }
+                if (this.onToolbarChange) this.onToolbarChange('groupRemoved', group.id);
+            });
+
+            // Single click: open edit view for this group
+            item.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this._showGroupEditView(group.id);
+            });
+
+            item.appendChild(colorDot);
+            item.appendChild(icon);
+            item.appendChild(label);
+            item.appendChild(count);
+            item.appendChild(removeBtn);
+            this._groupListContainer.appendChild(item);
+        }
+    }
+
+    // ─── Overlay Sidebar: Group Edit View ────────────────────────────────────
+
+    _showGroupEditView(groupId) {
+        const group = this.selectionGroups.find(g => g.id === groupId);
+        if (!group) return;
+
+        this.setActiveGroup(groupId);
+        this.setPaintMode(group.type);
+        this._sidebarListView.style.display = 'none';
+        this._sidebarEditView.style.display = '';
+        this._sidebarEditView.innerHTML = '';
+        this._updateToolbarVisibility();
+
+        const groupColors = { constraint: '#10b981', force: '#f97316', keep: '#3b82f6' };
+
+        // Back / Done button
+        const backRow = document.createElement('div');
+        backRow.className = 'cad-edit-back';
+        const backBtn = document.createElement('button');
+        backBtn.className = 'cad-edit-back-btn';
+        backBtn.innerHTML = '← Back';
+        backBtn.addEventListener('click', (e) => { e.stopPropagation(); this._showGroupListView(); });
+        backRow.appendChild(backBtn);
+        const title = document.createElement('span');
+        title.className = 'cad-edit-title';
+        title.textContent = group.name;
+        title.style.color = groupColors[group.type] || '#fff';
+        backRow.appendChild(title);
+        this._sidebarEditView.appendChild(backRow);
+
+        // Type selector
+        const typeRow = document.createElement('div');
+        typeRow.className = 'cad-edit-row';
+        typeRow.innerHTML = '<label>Type</label>';
+        const typeSelect = document.createElement('select');
+        typeSelect.className = 'cad-edit-select';
+        for (const t of ['force', 'constraint', 'keep']) {
+            const opt = document.createElement('option');
+            opt.value = t;
+            opt.textContent = t.charAt(0).toUpperCase() + t.slice(1);
+            if (t === group.type) opt.selected = true;
+            typeSelect.appendChild(opt);
+        }
+        typeSelect.addEventListener('change', (e) => {
+            e.stopPropagation();
+            group.type = e.target.value;
+            group.name = `${e.target.value} ${group.id}`;
+            if (e.target.value === 'force') {
+                group.params = { direction: 'down', vector: null, magnitude: 1000, forceType: 'total', dofs: 'all' };
+            } else {
+                group.params = { dofs: group.params?.dofs || 'all' };
+            }
+            this._syncGroupsToFaceSets();
+            this._needsRebuild = true;
+            this.draw();
+            this.setPaintMode(group.type);
+            // Re-render edit view to show/hide params
+            this._showGroupEditView(group.id);
+            if (this.onToolbarChange) this.onToolbarChange('groupChanged', group);
+        });
+        typeSelect.addEventListener('click', (e) => e.stopPropagation());
+        typeRow.appendChild(typeSelect);
+        this._sidebarEditView.appendChild(typeRow);
+
+        // Face count
+        const countRow = document.createElement('div');
+        countRow.className = 'cad-edit-row cad-edit-info';
+        countRow.innerHTML = `<label>Faces</label><span>${group.faces.size} selected</span>`;
+        this._sidebarEditView.appendChild(countRow);
+
+        // Type-specific parameters
+        if (group.type === 'force') {
+            this._renderForceParams(group);
+        } else if (group.type === 'constraint') {
+            this._renderConstraintParams(group);
+        }
+
+        // Hint
+        const hint = document.createElement('div');
+        hint.className = 'cad-edit-hint';
+        hint.textContent = 'Click on the model to select faces for this group. Right-click to deselect.';
+        this._sidebarEditView.appendChild(hint);
+    }
+
+    _renderForceParams(group) {
+        const p = group.params || {};
+
+        // Direction
+        const dirRow = document.createElement('div');
+        dirRow.className = 'cad-edit-row';
+        dirRow.innerHTML = '<label>Direction</label>';
+        const dirSelect = document.createElement('select');
+        dirSelect.className = 'cad-edit-select';
+        for (const d of ['down', 'up', 'left', 'right', 'custom']) {
+            const opt = document.createElement('option');
+            opt.value = d;
+            opt.textContent = d === 'custom' ? 'Custom Vector' : `${d.charAt(0).toUpperCase() + d.slice(1)}`;
+            if (d === (p.direction || 'down')) opt.selected = true;
+            dirSelect.appendChild(opt);
+        }
+        dirSelect.addEventListener('change', (e) => {
+            e.stopPropagation();
+            group.params.direction = e.target.value;
+            if (e.target.value !== 'custom') group.params.vector = null;
+            this._showGroupEditView(group.id);
+            if (this.onToolbarChange) this.onToolbarChange('groupChanged', group);
+        });
+        dirSelect.addEventListener('click', (e) => e.stopPropagation());
+        dirRow.appendChild(dirSelect);
+        this._sidebarEditView.appendChild(dirRow);
+
+        // Custom vector (if custom)
+        if (p.direction === 'custom') {
+            const vecRow = document.createElement('div');
+            vecRow.className = 'cad-edit-row cad-edit-vector';
+            vecRow.innerHTML = '<label>Vector</label>';
+            const vec = p.vector || [0, -1, 0];
+            for (let i = 0; i < 3; i++) {
+                const label = ['X', 'Y', 'Z'][i];
+                const inp = document.createElement('input');
+                inp.type = 'number';
+                inp.className = 'cad-edit-num';
+                inp.value = vec[i];
+                inp.step = '0.1';
+                inp.title = label;
+                inp.placeholder = label;
+                inp.addEventListener('input', (e) => {
+                    e.stopPropagation();
+                    if (!group.params.vector) group.params.vector = [0, -1, 0];
+                    group.params.vector[i] = parseFloat(e.target.value) || 0;
+                    if (this.onToolbarChange) this.onToolbarChange('groupChanged', group);
+                });
+                inp.addEventListener('click', (e) => e.stopPropagation());
+                vecRow.appendChild(inp);
+            }
+            this._sidebarEditView.appendChild(vecRow);
+        }
+
+        // Force type
+        const ftRow = document.createElement('div');
+        ftRow.className = 'cad-edit-row';
+        ftRow.innerHTML = '<label>Mode</label>';
+        const ftSelect = document.createElement('select');
+        ftSelect.className = 'cad-edit-select';
+        for (const ft of ['total', 'pressure']) {
+            const opt = document.createElement('option');
+            opt.value = ft;
+            opt.textContent = ft === 'total' ? 'Total (distributed)' : 'Pressure (per face)';
+            if (ft === (p.forceType || 'total')) opt.selected = true;
+            ftSelect.appendChild(opt);
+        }
+        ftSelect.addEventListener('change', (e) => { e.stopPropagation(); group.params.forceType = e.target.value; if (this.onToolbarChange) this.onToolbarChange('groupChanged', group); });
+        ftSelect.addEventListener('click', (e) => e.stopPropagation());
+        ftRow.appendChild(ftSelect);
+        this._sidebarEditView.appendChild(ftRow);
+
+        // Magnitude
+        const magRow = document.createElement('div');
+        magRow.className = 'cad-edit-row';
+        magRow.innerHTML = `<label>${(p.forceType || 'total') === 'pressure' ? 'Pressure (MPa)' : 'Magnitude (N)'}</label>`;
+        const magInput = document.createElement('input');
+        magInput.type = 'number';
+        magInput.className = 'cad-edit-num cad-edit-num-wide';
+        magInput.value = p.magnitude || 1000;
+        magInput.min = '1';
+        magInput.step = '100';
+        magInput.addEventListener('input', (e) => { e.stopPropagation(); group.params.magnitude = parseFloat(e.target.value) || 1000; if (this.onToolbarChange) this.onToolbarChange('groupChanged', group); });
+        magInput.addEventListener('click', (e) => e.stopPropagation());
+        magRow.appendChild(magInput);
+        this._sidebarEditView.appendChild(magRow);
+    }
+
+    _renderConstraintParams(group) {
+        const p = group.params || {};
+        const dofDescs = {
+            'all': 'X ✓  Y ✓  Z ✓  — Fully fixed',
+            'xy':  'X ✓  Y ✓  Z ✗  — Slide Z',
+            'xz':  'X ✓  Y ✗  Z ✓  — Slide Y',
+            'yz':  'X ✗  Y ✓  Z ✓  — Slide X',
+            'x':   'X ✓  Y ✗  Z ✗  — Rail X',
+            'y':   'X ✗  Y ✓  Z ✗  — Rail Y',
+            'z':   'X ✗  Y ✗  Z ✓  — Rail Z'
+        };
+
+        // DOF selector
+        const dofRow = document.createElement('div');
+        dofRow.className = 'cad-edit-row';
+        dofRow.innerHTML = '<label>DOFs</label>';
+        const dofSelect = document.createElement('select');
+        dofSelect.className = 'cad-edit-select';
+        for (const d of ['all', 'xy', 'xz', 'yz', 'x', 'y', 'z']) {
+            const opt = document.createElement('option');
+            opt.value = d;
+            opt.textContent = d === 'all' ? 'All (XYZ)' : d.toUpperCase();
+            if (d === (p.dofs || 'all')) opt.selected = true;
+            dofSelect.appendChild(opt);
+        }
+        dofSelect.addEventListener('change', (e) => {
+            e.stopPropagation();
+            group.params.dofs = e.target.value;
+            // Update preview
+            const preview = this._sidebarEditView.querySelector('.cad-edit-dof-preview');
+            if (preview) preview.textContent = dofDescs[e.target.value] || '';
+            if (this.onToolbarChange) this.onToolbarChange('groupChanged', group);
+        });
+        dofSelect.addEventListener('click', (e) => e.stopPropagation());
+        dofRow.appendChild(dofSelect);
+        this._sidebarEditView.appendChild(dofRow);
+
+        // DOF preview
+        const previewRow = document.createElement('div');
+        previewRow.className = 'cad-edit-row cad-edit-info';
+        const previewSpan = document.createElement('span');
+        previewSpan.className = 'cad-edit-dof-preview';
+        previewSpan.textContent = dofDescs[p.dofs || 'all'] || '';
+        previewRow.appendChild(previewSpan);
+        this._sidebarEditView.appendChild(previewRow);
+    }
+
+    _showGroupListView() {
+        this._sidebarListView.style.display = '';
+        this._sidebarEditView.style.display = 'none';
+        this.setPaintMode(null);
+        this._renderGroupList();
+        this._updateToolbarVisibility();
+    }
+
+    _setupKeyboardShortcuts() {
+        document.addEventListener('keydown', (e) => {
+            // Don't intercept when typing in inputs
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+            // Only active when selection mode is enabled
+            if (!this._toolbarEnabled) return;
+
+            const key = e.key.toLowerCase();
+            switch (key) {
+                case 'p':
+                    e.preventDefault();
+                    this._setSelectionMethod('point');
+                    break;
+                case 'a':
+                    e.preventDefault();
+                    this._setSelectionMethod('face');
+                    break;
+                case 'e':
+                    e.preventDefault();
+                    this._eraseMode = !this._eraseMode;
+                    this._updateToolbarState();
+                    break;
+                case 'n':
+                    e.preventDefault();
+                    this._addGroupAndEdit('force');
+                    break;
+                case 'b':
+                    e.preventDefault();
+                    if (e.shiftKey) {
+                        this.brushSize = Math.max(1, this.brushSize - 1);
+                    } else {
+                        this.brushSize = Math.min(10, this.brushSize + 1);
+                    }
+                    this._updateToolbarState();
+                    if (this.onToolbarChange) this.onToolbarChange('brushSize', this.brushSize);
+                    break;
+                case 'escape':
+                    e.preventDefault();
+                    this._eraseMode = false;
+                    if (this.paintMode) {
+                        // If editing a group, go back to list
+                        if (this._sidebarEditView && this._sidebarEditView.style.display !== 'none') {
+                            this._showGroupListView();
+                        } else {
+                            this.setPaintMode(null);
+                        }
+                    }
+                    break;
+            }
+        });
     }
 
     // ─── Shader compilation ─────────────────────────────────────────────────
@@ -427,9 +1001,9 @@ export class Viewer3D {
                 } else if (e.button === 1) {
                     this.isDragging = true;
                 } else if (e.button === 0) {
-                    // Left click: paint
+                    // Left click: select (or erase if erase mode is active)
                     this.isPainting = true;
-                    this._paintErasing = false;
+                    this._paintErasing = !!this._eraseMode;
                     this.handlePaintClick(e);
                 } else if (e.button === 2) {
                     // Right click: erase
@@ -626,9 +1200,12 @@ export class Viewer3D {
         this.paintMode = mode;
         this.canvas.style.cursor = mode ? 'crosshair' : 'grab';
         if (!mode) {
+            this._eraseMode = false;
             this._hoverFaces = [];
             this.draw();
         }
+        this._updateToolbarState();
+        if (this.onToolbarChange) this.onToolbarChange('paintMode', mode);
     }
 
     _rotateSectionPlane(dx, dy) {
@@ -708,6 +1285,15 @@ export class Viewer3D {
         if (facesInBrush.length > 0) {
             this._needsRebuild = true;
             this.draw();
+            this._updateStatusBar();
+            // Update the sidebar edit view face count if visible
+            if (this._sidebarEditView && this._sidebarEditView.style.display !== 'none') {
+                const infoRow = this._sidebarEditView.querySelector('.cad-edit-info span');
+                const ag = this.getActiveGroup();
+                if (infoRow && ag) infoRow.textContent = `${ag.faces.size} selected`;
+            }
+            // Update the sidebar list view counts
+            this._renderGroupList();
         }
     }
 
@@ -1475,19 +2061,7 @@ export class Viewer3D {
             this._drawStressTooltip();
         }
 
-        if (this.paintMode) {
-            const paintColors = { constraint: 'rgba(0,200,100,0.8)', force: 'rgba(255,100,50,0.8)', keep: 'rgba(50,100,255,0.8)' };
-            this.ctx.fillStyle = paintColors[this.paintMode] || 'rgba(255,100,50,0.8)';
-            this.ctx.font = '14px Arial';
-            this.ctx.textAlign = 'left';
-            const paintLabels = {
-                constraint: '🖌 Painting Constraints (Right-click to remove)',
-                force: '🖌 Painting Forces (Right-click to remove)',
-                keep: '🔒 Painting Keep Region (Right-click to remove)'
-            };
-            const label = paintLabels[this.paintMode] || paintLabels.force;
-            this.ctx.fillText(label, 10, height - 10);
-        }
+        // Status bar is now handled by the DOM overlay (_updateStatusBar)
 
         if (this.sectionEnabled) {
             this.ctx.fillStyle = 'rgba(100,180,255,0.9)';
