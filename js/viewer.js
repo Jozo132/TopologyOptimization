@@ -433,8 +433,7 @@ export class Viewer3D {
                         this.setPaintMode(null);
                     } else {
                         this._eraseMode = true;
-                        // Keep current paint mode but flag for erasing
-                        if (!this.paintMode) this.setPaintMode('constraint');
+                        // Erase mode works with the current tool; if none is active, prompt the user
                         this._updateToolbarState();
                     }
                 } else {
@@ -564,7 +563,11 @@ export class Viewer3D {
             parts.push(`<span class="status-counts">${counts.join(' · ')}</span>`);
         }
         // Hotkey hints
-        if (this.paintMode) {
+        if (this._eraseMode && this.paintMode) {
+            parts.push('<span class="status-hints">LMB: erase · Esc: exit · MMB: orbit</span>');
+        } else if (this._eraseMode && !this.paintMode) {
+            parts.push('<span class="status-hints">Select a tool first (C/F/K), then LMB to erase</span>');
+        } else if (this.paintMode) {
             parts.push('<span class="status-hints">LMB: select · RMB: erase · Esc: exit · MMB: orbit</span>');
         } else {
             parts.push('<span class="status-hints">C: constraint · F: force · K: keep · E: erase · A: angle select</span>');
@@ -599,7 +602,6 @@ export class Viewer3D {
                 case 'e':
                     e.preventDefault();
                     this._eraseMode = !this._eraseMode;
-                    if (this._eraseMode && !this.paintMode) this.setPaintMode('constraint');
                     this._updateToolbarState();
                     break;
                 case 'a':

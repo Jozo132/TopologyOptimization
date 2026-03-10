@@ -503,17 +503,10 @@ class TopologyApp {
             });
         }
 
-        // Overlay toolbar sync callback — keeps sidebar controls in sync with toolbar
+        // Overlay toolbar sync callback — updates sidebar when toolbar state changes
         this.viewer.onToolbarChange = (prop, value) => {
             if (prop === 'paintMode') {
-                // Sync group list when paint mode changes via toolbar
                 this._renderGroupsList();
-            } else if (prop === 'brushSize') {
-                // Brush size changed via toolbar or hotkey — no sidebar control to sync
-            } else if (prop === 'angleSelect') {
-                // Angle selection toggled via toolbar/hotkey
-            } else if (prop === 'angleTolerance') {
-                // Angle tolerance changed via toolbar
             }
         };
 
