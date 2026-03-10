@@ -431,7 +431,7 @@ export class Viewer3D {
         const faceBtn = document.createElement('button');
         faceBtn.className = 'cad-tool-btn';
         faceBtn.title = 'Face / Surface Select [A]';
-        faceBtn.innerHTML = '<span class="cad-tool-icon">📐</span><span class="cad-tool-label">Face</span><kbd>A</kbd>';
+        faceBtn.innerHTML = '<span class="cad-tool-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.35)" stroke-width="0.8"><polygon points="12,2 22,8 12,14 2,8" fill="rgba(255,255,255,0.1)"/><polygon points="2,8 12,14 12,22 2,16" fill="rgba(0,220,255,0.45)"/><polygon points="22,8 12,14 12,22 22,16" fill="rgba(255,255,255,0.06)"/></svg></span><span class="cad-tool-label">Face</span><kbd>A</kbd>';
         faceBtn.addEventListener('click', (e) => { e.stopPropagation(); this._setSelectionMethod('face'); });
         this._toolButtons['face'] = faceBtn;
         this._toolbar.appendChild(faceBtn);
@@ -474,7 +474,7 @@ export class Viewer3D {
         // Selection method state
         this._selectionMethod = 'point'; // 'point' or 'face'
 
-        // ── Right overlay sidebar ────────────────────────────────────────────
+        // ── Left overlay sidebar ─────────────────────────────────────────────
         this._overlaySidebar = document.createElement('div');
         this._overlaySidebar.className = 'cad-overlay-sidebar';
         this._overlaySidebar.style.display = 'none';
@@ -537,16 +537,32 @@ export class Viewer3D {
 
     /** Show or hide the overlay toolbar (call from main.js when entering/leaving step 6) */
     showToolbar(visible) {
-        if (this._toolbar) this._toolbar.style.display = visible ? '' : 'none';
-        if (this._overlaySidebar) this._overlaySidebar.style.display = visible ? '' : 'none';
-        if (this._statusBar) this._statusBar.style.display = visible ? '' : 'none';
+        this._toolbarEnabled = visible;
         if (!visible) {
+            // Hide everything when leaving selection mode
+            if (this._toolbar) this._toolbar.style.display = 'none';
+            if (this._overlaySidebar) this._overlaySidebar.style.display = 'none';
+            if (this._statusBar) this._statusBar.style.display = 'none';
             this.setPaintMode(null);
             this._eraseMode = false;
         } else {
+            // Create a default group if none exist (first time entering selection mode)
+            if (this.selectionGroups.length === 0) {
+                this._addGroupAndEdit('constraint');
+            }
+            // Always show sidebar; toolbar + status only when editing a group
+            if (this._overlaySidebar) this._overlaySidebar.style.display = '';
             this._renderGroupList();
-            this._updateToolbarState();
+            this._updateToolbarVisibility();
         }
+    }
+
+    /** Show/hide toolbar & status bar based on whether we are actively editing a group */
+    _updateToolbarVisibility() {
+        const isEditing = this._sidebarEditView && this._sidebarEditView.style.display !== 'none';
+        if (this._toolbar) this._toolbar.style.display = isEditing ? '' : 'none';
+        if (this._statusBar) this._statusBar.style.display = isEditing ? '' : 'none';
+        if (isEditing) this._updateToolbarState();
     }
 
     _updateToolbarState() {
@@ -650,16 +666,8 @@ export class Viewer3D {
                 if (this.onToolbarChange) this.onToolbarChange('groupRemoved', group.id);
             });
 
-            // Single click: select group, activate painting
+            // Single click: open edit view for this group
             item.addEventListener('click', (e) => {
-                e.stopPropagation();
-                this.setActiveGroup(group.id);
-                this.setPaintMode(group.type);
-                this._renderGroupList();
-            });
-
-            // Double click: open edit view
-            item.addEventListener('dblclick', (e) => {
                 e.stopPropagation();
                 this._showGroupEditView(group.id);
             });
@@ -684,6 +692,7 @@ export class Viewer3D {
         this._sidebarListView.style.display = 'none';
         this._sidebarEditView.style.display = '';
         this._sidebarEditView.innerHTML = '';
+        this._updateToolbarVisibility();
 
         const groupColors = { constraint: '#10b981', force: '#f97316', keep: '#3b82f6' };
 
@@ -896,14 +905,15 @@ export class Viewer3D {
         this._sidebarEditView.style.display = 'none';
         this.setPaintMode(null);
         this._renderGroupList();
+        this._updateToolbarVisibility();
     }
 
     _setupKeyboardShortcuts() {
         document.addEventListener('keydown', (e) => {
             // Don't intercept when typing in inputs
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
-            // Only active when toolbar is visible
-            if (this._toolbar && this._toolbar.style.display === 'none') return;
+            // Only active when selection mode is enabled
+            if (!this._toolbarEnabled) return;
 
             const key = e.key.toLowerCase();
             switch (key) {
