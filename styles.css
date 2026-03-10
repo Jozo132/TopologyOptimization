@@ -867,7 +867,183 @@ button {
     background: var(--success-color);
 }
 
-/* Constraint / Force overlays */
+/* ─── CAD Overlay Toolbar ────────────────────────────────────────────────── */
+.cad-toolbar {
+    position: absolute;
+    top: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    background: rgba(24, 24, 36, 0.92);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 8px;
+    padding: 4px 6px;
+    backdrop-filter: blur(8px);
+    box-shadow: 0 2px 12px rgba(0,0,0,0.4);
+    pointer-events: auto;
+}
+
+.cad-tool-btn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: rgba(255,255,255,0.7);
+    font-size: 0.72rem;
+    padding: 5px 8px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    white-space: nowrap;
+    user-select: none;
+}
+
+.cad-tool-btn:hover {
+    background: rgba(255,255,255,0.08);
+    color: #fff;
+}
+
+.cad-tool-btn.active {
+    background: var(--primary-color, #2563eb);
+    color: #fff;
+    border-color: rgba(255,255,255,0.18);
+}
+
+.cad-tool-btn .cad-tool-icon {
+    font-size: 0.85rem;
+}
+
+.cad-tool-btn .cad-tool-label {
+    font-weight: 500;
+}
+
+.cad-tool-btn kbd {
+    display: inline-block;
+    background: rgba(255,255,255,0.10);
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 3px;
+    font-size: 0.6rem;
+    font-family: inherit;
+    padding: 1px 4px;
+    margin-left: 2px;
+    color: rgba(255,255,255,0.55);
+    line-height: 1.2;
+}
+
+.cad-toolbar-separator {
+    width: 1px;
+    height: 22px;
+    background: rgba(255,255,255,0.15);
+    margin: 0 4px;
+}
+
+.cad-toolbar-brush,
+.cad-toolbar-angle {
+    display: flex;
+    align-items: center;
+    margin-left: 4px;
+    padding-left: 6px;
+    border-left: 1px solid rgba(255,255,255,0.12);
+}
+
+.cad-toolbar-brush label,
+.cad-toolbar-angle label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.72rem;
+    color: rgba(255,255,255,0.7);
+    white-space: nowrap;
+    cursor: default;
+}
+
+.cad-brush-slider,
+.cad-angle-slider {
+    width: 60px;
+    height: 4px;
+    accent-color: var(--primary-color, #2563eb);
+    cursor: pointer;
+}
+
+.cad-brush-value,
+.cad-angle-value {
+    font-size: 0.68rem;
+    color: rgba(255,255,255,0.55);
+    min-width: 18px;
+    text-align: center;
+}
+
+/* ─── CAD Status Bar ────────────────────────────────────────────────────── */
+.cad-status-bar {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: rgba(24, 24, 36, 0.88);
+    border-top: 1px solid rgba(255,255,255,0.08);
+    padding: 4px 12px;
+    font-size: 0.72rem;
+    color: rgba(255,255,255,0.65);
+    pointer-events: none;
+    backdrop-filter: blur(6px);
+}
+
+.cad-status-bar .status-tool {
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 4px;
+}
+
+.cad-status-bar .status-tool.status-constraint { background: rgba(16,185,129,0.25); color: #34d399; }
+.cad-status-bar .status-tool.status-force { background: rgba(249,115,22,0.25); color: #fb923c; }
+.cad-status-bar .status-tool.status-keep { background: rgba(59,130,246,0.25); color: #60a5fa; }
+.cad-status-bar .status-tool.status-erase { background: rgba(239,68,68,0.25); color: #f87171; }
+.cad-status-bar .status-tool.status-idle { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.5); }
+
+.cad-status-bar .status-counts {
+    color: rgba(255,255,255,0.5);
+}
+
+.cad-status-bar .status-hints {
+    margin-left: auto;
+    color: rgba(255,255,255,0.35);
+}
+
+.cad-status-bar .status-hints kbd {
+    display: none; /* already shown in toolbar */
+}
+
+/* ─── Hint banner in sidebar panel ──────────────────────────────────────── */
+.cad-hint-banner {
+    background: rgba(37, 99, 235, 0.08);
+    border: 1px solid rgba(37, 99, 235, 0.2);
+    border-radius: 6px;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+
+.cad-hint-banner kbd {
+    display: inline-block;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 3px;
+    font-size: 0.68rem;
+    font-family: inherit;
+    padding: 1px 4px;
+    color: var(--text-color);
+}
+
+/* Legacy paint-toolbar (kept for any remaining references) */
 .paint-toolbar {
     display: flex;
     gap: 0.5rem;

@@ -381,9 +381,250 @@ export class Viewer3D {
         this._overlayProgram = this._createProgram(gl, OVERLAY_VERTEX_SHADER, OVERLAY_FRAGMENT_SHADER);
 
         this.setupControls();
+        this._createOverlayToolbar();
+        this._setupKeyboardShortcuts();
         window.addEventListener('resize', () => this.onWindowResize());
         this.draw();
         console.log('WebGL Viewer initialized');
+    }
+
+    // ─── Overlay Toolbar (CAD-like tools) ───────────────────────────────────
+
+    _createOverlayToolbar() {
+        // Toolbar container positioned over the 3D canvas
+        this._toolbar = document.createElement('div');
+        this._toolbar.className = 'cad-toolbar';
+        this._toolbar.style.display = 'none'; // hidden until step 6
+        this.container.appendChild(this._toolbar);
+
+        // Tool definitions: id, icon, label, hotkey, mode
+        const tools = [
+            { id: 'select-constraint', icon: '📌', label: 'Constraint', hotkey: 'C', mode: 'constraint' },
+            { id: 'select-force', icon: '⬇', label: 'Force', hotkey: 'F', mode: 'force' },
+            { id: 'select-keep', icon: '🔒', label: 'Keep', hotkey: 'K', mode: 'keep' },
+            { id: 'erase', icon: '🧹', label: 'Erase', hotkey: 'E', mode: 'erase' },
+            { id: 'separator', separator: true },
+            { id: 'angle-select', icon: '📐', label: 'Angle Select', hotkey: 'A', toggle: 'angle' },
+        ];
+
+        this._toolButtons = {};
+        for (const tool of tools) {
+            if (tool.separator) {
+                const sep = document.createElement('div');
+                sep.className = 'cad-toolbar-separator';
+                this._toolbar.appendChild(sep);
+                continue;
+            }
+            const btn = document.createElement('button');
+            btn.className = 'cad-tool-btn';
+            btn.dataset.toolId = tool.id;
+            btn.title = `${tool.label} [${tool.hotkey}]`;
+            btn.innerHTML = `<span class="cad-tool-icon">${tool.icon}</span><span class="cad-tool-label">${tool.label}</span><kbd>${tool.hotkey}</kbd>`;
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (tool.toggle === 'angle') {
+                    this.useAngleSelection = !this.useAngleSelection;
+                    this._updateToolbarState();
+                    if (this.onToolbarChange) this.onToolbarChange('angleSelect', this.useAngleSelection);
+                } else if (tool.mode === 'erase') {
+                    // Toggle erase: if already in erase pseudo-mode, deactivate
+                    if (this._eraseMode) {
+                        this._eraseMode = false;
+                        this.setPaintMode(null);
+                    } else {
+                        this._eraseMode = true;
+                        // Keep current paint mode but flag for erasing
+                        if (!this.paintMode) this.setPaintMode('constraint');
+                        this._updateToolbarState();
+                    }
+                } else {
+                    this._eraseMode = false;
+                    if (this.paintMode === tool.mode) {
+                        this.setPaintMode(null);
+                    } else {
+                        this.setPaintMode(tool.mode);
+                    }
+                }
+            });
+            this._toolButtons[tool.id] = btn;
+            this._toolbar.appendChild(btn);
+        }
+
+        // Brush size compact widget
+        const brushGroup = document.createElement('div');
+        brushGroup.className = 'cad-toolbar-brush';
+        brushGroup.innerHTML = `
+            <label title="Brush size [B +/-]">🖌 <input type="range" min="1" max="10" step="1" value="1" class="cad-brush-slider"><span class="cad-brush-value">1</span></label>
+        `;
+        this._toolbar.appendChild(brushGroup);
+        this._brushSlider = brushGroup.querySelector('.cad-brush-slider');
+        this._brushValueSpan = brushGroup.querySelector('.cad-brush-value');
+        this._brushSlider.addEventListener('input', (e) => {
+            e.stopPropagation();
+            this.brushSize = parseInt(e.target.value);
+            this._brushValueSpan.textContent = this.brushSize;
+            if (this.onToolbarChange) this.onToolbarChange('brushSize', this.brushSize);
+        });
+        this._brushSlider.addEventListener('mousedown', (e) => e.stopPropagation());
+
+        // Angle tolerance compact widget (shown when angle select is active)
+        this._angleTolGroup = document.createElement('div');
+        this._angleTolGroup.className = 'cad-toolbar-angle';
+        this._angleTolGroup.style.display = 'none';
+        this._angleTolGroup.innerHTML = `
+            <label title="Angle tolerance for surface selection">📐 <input type="range" min="1" max="180" step="1" value="45" class="cad-angle-slider"><span class="cad-angle-value">45°</span></label>
+        `;
+        this._toolbar.appendChild(this._angleTolGroup);
+        this._angleSlider = this._angleTolGroup.querySelector('.cad-angle-slider');
+        this._angleValueSpan = this._angleTolGroup.querySelector('.cad-angle-value');
+        this._angleSlider.addEventListener('input', (e) => {
+            e.stopPropagation();
+            this.angleTolerance = parseInt(e.target.value);
+            this._angleValueSpan.textContent = this.angleTolerance + '°';
+            this.updateAngleSelection();
+            if (this.onToolbarChange) this.onToolbarChange('angleTolerance', this.angleTolerance);
+        });
+        this._angleSlider.addEventListener('mousedown', (e) => e.stopPropagation());
+
+        // Status bar at bottom of canvas
+        this._statusBar = document.createElement('div');
+        this._statusBar.className = 'cad-status-bar';
+        this._statusBar.style.display = 'none';
+        this.container.appendChild(this._statusBar);
+
+        // Erase mode flag
+        this._eraseMode = false;
+    }
+
+    /** Show or hide the overlay toolbar (call from main.js when entering/leaving step 6) */
+    showToolbar(visible) {
+        if (this._toolbar) this._toolbar.style.display = visible ? '' : 'none';
+        if (this._statusBar) this._statusBar.style.display = visible ? '' : 'none';
+        if (!visible) {
+            this.setPaintMode(null);
+            this._eraseMode = false;
+        }
+    }
+
+    _updateToolbarState() {
+        if (!this._toolButtons) return;
+        for (const [id, btn] of Object.entries(this._toolButtons)) {
+            btn.classList.remove('active');
+        }
+        // Highlight active tool
+        if (this._eraseMode) {
+            this._toolButtons['erase']?.classList.add('active');
+        } else if (this.paintMode === 'constraint') {
+            this._toolButtons['select-constraint']?.classList.add('active');
+        } else if (this.paintMode === 'force') {
+            this._toolButtons['select-force']?.classList.add('active');
+        } else if (this.paintMode === 'keep') {
+            this._toolButtons['select-keep']?.classList.add('active');
+        }
+        // Angle toggle
+        if (this.useAngleSelection) {
+            this._toolButtons['angle-select']?.classList.add('active');
+            if (this._angleTolGroup) this._angleTolGroup.style.display = '';
+        } else {
+            if (this._angleTolGroup) this._angleTolGroup.style.display = 'none';
+        }
+        // Update brush slider sync
+        if (this._brushSlider) {
+            this._brushSlider.value = this.brushSize;
+            this._brushValueSpan.textContent = this.brushSize;
+        }
+        if (this._angleSlider) {
+            this._angleSlider.value = this.angleTolerance;
+            this._angleValueSpan.textContent = this.angleTolerance + '°';
+        }
+        // Update status bar
+        this._updateStatusBar();
+    }
+
+    _updateStatusBar() {
+        if (!this._statusBar) return;
+        const parts = [];
+        if (this._eraseMode) {
+            parts.push('<span class="status-tool status-erase">🧹 Erase Mode</span>');
+        } else if (this.paintMode) {
+            const modeLabels = { constraint: '📌 Constraint', force: '⬇ Force', keep: '🔒 Keep' };
+            parts.push(`<span class="status-tool status-${this.paintMode}">${modeLabels[this.paintMode] || this.paintMode}</span>`);
+        } else {
+            parts.push('<span class="status-tool status-idle">🖱 Navigate</span>');
+        }
+        // Selection counts
+        const conCount = this.paintedConstraintFaces.size;
+        const forceCount = this.paintedForceFaces.size;
+        const groupCounts = this.selectionGroups.map(g => `${g.name}: ${g.faces.size}`).join(', ');
+        if (conCount > 0 || forceCount > 0 || groupCounts) {
+            const counts = [];
+            if (conCount > 0) counts.push(`📌 ${conCount}`);
+            if (forceCount > 0) counts.push(`⬇ ${forceCount}`);
+            if (groupCounts) counts.push(groupCounts);
+            parts.push(`<span class="status-counts">${counts.join(' · ')}</span>`);
+        }
+        // Hotkey hints
+        if (this.paintMode) {
+            parts.push('<span class="status-hints">LMB: select · RMB: erase · Esc: exit · MMB: orbit</span>');
+        } else {
+            parts.push('<span class="status-hints">C: constraint · F: force · K: keep · E: erase · A: angle select</span>');
+        }
+        this._statusBar.innerHTML = parts.join('');
+    }
+
+    _setupKeyboardShortcuts() {
+        document.addEventListener('keydown', (e) => {
+            // Don't intercept when typing in inputs
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+            // Only active when toolbar is visible
+            if (this._toolbar && this._toolbar.style.display === 'none') return;
+
+            const key = e.key.toLowerCase();
+            switch (key) {
+                case 'c':
+                    e.preventDefault();
+                    this._eraseMode = false;
+                    this.setPaintMode(this.paintMode === 'constraint' ? null : 'constraint');
+                    break;
+                case 'f':
+                    e.preventDefault();
+                    this._eraseMode = false;
+                    this.setPaintMode(this.paintMode === 'force' ? null : 'force');
+                    break;
+                case 'k':
+                    e.preventDefault();
+                    this._eraseMode = false;
+                    this.setPaintMode(this.paintMode === 'keep' ? null : 'keep');
+                    break;
+                case 'e':
+                    e.preventDefault();
+                    this._eraseMode = !this._eraseMode;
+                    if (this._eraseMode && !this.paintMode) this.setPaintMode('constraint');
+                    this._updateToolbarState();
+                    break;
+                case 'a':
+                    e.preventDefault();
+                    this.useAngleSelection = !this.useAngleSelection;
+                    this._updateToolbarState();
+                    if (this.onToolbarChange) this.onToolbarChange('angleSelect', this.useAngleSelection);
+                    break;
+                case 'b':
+                    e.preventDefault();
+                    if (e.shiftKey) {
+                        this.brushSize = Math.max(1, this.brushSize - 1);
+                    } else {
+                        this.brushSize = Math.min(10, this.brushSize + 1);
+                    }
+                    this._updateToolbarState();
+                    if (this.onToolbarChange) this.onToolbarChange('brushSize', this.brushSize);
+                    break;
+                case 'escape':
+                    e.preventDefault();
+                    this._eraseMode = false;
+                    this.setPaintMode(null);
+                    break;
+            }
+        });
     }
 
     // ─── Shader compilation ─────────────────────────────────────────────────
@@ -427,9 +668,9 @@ export class Viewer3D {
                 } else if (e.button === 1) {
                     this.isDragging = true;
                 } else if (e.button === 0) {
-                    // Left click: paint
+                    // Left click: select (or erase if erase mode is active)
                     this.isPainting = true;
-                    this._paintErasing = false;
+                    this._paintErasing = !!this._eraseMode;
                     this.handlePaintClick(e);
                 } else if (e.button === 2) {
                     // Right click: erase
@@ -626,9 +867,12 @@ export class Viewer3D {
         this.paintMode = mode;
         this.canvas.style.cursor = mode ? 'crosshair' : 'grab';
         if (!mode) {
+            this._eraseMode = false;
             this._hoverFaces = [];
             this.draw();
         }
+        this._updateToolbarState();
+        if (this.onToolbarChange) this.onToolbarChange('paintMode', mode);
     }
 
     _rotateSectionPlane(dx, dy) {
@@ -708,6 +952,7 @@ export class Viewer3D {
         if (facesInBrush.length > 0) {
             this._needsRebuild = true;
             this.draw();
+            this._updateStatusBar();
         }
     }
 
@@ -1475,19 +1720,7 @@ export class Viewer3D {
             this._drawStressTooltip();
         }
 
-        if (this.paintMode) {
-            const paintColors = { constraint: 'rgba(0,200,100,0.8)', force: 'rgba(255,100,50,0.8)', keep: 'rgba(50,100,255,0.8)' };
-            this.ctx.fillStyle = paintColors[this.paintMode] || 'rgba(255,100,50,0.8)';
-            this.ctx.font = '14px Arial';
-            this.ctx.textAlign = 'left';
-            const paintLabels = {
-                constraint: '🖌 Painting Constraints (Right-click to remove)',
-                force: '🖌 Painting Forces (Right-click to remove)',
-                keep: '🔒 Painting Keep Region (Right-click to remove)'
-            };
-            const label = paintLabels[this.paintMode] || paintLabels.force;
-            this.ctx.fillText(label, 10, height - 10);
-        }
+        // Status bar is now handled by the DOM overlay (_updateStatusBar)
 
         if (this.sectionEnabled) {
             this.ctx.fillStyle = 'rgba(100,180,255,0.9)';

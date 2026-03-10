@@ -151,12 +151,12 @@ class TopologyApp {
         this.workflow = new WorkflowManager();
         this.workflow.init();
         
-        // Clear paint mode when leaving step 6 (solve & export)
+        // Show/hide overlay toolbar when entering/leaving step 6 (solve & export)
         this.workflow.onStepChange = (step) => {
             if (step !== 6) {
-                this.viewer.setPaintMode(null);
-                document.getElementById('paintConstraint').classList.remove('active-tool');
-                document.getElementById('paintForce').classList.remove('active-tool');
+                this.viewer.showToolbar(false);
+            } else {
+                this.viewer.showToolbar(true);
             }
         };
         
@@ -503,55 +503,24 @@ class TopologyApp {
             });
         }
 
-        // Paint toolbar
-        document.getElementById('paintConstraint').addEventListener('click', () => {
-            this.viewer.setPaintMode('constraint');
-            document.getElementById('paintConstraint').classList.add('active-tool');
-            document.getElementById('paintForce').classList.remove('active-tool');
-        });
-        document.getElementById('paintForce').addEventListener('click', () => {
-            this.viewer.setPaintMode('force');
-            document.getElementById('paintForce').classList.add('active-tool');
-            document.getElementById('paintConstraint').classList.remove('active-tool');
-        });
-        document.getElementById('clearPaint').addEventListener('click', () => {
-            this.viewer.setPaintMode(null);
-            document.getElementById('paintConstraint').classList.remove('active-tool');
-            document.getElementById('paintForce').classList.remove('active-tool');
-        });
-
-        // Angle-based selection
-        document.getElementById('useAngleSelection').addEventListener('change', (e) => {
-            this.viewer.useAngleSelection = e.target.checked;
-            document.getElementById('angleToleranceControls').style.display = e.target.checked ? '' : 'none';
-        });
-
-        const updateAngleTolerance = () => {
-            const val = parseInt(document.getElementById('angleTolerance').value);
-            document.getElementById('angleToleranceInput').value = val;
-            this.viewer.angleTolerance = val;
-            this.viewer.updateAngleSelection();
+        // Overlay toolbar sync callback — keeps sidebar controls in sync with toolbar
+        this.viewer.onToolbarChange = (prop, value) => {
+            if (prop === 'paintMode') {
+                // Sync group list when paint mode changes via toolbar
+                this._renderGroupsList();
+            } else if (prop === 'brushSize') {
+                // Brush size changed via toolbar or hotkey — no sidebar control to sync
+            } else if (prop === 'angleSelect') {
+                // Angle selection toggled via toolbar/hotkey
+            } else if (prop === 'angleTolerance') {
+                // Angle tolerance changed via toolbar
+            }
         };
-        document.getElementById('angleTolerance').addEventListener('input', () => {
-            updateAngleTolerance();
-        });
-        document.getElementById('angleToleranceInput').addEventListener('input', (e) => {
-            document.getElementById('angleTolerance').value = e.target.value;
-            updateAngleTolerance();
-        });
-
-        document.getElementById('brushSize').addEventListener('input', (e) => {
-            const size = parseInt(e.target.value);
-            this.viewer.brushSize = size;
-            document.getElementById('brushSizeValue').textContent = size;
-        });
 
         // Selection Groups
         document.getElementById('addGroup').addEventListener('click', () => {
             const group = this.viewer.addSelectionGroup('force');
             this.viewer.setPaintMode('force');
-            document.getElementById('paintForce').classList.add('active-tool');
-            document.getElementById('paintConstraint').classList.remove('active-tool');
             this._renderGroupsList();
         });
 
@@ -1438,27 +1407,15 @@ class TopologyApp {
 
         if (state.useAngleSelection !== undefined) {
             this.viewer.useAngleSelection = !!state.useAngleSelection;
-            const useAngleSelection = document.getElementById('useAngleSelection');
-            if (useAngleSelection) useAngleSelection.checked = this.viewer.useAngleSelection;
-            const angleToleranceControls = document.getElementById('angleToleranceControls');
-            if (angleToleranceControls) {
-                angleToleranceControls.style.display = this.viewer.useAngleSelection ? '' : 'none';
-            }
         }
         if (state.angleTolerance !== undefined) {
             this.viewer.angleTolerance = state.angleTolerance;
-            const angleTolerance = document.getElementById('angleTolerance');
-            const angleToleranceInput = document.getElementById('angleToleranceInput');
-            if (angleTolerance) angleTolerance.value = state.angleTolerance;
-            if (angleToleranceInput) angleToleranceInput.value = state.angleTolerance;
         }
         if (state.brushSize !== undefined) {
             this.viewer.brushSize = state.brushSize;
-            const brushSize = document.getElementById('brushSize');
-            const brushSizeValue = document.getElementById('brushSizeValue');
-            if (brushSize) brushSize.value = state.brushSize;
-            if (brushSizeValue) brushSizeValue.textContent = state.brushSize;
         }
+        // Sync the overlay toolbar to reflect restored state
+        this.viewer._updateToolbarState();
         if (Array.isArray(state.selectionShapes)) {
             this.viewer.selectionShapes = state.selectionShapes.map(s => ({
                 id: s.id,
@@ -1918,15 +1875,8 @@ class TopologyApp {
     }
 
     _updatePaintToolButtons(type) {
-        const paintForce = document.getElementById('paintForce');
-        const paintConstraint = document.getElementById('paintConstraint');
-        paintForce.classList.remove('active-tool');
-        paintConstraint.classList.remove('active-tool');
-        if (type === 'force') {
-            paintForce.classList.add('active-tool');
-        } else if (type === 'constraint') {
-            paintConstraint.classList.add('active-tool');
-        }
+        // Toolbar state is now managed by the overlay toolbar in viewer.js
+        this.viewer._updateToolbarState();
     }
 
     _renderShapeList() {
