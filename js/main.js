@@ -505,17 +505,8 @@ class TopologyApp {
 
         // Overlay toolbar sync callback — updates sidebar when toolbar state changes
         this.viewer.onToolbarChange = (prop, value) => {
-            if (prop === 'paintMode') {
-                this._renderGroupsList();
-            }
+            // Groups are now fully managed in the overlay sidebar
         };
-
-        // Selection Groups
-        document.getElementById('addGroup').addEventListener('click', () => {
-            const group = this.viewer.addSelectionGroup('force');
-            this.viewer.setPaintMode('force');
-            this._renderGroupsList();
-        });
 
         // Shape Selection
         document.getElementById('addShapeCube').addEventListener('click', () => {
@@ -532,7 +523,7 @@ class TopologyApp {
         });
         document.getElementById('applyAllShapesToGroup').addEventListener('click', () => {
             this.viewer.applyShapeSelectionToGroup();
-            this._renderGroupsList();
+            this.viewer._renderGroupList();
         });
         
         // Step 3: Solution type card selection
@@ -1795,75 +1786,9 @@ class TopologyApp {
     }
 
     _renderGroupsList() {
-        const container = document.getElementById('selectionGroupsList');
-        if (!container) return;
-        container.innerHTML = '';
-
-        for (const group of this.viewer.selectionGroups) {
-            const item = document.createElement('div');
-            item.className = 'group-item' + (group.id === this.viewer.activeGroupId ? ' active-group' : '');
-
-            const groupColors = { constraint: '#10b981', force: '#f97316', keep: '#3b82f6' };
-            const colorDot = document.createElement('span');
-            colorDot.className = 'group-color';
-            colorDot.style.background = groupColors[group.type] || '#f97316';
-
-            const typeSelect = document.createElement('select');
-            typeSelect.className = 'group-type-select';
-            typeSelect.style.cssText = 'font-size: 0.7rem; padding: 0.1rem 0.2rem; border-radius: 4px; border: 1px solid var(--border-color); background: var(--bg-secondary); cursor: pointer;';
-            for (const opt of ['force', 'constraint', 'keep']) {
-                const option = document.createElement('option');
-                option.value = opt;
-                option.textContent = opt.charAt(0).toUpperCase() + opt.slice(1);
-                if (opt === group.type) option.selected = true;
-                typeSelect.appendChild(option);
-            }
-            typeSelect.addEventListener('click', (e) => e.stopPropagation());
-            typeSelect.addEventListener('change', (e) => {
-                e.stopPropagation();
-                const newType = e.target.value;
-                group.type = newType;
-                group.name = `${newType} ${group.id}`;
-                if (newType === 'force') {
-                    group.params = { direction: 'down', vector: null, magnitude: 1000, forceType: 'total', dofs: 'all' };
-                } else {
-                    group.params = { dofs: 'all' };
-                }
-                this.viewer._syncGroupsToFaceSets();
-                this.viewer._needsRebuild = true;
-                this.viewer.draw();
-                if (group.id === this.viewer.activeGroupId) {
-                    this.viewer.setPaintMode(newType);
-                    this._updatePaintToolButtons(newType);
-                }
-                this._renderGroupsList();
-            });
-
-            const countSpan = document.createElement('span');
-            countSpan.className = 'group-count';
-            countSpan.textContent = `${group.faces.size} faces`;
-
-            const removeBtn = document.createElement('button');
-            removeBtn.className = 'group-remove';
-            removeBtn.textContent = '×';
-            removeBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                this.viewer.removeSelectionGroup(group.id);
-                this._renderGroupsList();
-            });
-
-            item.addEventListener('click', () => {
-                this.viewer.setActiveGroup(group.id);
-                this.viewer.setPaintMode(group.type);
-                this._updatePaintToolButtons(group.type);
-                this._renderGroupsList();
-            });
-
-            item.appendChild(colorDot);
-            item.appendChild(typeSelect);
-            item.appendChild(countSpan);
-            item.appendChild(removeBtn);
-            container.appendChild(item);
+        // Groups are now rendered in the overlay sidebar within viewer.js
+        if (this.viewer._renderGroupList) {
+            this.viewer._renderGroupList();
         }
     }
 
