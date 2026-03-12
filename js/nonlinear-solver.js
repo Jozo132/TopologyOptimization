@@ -1006,6 +1006,14 @@ export class NonlinearSolver {
                 continue;
             }
 
+            // Density-based element scaling (supports partial-density elements)
+            const rho = mesh.elemDensities ? mesh.elemDensities[e] : 1.0;
+            if (rho < 1e-6) {
+                elemTangents[e] = new Float64Array(ELEMENT_KE_SIZE);
+                newElemStates[e] = elemStates ? elemStates[e] : null;
+                continue;
+            }
+
             const nodes = mesh.getElementNodes(e);
             const nodeCoords = new Float64Array(24);
             const u_elem = new Float64Array(24);
@@ -1024,6 +1032,12 @@ export class NonlinearSolver {
             const res = elementForceAndTangent(
                 nodeCoords, u_elem, material, elemStates ? elemStates[e] : null
             );
+
+            // Scale element contribution by density
+            if (rho < 1.0) {
+                for (let i = 0; i < ELEMENT_KE_SIZE; i++) res.Kt[i] *= rho;
+                for (let i = 0; i < ELEMENT_DOFS; i++) res.fint[i] *= rho;
+            }
 
             // Apply stiffness degradation from phase-field damage
             if (damageField && phaseField && damageField[e] > 0) {
@@ -1094,6 +1108,10 @@ export class NonlinearSolver {
             // Compute internal force at trial point
             const fint_trial = new Float64Array(ndof);
             for (let e = 0; e < mesh.elemCount; e++) {
+                // Skip near-void elements
+                const rho = mesh.elemDensities ? mesh.elemDensities[e] : 1.0;
+                if (rho < 1e-6) continue;
+
                 const nodes = mesh.getElementNodes(e);
                 const nodeCoords = new Float64Array(24);
                 const u_elem = new Float64Array(24);
@@ -1112,11 +1130,13 @@ export class NonlinearSolver {
                     nodeCoords, u_elem, material,
                     elemStates ? elemStates[e] : null
                 );
+                // Scale by element density
+                const scale = rho < 1.0 ? rho : 1.0;
                 for (let i = 0; i < 8; i++) {
                     const ni = nodes[i];
-                    fint_trial[ni * 3]     += res.fint[i * 3];
-                    fint_trial[ni * 3 + 1] += res.fint[i * 3 + 1];
-                    fint_trial[ni * 3 + 2] += res.fint[i * 3 + 2];
+                    fint_trial[ni * 3]     += res.fint[i * 3] * scale;
+                    fint_trial[ni * 3 + 1] += res.fint[i * 3 + 1] * scale;
+                    fint_trial[ni * 3 + 2] += res.fint[i * 3 + 2] * scale;
                 }
             }
 

@@ -1653,7 +1653,7 @@ class TopologyOptimizerWorker3D {
             const x = new Float32Array(nel);
             if (model.elements) {
                 for (let i = 0; i < nel; i++) {
-                    x[i] = model.elements[i] > 0.5 ? 1.0 : this.Emin;
+                    x[i] = model.elements[i] > 0 ? model.elements[i] : this.Emin;
                 }
             } else {
                 x.fill(1.0);
@@ -1681,6 +1681,7 @@ class TopologyOptimizerWorker3D {
                     nelx, nely, nelz,
                     nodeCount,
                     elemCount,
+                    elemDensities: x,
                     getElementNodes: (e) => {
                         // 8 corner nodes for hex element e
                         const ez = Math.floor(e / (nelx * nely));
@@ -2897,10 +2898,10 @@ class TopologyOptimizerWorker3D {
                         const [dx, dy, dz] = faceNeighbors[fi];
                         if (!isSolid(elx + dx, ely + dy, elz + dz)) visibleFaces.push(fi);
                     }
-                    if (visibleFaces.length === 0) continue;
 
                     const strain = (maxStress > 0 && elementStress) ? elementStress[idx] / maxStress : 0;
                     amrCells.push({ x: elx, y: ely, z: elz, size: 1, density, stress: strain });
+                    if (visibleFaces.length === 0) continue;
                     this.addSubdividedElement(triangles, elx, ely, elz, density, 1, visibleFaces, strain);
                 }
             }
