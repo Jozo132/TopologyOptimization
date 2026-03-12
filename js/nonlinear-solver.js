@@ -20,6 +20,7 @@ const MAX_CG_ITERATIONS = 400;
 const CG_TOLERANCE = 1e-8;
 const ELEMENT_DOFS = 24;          // 8 nodes × 3 DOF per node
 const ELEMENT_KE_SIZE = ELEMENT_DOFS * ELEMENT_DOFS; // 576
+const MIN_ELEMENT_DENSITY = 1e-6; // below this, element is treated as void
 
 /** 2×2×2 Gauss quadrature: points and weights */
 const GP = 1.0 / Math.sqrt(3.0);
@@ -1008,7 +1009,7 @@ export class NonlinearSolver {
 
             // Density-based element scaling (supports partial-density elements)
             const rho = mesh.elemDensities ? mesh.elemDensities[e] : 1.0;
-            if (rho < 1e-6) {
+            if (rho < MIN_ELEMENT_DENSITY) {
                 elemTangents[e] = new Float64Array(ELEMENT_KE_SIZE);
                 newElemStates[e] = elemStates ? elemStates[e] : null;
                 continue;
@@ -1110,7 +1111,7 @@ export class NonlinearSolver {
             for (let e = 0; e < mesh.elemCount; e++) {
                 // Skip near-void elements
                 const rho = mesh.elemDensities ? mesh.elemDensities[e] : 1.0;
-                if (rho < 1e-6) continue;
+                if (rho < MIN_ELEMENT_DENSITY) continue;
 
                 const nodes = mesh.getElementNodes(e);
                 const nodeCoords = new Float64Array(24);

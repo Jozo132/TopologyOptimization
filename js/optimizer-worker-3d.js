@@ -2900,8 +2900,9 @@ class TopologyOptimizerWorker3D {
                     }
 
                     const strain = (maxStress > 0 && elementStress) ? elementStress[idx] / maxStress : 0;
+                    // Include internal elements in amrCells for volumetric stress data
                     amrCells.push({ x: elx, y: ely, z: elz, size: 1, density, stress: strain });
-                    if (visibleFaces.length === 0) continue;
+                    if (visibleFaces.length === 0) continue; // no surface faces to render
                     this.addSubdividedElement(triangles, elx, ely, elz, density, 1, visibleFaces, strain);
                 }
             }
